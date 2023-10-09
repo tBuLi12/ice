@@ -1,0 +1,7 @@
+[workspace]
+
+members = [
+    "ast",
+    "iiv",
+    "iiv-gen",
+]
