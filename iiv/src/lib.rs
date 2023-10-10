@@ -1,5 +1,7 @@
 mod builder;
-mod ty;
+mod pool;
+mod str;
+pub mod ty;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Value(u16);
