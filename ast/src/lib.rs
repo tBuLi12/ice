@@ -1,16 +1,16 @@
 #[derive(Debug)]
-pub struct Ident {
-    pub span: Span,
-    pub value: String,
-}
-
-#[derive(Debug)]
 pub struct Span {
     pub first_line: u32,
     pub last_line: u32,
     pub begin_offset: u32,
     pub begin_highlight_offset: u32,
     pub end_highlight_offset: u32,
+}
+
+#[derive(Debug)]
+pub struct Ident {
+    pub span: Span,
+    pub value: String,
 }
 
 #[derive(Debug)]
@@ -196,7 +196,7 @@ pub struct Module {
 #[derive(Debug)]
 pub struct Block {
     pub span: Span,
-    pub vec: Vec<BlockItem>,
+    pub items: Vec<BlockItem>,
     pub has_trailing_expression: bool,
 }
 
@@ -206,8 +206,7 @@ pub enum BlockItem {
     Break(Break),
     Return(Return),
     Continue(Continue),
-    Let(Let),
-    Var(Var),
+    Bind(Binding),
 }
 
 #[derive(Debug)]
@@ -229,15 +228,16 @@ pub struct Continue {
 }
 
 #[derive(Debug)]
-pub struct Let {
-    pub span: Span,
-    pub binding: Pattern,
-    pub value: Expr,
+pub enum BindingType {
+    Let,
+    Var,
+    Const,
 }
 
 #[derive(Debug)]
-pub struct Var {
+pub struct Binding {
     pub span: Span,
+    pub binding_type: BindingType,
     pub binding: Pattern,
     pub value: Expr,
 }
@@ -251,8 +251,18 @@ pub struct Pattern {
 
 #[derive(Debug)]
 pub enum PatternBody {
-    Bind(Expr),
-    Destructure(Destructure),
+    Tuple(Vec<Pattern>),
+    Struct(Vec<(Ident, Pattern)>),
+    Variant(Box<Pattern>),
+    NarrowType(Box<(Pattern, Expr)>),
+    Named(Ident, Box<Pattern>),
+    Vector(Vec<Pattern>),
+    NarrowTraitBounds(Box<(Pattern, Expr)>),
+    UnionTy(Vec<Pattern>),
+    VariantTy(Vec<(Ident, Pattern)>),
+    NamedTy(Ident, Vec<Pattern>),
+    Type(Box<Pattern>),
+    Bind(BindingType, Ident),
 }
 
 #[derive(Debug)]
@@ -389,8 +399,7 @@ pub struct While {
 
 #[derive(Debug)]
 pub enum Condition {
-    Let(Let),
-    Var(Var),
+    Binding(Binding),
     Expr(Expr),
 }
 
@@ -603,7 +612,7 @@ pub struct Variant {
 
 #[derive(Debug)]
 pub enum Expr {
-    Variable(Path),
+    Variable(Ident),
     Block(Block),
     Int(Int),
     Float(Float),
