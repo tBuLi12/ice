@@ -128,6 +128,10 @@ impl<'i> Pool<'i> {
     pub fn get_ty_invalid(&'i self) -> TypeRef<'i> {
         TypeRef(self.ty_pool.get(Type::Invalid))
     }
+
+    pub fn get_ty_never(&'i self) -> TypeRef<'i> {
+        TypeRef(self.ty_pool.get(Type::Union(self.get_ty_set(vec![]))))
+    }
 }
 
 impl<'i> TypeRef<'i> {

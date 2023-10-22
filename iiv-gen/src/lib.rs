@@ -1,60 +1,53 @@
-use ast::{BindingType, BlockItem, Expr, Ident, Pattern, PatternBody};
+use ast::{BlockItem, Expr, Ident};
 use iiv::ty::TypeRef;
 
 mod ty;
 
 struct Checker<'i> {
     ty: iiv::ty::Pool<'i>,
+    constant_depth: usize,
+    fun: iiv::fun::Function<'i>,
 }
 
 impl<'i> Checker<'i> {
-    fn try_returning(&mut self, value: Object) {}
+    fn try_returning(&mut self, value: TypeRef<'_>) {
+        
+    }
 
     fn read_rt_value(&mut self, value: Object) -> TypeRef<'_> {
         match value {
-            Object::Constant(ty) | Object::Value(ty) | Object::Place(ty) => {
+            Object::Value(ty) | Object::Place(ty) => {
                 return ty;
             }
             _ => panic!(),
         }
     }
 
-    fn read_ct_value(&mut self, value: Object) -> TypeRef<'_> {
-        match value {
-            Object::Constant(ty) => {
-                return ty;
-            }
-            Object::Type(ty) => {
-                return;
-            }
-            _ => panic!(),
-        }
-    }
-
-    fn bind(&mut self, pattern: &Pattern, value: Object) {
-        match (pattern.body, value) {
-            (PatternBody::Bind(BindingType::Let, ident), value) => {
-                self.read_rt_value(value);
-            }
-            (PatternBody::Bind(BindingType::Var, ident), value) => {
-                self.read_rt_value(value);
-            }
-            (PatternBody::Bind(BindingType::Const, ident), value) => {
-                self.read_ct_value(value);
-            }
-            _ => panic!(),
-        }
-    }
+    // fn bind(&mut self, pattern: &Pattern, value: Object) {
+    //     match (pattern.body, value) {
+    //         (PatternBody::Bind(BindingType::Let, ident), value) => {
+    //             self.read_rt_value(value);
+    //         }
+    //         (PatternBody::Bind(BindingType::Var, ident), value) => {
+    //             self.read_rt_value(value);
+    //         }
+    //         (PatternBody::Bind(BindingType::Const, ident), value) => {
+    //             self.read_ct_value(value);
+    //         }
+    //         _ => panic!(),
+    //     }
+    // }
 
     fn check_statement(&mut self, item: &BlockItem) -> Object {
         match item {
             BlockItem::Expr(expr) => self.check(expr),
             BlockItem::Break(Break) => {}
             BlockItem::Return(ret) => {
-                self.try_returning(ret.value.map(|ref e| self.check(e)).unwrap_or(self.null()))
+                self.try_returning(ret.value.map(|ref e| self.check(e)).unwrap_or(self.null()));
+                Object::Value(self.ty.get_ty_never())
             }
             BlockItem::Continue(Continue) => {}
-            BlockItem::Bind(binding) => self.bind(&binding.binding, self.check(&binding.value)),
+            BlockItem::Bind(binding) => { binding },
         }
     }
 
@@ -72,29 +65,20 @@ impl<'i> Checker<'i> {
                     self.ty_null()
                 }
             }
-            Expr::Int(int) => Object::Constant(self.ty.get_int()),
+            Expr::Int(int) => Object::Value(self.ty.get_int()),
             Expr::Float(Float) => {}
             Expr::String(StringLit) => {}
             Expr::Char(Char) => {}
             Expr::Tuple(tuple) => {
-                let mut is_const = true;
                 let items = tuple
                     .fields
                     .iter()
                     .map(|e| match self.check(e) {
-                        Object::Value(ty) => {
-                            is_const = false;
-                            ty
-                        }
-                        Object::Constant(ty) | Object::Place(ty) => ty,
+                        Object::Value(ty) | Object::Place(ty) => ty,
                         _ => self.ty.get_ty_invalid(),
                     })
                     .collect();
-                if is_const {
-                    Object::Constant(self.ty.get_tuple(items))
-                } else {
                     Object::Value(self.ty.get_tuple(items))
-                }
             }
             Expr::Struct(structure) => {
                 let mut is_const = true;
@@ -108,21 +92,13 @@ impl<'i> Checker<'i> {
                             self.resolve(&prop.name)
                         };
                         let ty = match val {
-                            Object::Value(ty) => {
-                                is_const = false;
-                                ty
-                            }
-                            Object::Constant(ty) | Object::Place(ty) => ty,
+                            Object::Value(ty) | Object::Place(ty) => ty,
                             _ => self.ty.get_ty_invalid(),
                         };
                         self.ty.get_prop(prop.name, ty)
                     })
                     .collect();
-                if is_const {
-                    Object::Constant(self.ty.get_struct(props))
-                } else {
-                    Object::Value(self.ty.get_struct(props))
-                }
+                Object::Value(self.ty.get_struct(props))
             }
             Expr::If(if_expr) => {
                 let cond = self.check(if_expr.condition);
@@ -133,7 +109,6 @@ impl<'i> Checker<'i> {
             Expr::Prop(prop) => {
                 let lhs = self.check(&prop.lhs);
                 match lhs {
-                    Object::Constant(ty) => Object::Constant(ty.prop(prop.prop)), 
                     Object::Place(ty) => Object::Place(ty.prop(prop.prop)),
                     Object::Value(ty) => Object::Value(ty.prop(prop.prop)),
                     Object::Type()
@@ -181,6 +156,6 @@ enum Object<'i> {
     Module,
     Value(TypeRef<'i>),
     Place(TypeRef<'i>),
-    Constant(TypeRef<'i>),
     Type(TypeRef<'i>),
+    IsResult,
 }

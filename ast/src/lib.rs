@@ -207,6 +207,7 @@ pub enum BlockItem {
     Return(Return),
     Continue(Continue),
     Bind(Binding),
+    BindConst(Binding),
 }
 
 #[derive(Debug)]
@@ -237,7 +238,6 @@ pub enum BindingType {
 #[derive(Debug)]
 pub struct Binding {
     pub span: Span,
-    pub binding_type: BindingType,
     pub binding: Pattern,
     pub value: Expr,
 }
@@ -385,7 +385,7 @@ pub struct StructProp {
 #[derive(Debug)]
 pub struct If {
     pub span: Span,
-    pub condition: Box<Condition>,
+    pub condition: Box<Expr>,
     pub yes: Box<Expr>,
     pub no: Option<Box<Expr>>,
 }
@@ -393,14 +393,8 @@ pub struct If {
 #[derive(Debug)]
 pub struct While {
     pub span: Span,
-    pub condition: Box<Condition>,
+    pub condition: Box<Expr>,
     pub body: Box<Expr>,
-}
-
-#[derive(Debug)]
-pub enum Condition {
-    Binding(Binding),
-    Expr(Expr),
 }
 
 #[derive(Debug)]
@@ -540,6 +534,13 @@ pub struct Equals {
 }
 
 #[derive(Debug)]
+pub struct Is {
+    pub span: Span,
+    pub lhs: Box<Expr>,
+    pub rhs: Box<Pattern>,
+}
+
+#[derive(Debug)]
 pub struct NotEquals {
     pub span: Span,
     pub lhs: Box<Expr>,
@@ -648,4 +649,5 @@ pub enum Expr {
     Type(Type),
     Variant(Variant),
     AddAssign(AddAssign),
+    Is(Is),
 }

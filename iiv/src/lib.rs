@@ -1,4 +1,6 @@
 mod builder;
+pub mod diagnostics;
+pub mod fun;
 mod pool;
 mod str;
 pub mod ty;
