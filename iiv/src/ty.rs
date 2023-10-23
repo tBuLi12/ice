@@ -1,3 +1,5 @@
+use std::ops::BitAnd;
+
 use crate::{
     pool::{self, List},
     str::{Str, StrPool},
@@ -39,6 +41,7 @@ pub struct Named<'i> {
 pub enum BuiltinType {
     Null,
     Int,
+    Bool,
 }
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -132,6 +135,10 @@ impl<'i> Pool<'i> {
     pub fn get_ty_never(&'i self) -> TypeRef<'i> {
         TypeRef(self.ty_pool.get(Type::Union(self.get_ty_set(vec![]))))
     }
+
+    pub fn get_ty_bool(&'i self) -> TypeRef<'i> {
+        TypeRef(self.ty_pool.get(Type::Builtin(BuiltinType::Bool)))
+    }
 }
 
 impl<'i> TypeRef<'i> {
@@ -148,4 +155,61 @@ impl<'i> TypeRef<'i> {
             _ => panic!(),
         }
     }
+
+    pub fn intersects(self, other: TypeRef<'i>) -> TypeOverlap {
+        match (*self.0, *other.0) {
+            (Type::Tuple(types), Type::Tuple(types2)) => overlap_list(types, types2),
+            (Type::Struct(props), Type::Struct(props2)) => overlap_props(props, props2),
+            (Type::Vector(ty), Type::Vector(ty2)) => ty.intersects(ty2),
+            (Type::Union(ty), Type::Union(ty2)) => overlap_list(ty, ty2),
+            (Type::Variant(props), Type::Variant(props2)) => overlap_props(props, props2),
+            (Type::Ref(ty), Type::Ref(ty2)) => ty.intersects(ty2),
+            (Type::Type(s1), Type::Type(s2)) => if s1 == s2 { TypeOverlap::Complete } else { TypeOverlap::None },
+            (Type::Constant(/* sth goes here I guess */), Type::Constant(/* sth goes here I guess */)) => TypeOverlap::Partial,
+            // the rest is listed explicitly to cause errors when more kinds are added, instead of silently returning None
+            (Type::Invalid, _) |
+            (Type::Builtin(_), _) |
+            (Type::Tuple(_), _) |
+            (Type::Struct(_), _) |
+            (Type::Vector(_), _) |
+            (Type::Union(_), _) |
+            (Type::Variant(_), _) |
+            (Type::Ref(_), _) |
+            (Type::Type(_), _) |
+            (Type::Constant(), _) |
+            (Type::Builtin(_), _) => TypeOverlap::None,
+        }
+    }
+}
+
+fn overlap_props(p1: List<'_, PropRef<'_>>, p2: List<'_, PropRef<'_>>) -> TypeOverlap {
+    if p1.len() != p2.len() {
+        return TypeOverlap::None;
+    }
+    p1.iter()
+        .zip(p2.iter())
+        .map(|(&p1, &p2)| {
+            if p1.0 .0 != p2.0 .0 {
+                return TypeOverlap::None;
+            }
+            p1.0 .1.intersects(p2.0 .1)
+        })
+        .fold(TypeOverlap::Complete, std::cmp::min)
+}
+
+fn overlap_list(t1: List<'_, TypeRef<'_>>, t2: List<'_, TypeRef<'_>>) -> TypeOverlap {
+    if t1.len() != t2.len() {
+        return TypeOverlap::None;
+    }
+    t1.iter()
+        .zip(t2.iter())
+        .map(|(&p1, &p2)| p1.intersects(p2))
+        .fold(TypeOverlap::Complete, std::cmp::min)
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub enum TypeOverlap {
+    None,
+    Partial,
+    Complete,
 }

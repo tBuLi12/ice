@@ -207,7 +207,6 @@ pub enum BlockItem {
     Return(Return),
     Continue(Continue),
     Bind(Binding),
-    BindConst(Binding),
 }
 
 #[derive(Debug)]

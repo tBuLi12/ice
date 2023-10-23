@@ -1,7 +1,8 @@
-mod builder;
+pub mod builder;
 pub mod diagnostics;
 pub mod fun;
 mod pool;
+mod ref_check;
 mod str;
 pub mod ty;
 
@@ -38,16 +39,15 @@ pub enum Instruction {
     Lt(Value, Value),
     GtEq(Value, Value),
     LtEq(Value, Value),
-    Push(Value, Value),
     Call(FuncId, Vec<Value>),
     Assign(Value, Value),
     RefAssign(Value, Value),
-    Aggregate(Vec<Value>),
+    Tuple(Vec<Value>),
     Name(TypeId, Value),
-    Vector(Vec<Value>),
     GetElem(Value, Vec<Elem>),
     GetElemRef(Value, Vec<Elem>),
     Branch(Value, Label, Label),
-    Break(Label),
+    Jump(Label),
+    Phi(Vec<(Label, Value)>),
     Return(Value),
 }

@@ -14,6 +14,7 @@ struct RawPool<'i, T> {
     next_idx: usize,
 }
 
+#[derive(Debug)]
 pub struct Ref<'i, T>(&'i T);
 
 impl<'i, T> Deref for Ref<'i, T> {
