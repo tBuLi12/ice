@@ -1,4 +1,4 @@
-use crate::{Instruction, Label, Value};
+use crate::{ty::TypeRef, Instruction, Label, Value};
 
 pub struct Builder {
     blocks: Vec<Vec<Instruction>>,
@@ -39,10 +39,24 @@ impl Builder {
     // pub fn vector(&mut self, values: &[Value]) -> Value {}
     // pub fn get_prop(&mut self, value: Value, prop: Prop) -> Value {}
     // pub fn ref_prop(&mut self, value: Value, prop: Prop) -> Value {}
-    pub fn branch(&mut self, condition: Value, true_label: Label, false_label: Label) -> Value {}
-    pub fn jump(&mut self, label: Label) {}
-    // pub fn ret(&mut self, value: Value) -> Value {}
-    pub fn phi(&mut self, vals: &[(Block, Value)]) -> Value {}
-    pub fn create_block(&mut self) -> Block {}
-    pub fn select(&mut self, block: Block) {}
+    pub fn branch(&mut self, condition: Value, true_label: Label, false_label: Label) -> Value {
+        unimplemented!()
+    }
+    pub fn jump(&mut self, label: Label) {
+        unimplemented!()
+    }
+    // pub fn ret(&mut self, value: Value) -> Value { unimplemented!() }
+    pub fn phi(&mut self, vals: &[(Block, Value)]) -> Value {
+        unimplemented!()
+    }
+    pub fn ty_expr(&mut self, ty: TypeRef<'_>) -> Value {
+        unimplemented!()
+    }
+
+    pub fn create_block(&mut self) -> Block {
+        unimplemented!()
+    }
+    pub fn select(&mut self, block: Block) {
+        unimplemented!()
+    }
 }

@@ -1,4 +1,4 @@
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct Span {
     pub first_line: u32,
     pub last_line: u32,
@@ -649,4 +649,10 @@ pub enum Expr {
     Variant(Variant),
     AddAssign(AddAssign),
     Is(Is),
+}
+
+impl Expr {
+    pub fn span(&self) -> &Span {
+        unimplemented!()
+    }
 }

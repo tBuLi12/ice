@@ -12,7 +12,7 @@ pub struct Value(u16);
 pub struct TypeId(u32);
 #[derive(Clone, Copy)]
 pub struct FuncId(u32);
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Prop(u8);
 #[derive(Clone, Copy)]
 pub struct InstIndex(u16);
@@ -50,4 +50,9 @@ pub enum Instruction {
     Jump(Label),
     Phi(Vec<(Label, Value)>),
     Return(Value),
+    Ty(TypeId),
+}
+
+impl Value {
+    pub const NULL: Self = Self(0);
 }

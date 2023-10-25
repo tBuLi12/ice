@@ -1,6 +1,6 @@
 use ast::{BlockItem, Expr, Ident, Span};
 use iiv::{
-    diagnostics,
+    diagnostics, err,
     ty::{TypeOverlap, TypeRef},
 };
 
@@ -18,12 +18,7 @@ impl<'i> Checker<'i> {
 
     fn ensure_ty(&mut self, span: &Span, ty: TypeRef<'i>, value: Value<'i>) -> Value<'i> {
         if value.ty != ty {
-            self.msg(diagnostics::err!(
-                span,
-                "expected type {}, got {} instead",
-                ty,
-                value.ty
-            ));
+            self.msg(err!(span, "expected type {}, got {} instead", ty, value.ty));
         }
         Value { raw: value.raw, ty }
     }
@@ -31,12 +26,12 @@ impl<'i> Checker<'i> {
     fn make_type_union(&mut self, span: &Span, types: &[TypeRef<'i>]) -> TypeRef<'i> {
         let unqiue = vec![];
 
-        'outer: for ty in types {
-            for member in &unqiue {
+        'outer: for &ty in types {
+            for member in unqiue {
                 match ty.intersects(member) {
                     TypeOverlap::Complete => continue 'outer,
                     TypeOverlap::Partial => {
-                        self.msg(diagnostics::err!(
+                        self.msg(err!(
                             span,
                             "union members {} and {} may refer to the same type",
                             member,
@@ -49,17 +44,6 @@ impl<'i> Checker<'i> {
         }
 
         self.ty.get_union(unqiue)
-    }
-
-    fn try_returning(&mut self, value: TypeRef<'_>) {}
-
-    fn read_rt_value(&mut self, value: Object) -> TypeRef<'_> {
-        match value {
-            Object::Value(ty) | Object::Place(ty) => {
-                return ty;
-            }
-            _ => panic!(),
-        }
     }
 
     // fn bind(&mut self, pattern: &Pattern, value: Object) {
@@ -77,22 +61,65 @@ impl<'i> Checker<'i> {
     //     }
     // }
 
-    fn check_statement(&mut self, item: &BlockItem) -> Option<TypeRef<'_>> {
+    fn null(&self) -> Value<'_> {
+        Value {
+            raw: iiv::Value::NULL,
+            ty: self.ty.get_null(),
+        }
+    }
+
+    fn never(&self) -> Value<'_> {
+        Value {
+            raw: iiv::Value::NULL,
+            ty: self.ty.get_ty_never(),
+        }
+    }
+
+    fn invalid(&self) -> Value<'_> {
+        Value {
+            raw: iiv::Value::NULL,
+            ty: self.ty.get_ty_invalid(),
+        }
+    }
+
+    fn check_statement(&mut self, item: &BlockItem) -> Value<'_> {
         match item {
-            BlockItem::Expr(expr) => self.check(expr),
-            BlockItem::Break(Break) => {}
+            BlockItem::Expr(expr) => self.check_val(expr),
+            BlockItem::Break(_break) => self.never(),
             BlockItem::Return(ret) => {
-                self.try_returning(ret.value.map(|ref e| self.check(e)).unwrap_or(self.null()));
-                Object::Value(self.ty.get_ty_never())
+                self.ensure_ty(
+                    &ret.span,
+                    self.fun.sig.ret_ty,
+                    ret.value
+                        .map(|ref e| self.check_val(e))
+                        .unwrap_or(self.null()),
+                );
+                self.never()
             }
-            BlockItem::Continue(Continue) => {}
-            BlockItem::Bind(binding) => binding,
+            BlockItem::Continue(Continue) => self.never(),
+            BlockItem::Bind(binding) => self.null(),
         }
     }
 
     fn check_val(&mut self, expr: &Expr) -> Value {
         match self.check(expr) {
-            Object::IsResult => {}
+            Object::Trait => {
+                err!(expr.span(), "expected a value, found trait name");
+                self.invalid()
+            }
+            Object::Module => {
+                err!(expr.span(), "expected a value, found module");
+                self.invalid()
+            }
+            Object::Value(val) | Object::Place(val) => val,
+            Object::Type(ty) => Value {
+                raw: self.iiv.ty_expr(ty),
+                ty: self.ty.get_ty_type(),
+            },
+            Object::IsResult(raw) => Value {
+                raw,
+                ty: self.ty.get_ty_bool(),
+            },
         }
     }
 
@@ -213,36 +240,38 @@ impl<'i> Checker<'i> {
                                    // Object::Trait
                 }
             }
-            Expr::Field(Field) => {}
-            Expr::Index(Index) => {}
-            Expr::Cast(Cast) => {}
-            Expr::Add(Add) => {}
-            Expr::Mul(Mul) => {}
-            Expr::Eq(Equals) => {}
-            Expr::Neq(NotEquals) => {}
-            Expr::And(And) => {}
-            Expr::Or(Or) => {}
-            Expr::Geq(GreaterEq) => {}
-            Expr::Leq(LessEq) => {}
-            Expr::Lt(Less) => {}
-            Expr::Gt(Greater) => {}
-            Expr::Assign(Assign) => {}
-            Expr::Div(Div) => {}
-            Expr::Sub(Sub) => {}
-            Expr::Neg(Neg) => {}
-            Expr::Not(Not) => {}
-            Expr::Bs(Bs) => {}
-            Expr::Vec(Vector) => {}
-            Expr::Type(Type) => {}
-            Expr::Variant(Variant) => {}
-            Expr::AddAssign(AddAssign) => {}
-            Expr::Is(AddAssign) => {}
+            Expr::Field(Field) => unimplemented!(),
+            Expr::Index(Index) => unimplemented!(),
+            Expr::Cast(Cast) => unimplemented!(),
+            Expr::Add(Add) => unimplemented!(),
+            Expr::Mul(Mul) => unimplemented!(),
+            Expr::Eq(Equals) => unimplemented!(),
+            Expr::Neq(NotEquals) => unimplemented!(),
+            Expr::And(And) => unimplemented!(),
+            Expr::Or(Or) => unimplemented!(),
+            Expr::Geq(GreaterEq) => unimplemented!(),
+            Expr::Leq(LessEq) => unimplemented!(),
+            Expr::Lt(Less) => unimplemented!(),
+            Expr::Gt(Greater) => unimplemented!(),
+            Expr::Assign(Assign) => unimplemented!(),
+            Expr::Div(Div) => unimplemented!(),
+            Expr::Sub(Sub) => unimplemented!(),
+            Expr::Neg(Neg) => unimplemented!(),
+            Expr::Not(Not) => unimplemented!(),
+            Expr::Bs(Bs) => unimplemented!(),
+            Expr::Vec(Vector) => unimplemented!(),
+            Expr::Type(Type) => unimplemented!(),
+            Expr::Variant(Variant) => unimplemented!(),
+            Expr::AddAssign(AddAssign) => unimplemented!(),
+            Expr::Is(AddAssign) => unimplemented!(),
         }
     }
 }
 
 impl<'i> Checker<'i> {
-    fn resolve(&mut self, name: &Ident) -> Object<'_> {}
+    fn resolve(&mut self, name: &Ident) -> Object<'_> {
+        unimplemented!()
+    }
 }
 
 struct Value<'i> {

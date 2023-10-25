@@ -1,4 +1,4 @@
-use std::ops::BitAnd;
+use std::fmt;
 
 use crate::{
     pool::{self, List},
@@ -76,6 +76,7 @@ pub struct Pool<'i> {
     ty_list_pool: pool::ListPool<'i, TypeRef<'i>>,
     prop_pool: pool::Pool<'i, Prop<'i>>,
     prop_list_pool: pool::ListPool<'i, PropRef<'i>>,
+    shape_pool: pool::Pool<'i, Shape<'i>>,
     str_pool: &'i StrPool<'i>,
 }
 
@@ -139,6 +140,13 @@ impl<'i> Pool<'i> {
     pub fn get_ty_bool(&'i self) -> TypeRef<'i> {
         TypeRef(self.ty_pool.get(Type::Builtin(BuiltinType::Bool)))
     }
+
+    pub fn get_ty_type(&'i self) -> TypeRef<'i> {
+        TypeRef(
+            self.ty_pool
+                .get(Type::Type(ShapeRef(self.shape_pool.get(Shape::Any)))),
+        )
+    }
 }
 
 impl<'i> TypeRef<'i> {
@@ -157,18 +165,17 @@ impl<'i> TypeRef<'i> {
     }
 
     pub fn intersects(self, other: TypeRef<'i>) -> TypeOverlap {
-        match (*self.0, *other.0) {
-            (Type::Tuple(types), Type::Tuple(types2)) => overlap_list(types, types2),
-            (Type::Struct(props), Type::Struct(props2)) => overlap_props(props, props2),
-            (Type::Vector(ty), Type::Vector(ty2)) => ty.intersects(ty2),
-            (Type::Union(ty), Type::Union(ty2)) => overlap_list(ty, ty2),
-            (Type::Variant(props), Type::Variant(props2)) => overlap_props(props, props2),
-            (Type::Ref(ty), Type::Ref(ty2)) => ty.intersects(ty2),
+        match (&*self.0, &*other.0) {
+            (Type::Tuple(types), Type::Tuple(types2)) => overlap_list(*types, *types2),
+            (Type::Struct(props), Type::Struct(props2)) => overlap_props(*props, *props2),
+            (Type::Vector(ty), Type::Vector(ty2)) => ty.intersects(*ty2),
+            (Type::Union(ty), Type::Union(ty2)) => overlap_list(*ty, *ty2),
+            (Type::Variant(props), Type::Variant(props2)) => overlap_props(*props, *props2),
+            (Type::Ref(ty), Type::Ref(ty2)) => ty.intersects(*ty2),
             (Type::Type(s1), Type::Type(s2)) => if s1 == s2 { TypeOverlap::Complete } else { TypeOverlap::None },
             (Type::Constant(/* sth goes here I guess */), Type::Constant(/* sth goes here I guess */)) => TypeOverlap::Partial,
             // the rest is listed explicitly to cause errors when more kinds are added, instead of silently returning None
             (Type::Invalid, _) |
-            (Type::Builtin(_), _) |
             (Type::Tuple(_), _) |
             (Type::Struct(_), _) |
             (Type::Vector(_), _) |
@@ -212,4 +219,47 @@ pub enum TypeOverlap {
     None,
     Partial,
     Complete,
+}
+
+impl<'i> fmt::Display for TypeRef<'i> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &*self.0 {
+            Type::Invalid => write!(f, "{{unknown}}"),
+            Type::Tuple(fields) => {
+                write!(f, "(")?;
+                for field in fields.iter() {
+                    write!(f, "{}, ", field)?;
+                }
+                write!(f, ")")
+            }
+            Type::Struct(props) => {
+                write!(f, "{{")?;
+                for prop in props.iter() {
+                    write!(f, "{}: {}, ", prop.0 .0, prop.0 .1)?;
+                }
+                write!(f, "}}")
+            }
+            Type::Vector(elem) => write!(f, "[{}]", elem),
+            Type::Union(fields) => {
+                write!(f, "(")?;
+                for field in fields.iter() {
+                    write!(f, "{} | ", field)?;
+                }
+                write!(f, ")")
+            }
+            Type::Variant(props) => {
+                write!(f, "{{")?;
+                for prop in props.iter() {
+                    write!(f, "{}: {} | ", prop.0 .0, prop.0 .1)?;
+                }
+                write!(f, "}}")
+            }
+            Type::Ref(pointee) => write!(f, "ref {}", pointee),
+            Type::Type(ty) => write!(f, "type"),
+            Type::Constant() => write!(f, "T"),
+            Type::Builtin(BuiltinType::Bool) => write!(f, "bool"),
+            Type::Builtin(BuiltinType::Int) => write!(f, "int"),
+            Type::Builtin(BuiltinType::Null) => write!(f, "null"),
+        }
+    }
 }

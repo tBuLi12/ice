@@ -18,17 +18,17 @@ pub struct Diagnostic {
     level: Level,
 }
 
-fn error(span: ast::Span, message: String) -> Diagnostic {
+pub fn error(span: &ast::Span, message: String) -> Diagnostic {
     Diagnostic {
         message,
-        span,
+        span: *span,
         level: Level::Error,
     }
 }
 
 #[macro_export]
 macro_rules! err {
-    ($span:expr, $fmt:literal, $($val:expr),*) => {
-        error($span, format!($fmt $(,$val)*))
+    ($span:expr, $fmt:literal $(, $val:expr)*) => {
+        ::iiv::diagnostics::error($span, format!($fmt $(,$val)*))
     };
 }

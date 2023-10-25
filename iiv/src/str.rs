@@ -1,4 +1,4 @@
-use std::ops::Deref;
+use std::{fmt, ops::Deref};
 
 use crate::pool;
 
@@ -19,5 +19,11 @@ impl<'i> Deref for Str<'i> {
     type Target = str;
     fn deref(&self) -> &Self::Target {
         unsafe { std::str::from_utf8_unchecked(&*self.0) }
+    }
+}
+
+impl<'i> fmt::Display for Str<'i> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", *self)
     }
 }

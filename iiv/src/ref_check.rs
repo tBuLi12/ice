@@ -83,7 +83,9 @@ impl Path {
         false
     }
 
-    fn try_remove_prefix(&self, prefix: &Self) -> Option<Vec<Prop>> {}
+    fn try_remove_prefix(&self, prefix: &Self) -> Option<Vec<Prop>> {
+        unimplemented!()
+    }
 
     fn append(&mut self, tail: Vec<Prop>) {}
 
@@ -121,15 +123,23 @@ impl RefSet {
     fn write(&mut self, srcs: &[Path], dsts: &[Path]) {
         self.invalidate_refs_in(dsts);
 
-        for state in &mut self.0 {
+        for i in 0..self.0.len() {
             for dst in dsts {
-                if let Some(tail) = state.value - dst.clone() {
+                if let Some(tail) = self.0[i].value.clone() - dst.clone() {
                     if dsts.len() == 1 {
-                        state.sources.clear();
+                        self.0[i].sources.clear();
                     }
                     for src in srcs {
-                        let src_state = self.get(&(src.clone() + tail.clone()));
-                        state.sources.extend(src_state.sources.clone());
+                        let src_i = self.get_idx(&(src.clone() + tail.clone()));
+                        if i == src_i {
+                            continue;
+                        }
+                        unsafe {
+                            let state = &mut *self.0.as_mut_ptr().add(i);
+                            let src_state = &mut *self.0.as_mut_ptr().add(src_i);
+                            state.sources.extend(src_state.sources.clone());
+                            state.sources.dedup();
+                        }
                     }
                 }
             }
@@ -138,6 +148,13 @@ impl RefSet {
 
     fn get(&self, path: &Path) -> &RefState {
         self.0.iter().find(|state| &state.value == path).unwrap()
+    }
+
+    fn get_idx(&self, path: &Path) -> usize {
+        self.0
+            .iter()
+            .position(|state| &state.value == path)
+            .unwrap()
     }
 
     fn invalidate_refs_in(&mut self, set: &[Path]) {
@@ -160,13 +177,13 @@ impl RefSet {
         while let Some(path) = stack.pop() {
             let matched_path = self.0.iter().find_map(|ref_state| {
                 path.try_remove_prefix(&ref_state.value)
-                    .map(|rest| (rest, &ref_state))
+                    .map(|rest| (rest, ref_state))
             });
             match matched_path {
                 Some((rest, ref_state)) => {
-                    for source in ref_state.sources {
+                    for source in &ref_state.sources {
                         let mut new_source = source.clone();
-                        new_source.append(rest);
+                        new_source.append(rest.clone());
                         stack.push(new_source);
                     }
                 }
@@ -191,10 +208,6 @@ impl RefSet {
     }
 }
 
-struct Function {
-    body: Vec<Block>,
-}
-
 /*
     when a variable is written to:
         get the underlying storage of that variable
@@ -207,18 +220,19 @@ struct Function {
 */
 
 fn process(mut input: RefSet, block: &[Instruction]) -> RefSet {
-    for inst in &block.0 {
+    for inst in block {
         match inst {
             Instruction::Call(func_id, args) => {}
             Instruction::Assign(dst, src) => {
-                let dsts = input.get_underlying_paths(dst);
-                let srcs = input.get_underlying_paths(src);
+                let dsts = input.get_underlying_paths(*dst);
+                let srcs = input.get_underlying_paths(*src);
                 input.write(&srcs, &dsts);
             }
             Instruction::RefAssign(dst, src) => {
-                let paths = input.get_underlying_paths(*val);
-                input.write_to(&paths);
+                let paths = input.get_underlying_paths(*dst);
+                // input.write_to(&paths);
             }
+            _ => {}
         }
     }
     input
