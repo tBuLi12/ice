@@ -2,7 +2,7 @@ use std::{fmt, ops::Deref};
 
 use crate::pool;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub struct Str<'i>(pool::List<'i, u8>);
 
 pub struct StrPool<'i> {

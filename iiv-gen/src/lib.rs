@@ -1,16 +1,18 @@
-use ast::{BlockItem, Expr, Ident, Span};
+use ast::{BlockItem, Expr, Ident};
 use iiv::{
     diagnostics, err,
     ty::{TypeOverlap, TypeRef},
+    Span, Value,
 };
 
 mod ty;
 
 struct Checker<'i> {
     ty: iiv::ty::Pool<'i>,
+    int_pool: iiv::pool::Pool<'i, u32>,
     constant_depth: usize,
     fun: iiv::fun::Function<'i>,
-    iiv: iiv::builder::Builder,
+    iiv: iiv::builder::Builder<'i>,
 }
 
 impl<'i> Checker<'i> {
@@ -63,21 +65,21 @@ impl<'i> Checker<'i> {
 
     fn null(&self) -> Value<'_> {
         Value {
-            raw: iiv::Value::NULL,
+            raw: iiv::RawValue::NULL,
             ty: self.ty.get_null(),
         }
     }
 
     fn never(&self) -> Value<'_> {
         Value {
-            raw: iiv::Value::NULL,
+            raw: iiv::RawValue::NULL,
             ty: self.ty.get_ty_never(),
         }
     }
 
     fn invalid(&self) -> Value<'_> {
         Value {
-            raw: iiv::Value::NULL,
+            raw: iiv::RawValue::NULL,
             ty: self.ty.get_ty_invalid(),
         }
     }
@@ -101,21 +103,18 @@ impl<'i> Checker<'i> {
         }
     }
 
-    fn check_val(&mut self, expr: &Expr) -> Value {
-        match self.check(expr) {
+    fn get_val(&mut self, span: &Span, obj: Object<'i>) -> Value {
+        match obj {
             Object::Trait => {
-                err!(expr.span(), "expected a value, found trait name");
+                err!(span, "expected a value, found trait name");
                 self.invalid()
             }
             Object::Module => {
-                err!(expr.span(), "expected a value, found module");
+                err!(span, "expected a value, found module");
                 self.invalid()
             }
             Object::Value(val) | Object::Place(val) => val,
-            Object::Type(ty) => Value {
-                raw: self.iiv.ty_expr(ty),
-                ty: self.ty.get_ty_type(),
-            },
+            Object::Type(ty) => self.iiv.ty_expr(ty),
             Object::IsResult(raw) => Value {
                 raw,
                 ty: self.ty.get_ty_bool(),
@@ -123,24 +122,26 @@ impl<'i> Checker<'i> {
         }
     }
 
+    fn check_val(&mut self, expr: &Expr) -> Value {
+        self.get_val(expr.span(), self.check(expr))
+    }
+
     fn check_condition(&mut self, expr: &Expr) -> (Option<()>, Value) {
         match self.check(expr) {
-            Object::Place(val) | Object::Value(val) => {
-                self.ty_eq(val.ty, self.ty.get_ty_bool());
-                Value {
-                    raw: val,
-                    ty: self.ty.get_ty_bool(),
-                }
-            }
             Object::IsResult(raw_val) => {
-                Value {
+                let val = Value {
                     raw: raw_val,
                     ty: self.ty.get_ty_bool(),
-                }
+                };
+                (Some(()), val)
                 // fine, but close the scope later
             }
-            _ => panic!(),
-        };
+            obj => {
+                let val = self.get_val(expr.span(), obj);
+                let val = self.ensure_ty(expr.span(), self.ty.get_ty_bool(), val);
+                (None, val)
+            }
+        }
     }
 
     fn check(&mut self, expr: &Expr) -> Object {
@@ -152,25 +153,18 @@ impl<'i> Checker<'i> {
                     last = Some(self.check_statement(item));
                 }
                 if let (Some(value), true) = (last, block.has_trailing_expression) {
-                    Object::Value(value)
+                    value.obj()
                 } else {
-                    Object::Value(self.ty.get_null())
+                    self.null().obj()
                 }
             }
-            Expr::Int(int) => Object::Value(self.ty.get_int()),
-            Expr::Float(Float) => {}
-            Expr::String(StringLit) => {}
-            Expr::Char(Char) => {}
+            Expr::Int(int) => self.iiv.int_lit(int.value).obj(),
+            Expr::Float(Float) => unimplemented!(),
+            Expr::String(StringLit) => unimplemented!(),
+            Expr::Char(Char) => unimplemented!(),
             Expr::Tuple(tuple) => {
-                let items = tuple
-                    .fields
-                    .iter()
-                    .map(|e| match self.check(e) {
-                        Object::Value(ty) | Object::Place(ty) => ty,
-                        _ => self.ty.get_ty_invalid(),
-                    })
-                    .collect();
-                Object::Value(self.ty.get_tuple(items))
+                let items: Vec<_> = tuple.fields.iter().map(|e| self.check_val(e)).collect();
+                self.iiv.aggregate(&items).obj()
             }
             Expr::Struct(structure) => {
                 let mut is_const = true;
@@ -181,13 +175,11 @@ impl<'i> Checker<'i> {
                         let val = if let Some(expr) = prop.value {
                             self.check(&expr)
                         } else {
-                            self.resolve(&prop.name)
+                            self.resolve(&ast::Ident {
+                                span: prop.span,
+                                value: prop.name,
+                            })
                         };
-                        let ty = match val {
-                            Object::Value(ty) | Object::Place(ty) => ty,
-                            _ => self.ty.get_ty_invalid(),
-                        };
-                        self.ty.get_prop(prop.name, ty)
                     })
                     .collect();
                 Object::Value(self.ty.get_struct(props))
@@ -274,9 +266,14 @@ impl<'i> Checker<'i> {
     }
 }
 
-struct Value<'i> {
-    raw: iiv::Value,
-    ty: TypeRef<'i>,
+trait ObjContent<'i> {
+    fn obj(self) -> Object<'i>;
+}
+
+impl<'i> ObjContent<'i> for Value<'i> {
+    fn obj(self) -> Object<'i> {
+        Object::Value(self)
+    }
 }
 
 enum Object<'i> {
@@ -285,5 +282,5 @@ enum Object<'i> {
     Value(Value<'i>),
     Place(Value<'i>),
     Type(TypeRef<'i>),
-    IsResult(iiv::Value),
+    IsResult(iiv::RawValue),
 }

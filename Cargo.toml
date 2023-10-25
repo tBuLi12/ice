@@ -4,4 +4,5 @@ members = [
     "ast",
     "iiv",
     "iiv-gen",
+    "iiv-cl",
 ]

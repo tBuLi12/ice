@@ -72,10 +72,10 @@ use std::{
     ops::{Add, Sub},
 };
 
-use crate::{Instruction, Prop, Value};
+use crate::{Instruction, Prop, RawValue};
 
 #[derive(Clone, PartialEq, Eq)]
-struct Path(Value, Vec<Prop>);
+struct Path(RawValue, Vec<Prop>);
 
 impl Path {
     /// 'contains' in the context of memory, not the string representation (eg. this.prop contains this.prop.nested)
@@ -89,7 +89,7 @@ impl Path {
 
     fn append(&mut self, tail: Vec<Prop>) {}
 
-    fn is_var(&self, val: Value) -> bool {
+    fn is_var(&self, val: RawValue) -> bool {
         self.1.is_empty() && self.0 == val
     }
 }
@@ -194,7 +194,7 @@ impl RefSet {
         paths
     }
 
-    fn get_underlying_paths(&self, value: Value) -> Vec<Path> {
+    fn get_underlying_paths(&self, value: RawValue) -> Vec<Path> {
         self.0
             .iter()
             .find_map(|state| {

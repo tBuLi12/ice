@@ -1,9 +1,10 @@
 [package]
-name = "iiv"
+name = "iiv-cl"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-thiserror = "1.0.50"
+cranelift = "0.101.1"
+iiv = { path = "../iiv" }

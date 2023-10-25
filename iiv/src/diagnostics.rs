@@ -1,4 +1,4 @@
-use crate::ty::TypeRef;
+use crate::{ty::TypeRef, Span};
 
 // pub trait Error {
 //     fn span(&self) -> ast::Span;
@@ -14,11 +14,11 @@ enum Level {
 
 pub struct Diagnostic {
     message: String,
-    span: ast::Span,
+    span: Span,
     level: Level,
 }
 
-pub fn error(span: &ast::Span, message: String) -> Diagnostic {
+pub fn error(span: &Span, message: String) -> Diagnostic {
     Diagnostic {
         message,
         span: *span,

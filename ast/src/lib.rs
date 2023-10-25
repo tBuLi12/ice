@@ -1,97 +1,90 @@
-#[derive(Debug, Clone, Copy)]
-pub struct Span {
-    pub first_line: u32,
-    pub last_line: u32,
-    pub begin_offset: u32,
-    pub begin_highlight_offset: u32,
-    pub end_highlight_offset: u32,
-}
+use iiv::Span;
 
 #[derive(Debug)]
-pub struct Ident {
+pub struct Ident<'i> {
     pub span: Span,
-    pub value: String,
+    pub value: iiv::str::Str<'i>,
 }
 
 #[derive(Debug)]
-pub enum Type {
-    Named(NamedType),
-    Tuple(TupleType),
-    Struct(StructType),
-    Vector(VectorType),
-    Union(UnionType),
-    Variant(VariantType),
+pub enum Type<'i> {
+    Named(NamedType<'i>),
+    Tuple(TupleType<'i>),
+    Struct(StructType<'i>),
+    Vector(VectorType<'i>),
+    Union(UnionType<'i>),
+    Variant(VariantType<'i>),
 }
 
 #[derive(Debug)]
-pub struct NamedType {
+pub struct NamedType<'i> {
     pub span: Span,
-    pub name: Path,
-    pub type_argument_names: Vec<Type>,
+    pub name: Path<'i>,
+    pub type_argument_names: Vec<Type<'i>>,
 }
 
 #[derive(Debug)]
-pub struct TupleType {
+pub struct TupleType<'i> {
     pub span: Span,
-    pub fields: Vec<Type>,
+    pub fields: Vec<Type<'i>>,
 }
 
 #[derive(Debug)]
-pub struct StructType {
+pub struct StructType<'i> {
     pub span: Span,
-    pub properties: Vec<PropertyDeclaration>,
+    pub properties: Vec<PropertyDeclaration<'i>>,
 }
 
 #[derive(Debug)]
-pub struct PropertyDeclaration {
+pub struct PropertyDeclaration<'i> {
     pub span: Span,
     pub name: String,
-    pub typ: Type,
+    pub typ: Type<'i>,
 }
 
 #[derive(Debug)]
-pub struct VariantDeclaration {
+pub struct VariantDeclaration<'i> {
     pub span: Span,
     pub name: String,
-    pub typ: Option<Type>,
+    pub typ: Option<Type<'i>>,
 }
 
 #[derive(Debug)]
-pub struct UnionType {
+pub struct UnionType<'i> {
     pub span: Span,
-    pub elements: Vec<Type>,
+    pub elements: Vec<Type<'i>>,
 }
 
 #[derive(Debug)]
-pub struct VariantType {
+pub struct VariantType<'i> {
     pub span: Span,
-    pub variants: Vec<VariantDeclaration>,
+    pub variants: Vec<VariantDeclaration<'i>>,
 }
 
 #[derive(Debug)]
-pub struct VectorType {
+pub struct VectorType<'i> {
     pub span: Span,
-    pub element_ty: Box<Type>,
+    pub element_ty: Box<Type<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Path {
+pub struct Path<'i> {
     pub span: Span,
-    pub segments: Vec<String>,
+    pub segments: Vec<&'i str>,
 }
 
 #[derive(Debug)]
-pub struct Trait {
+pub struct Trait<'i> {
     pub span: Span,
-    pub name: Path,
-    pub type_args: Vec<Type>,
+    pub name: Path<'i>,
+    pub type_args: Vec<Type<'i>>,
 }
 
 #[derive(Debug)]
-pub struct TypeParam {
+pub struct TypeParam<'i> {
     pub span: Span,
-    pub name: Ident,
-    pub trait_bounds: Vec<Trait>,
+    pub name: Ident<'i>,
+    pub trait_bounds: Vec<Trait<'i>>,
 }
 
 #[derive(Debug)]
@@ -102,129 +95,129 @@ pub enum Visibility {
 }
 
 #[derive(Debug)]
-pub struct TypeDecl {
+pub struct TypeDecl<'i> {
     pub span: Span,
-    pub name: Ident,
-    pub type_params: Vec<TypeParam>,
+    pub name: Ident<'i>,
+    pub type_params: Vec<TypeParam<'i>>,
     pub visibility: Visibility,
     pub proto_visibility: Visibility,
-    pub proto: Type,
+    pub proto: Type<'i>,
 }
 
 #[derive(Debug)]
-pub struct TraitDecl {
+pub struct TraitDecl<'i> {
     pub span: Span,
-    pub name: Ident,
-    pub type_params: Vec<TypeParam>,
-    pub signatures: Vec<Signature>,
+    pub name: Ident<'i>,
+    pub type_params: Vec<TypeParam<'i>>,
+    pub signatures: Vec<Signature<'i>>,
     pub visibility: Visibility,
 }
 
 #[derive(Debug)]
-pub struct Parameter {
+pub struct Parameter<'i> {
     pub span: Span,
-    pub name: Ident,
-    pub ty: Type,
+    pub name: Ident<'i>,
+    pub ty: Type<'i>,
 }
 
 #[derive(Debug)]
-pub struct Signature {
+pub struct Signature<'i> {
     pub span: Span,
-    pub name: Ident,
+    pub name: Ident<'i>,
     pub is_mut: bool,
-    pub type_params: Vec<TypeParam>,
-    pub params: Vec<Parameter>,
-    pub return_ty: Option<Type>,
+    pub type_params: Vec<TypeParam<'i>>,
+    pub params: Vec<Parameter<'i>>,
+    pub return_ty: Option<Type<'i>>,
     pub visibility: Visibility,
 }
 
 #[derive(Debug)]
-pub struct Function {
-    pub signature: Signature,
-    pub body: Expr,
+pub struct Function<'i> {
+    pub signature: Signature<'i>,
+    pub body: Expr<'i>,
 }
 
 #[derive(Debug)]
-pub struct TraitBound {
-    pub ty: Type,
-    pub tr: Trait,
+pub struct TraitBound<'i> {
+    pub ty: Type<'i>,
+    pub tr: Trait<'i>,
 }
 
 #[derive(Debug)]
-pub struct Promotion {
+pub struct Promotion<'i> {
     pub span: Span,
-    pub prop: Ident,
+    pub prop: Ident<'i>,
 }
 
 #[derive(Debug)]
-pub struct Impl {
+pub struct Impl<'i> {
     pub span: Span,
-    pub ty: Type,
-    pub type_params: Vec<TypeParam>,
-    pub promotions: Vec<Promotion>,
-    pub functions: Vec<Function>,
-    pub where_clause: Vec<TraitBound>,
+    pub ty: Type<'i>,
+    pub type_params: Vec<TypeParam<'i>>,
+    pub promotions: Vec<Promotion<'i>>,
+    pub functions: Vec<Function<'i>>,
+    pub where_clause: Vec<TraitBound<'i>>,
 }
 
 #[derive(Debug)]
-pub struct TraitImpl {
+pub struct TraitImpl<'i> {
     pub span: Span,
-    pub ty: Type,
-    pub tr: Trait,
-    pub type_params: Vec<TypeParam>,
-    pub functions: Vec<Function>,
+    pub ty: Type<'i>,
+    pub tr: Trait<'i>,
+    pub type_params: Vec<TypeParam<'i>>,
+    pub functions: Vec<Function<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Import {
+pub struct Import<'i> {
     pub span: Span,
-    pub name: Ident,
+    pub name: Ident<'i>,
     pub path: String,
     pub visibility: Visibility,
 }
 
 #[derive(Debug)]
-pub struct Module {
-    pub imports: Vec<Import>,
-    pub functions: Vec<Function>,
-    pub types: Vec<TypeDecl>,
-    pub traits: Vec<TraitDecl>,
-    pub impls: Vec<Impl>,
-    pub trait_impls: Vec<TraitImpl>,
+pub struct Module<'i> {
+    pub imports: Vec<Import<'i>>,
+    pub functions: Vec<Function<'i>>,
+    pub types: Vec<TypeDecl<'i>>,
+    pub traits: Vec<TraitDecl<'i>>,
+    pub impls: Vec<Impl<'i>>,
+    pub trait_impls: Vec<TraitImpl<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Block {
+pub struct Block<'i> {
     pub span: Span,
-    pub items: Vec<BlockItem>,
+    pub items: Vec<BlockItem<'i>>,
     pub has_trailing_expression: bool,
 }
 
 #[derive(Debug)]
-pub enum BlockItem {
-    Expr(Expr),
-    Break(Break),
-    Return(Return),
-    Continue(Continue),
-    Bind(Binding),
+pub enum BlockItem<'i> {
+    Expr(Expr<'i>),
+    Break(Break<'i>),
+    Return(Return<'i>),
+    Continue(Continue<'i>),
+    Bind(Binding<'i>),
 }
 
 #[derive(Debug)]
-pub struct Break {
+pub struct Break<'i> {
     pub span: Span,
-    pub value: Option<Expr>,
+    pub value: Option<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Return {
+pub struct Return<'i> {
     pub span: Span,
-    pub value: Option<Expr>,
+    pub value: Option<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Continue {
+pub struct Continue<'i> {
     pub span: Span,
-    pub value: Option<Expr>,
+    pub value: Option<Expr<'i>>,
 }
 
 #[derive(Debug)]
@@ -235,106 +228,106 @@ pub enum BindingType {
 }
 
 #[derive(Debug)]
-pub struct Binding {
+pub struct Binding<'i> {
     pub span: Span,
-    pub binding: Pattern,
-    pub value: Expr,
+    pub binding: Pattern<'i>,
+    pub value: Expr<'i>,
 }
 
 #[derive(Debug)]
-pub struct Pattern {
+pub struct Pattern<'i> {
     pub span: Span,
-    pub body: PatternBody,
-    pub guard: Option<Expr>,
+    pub body: PatternBody<'i>,
+    pub guard: Option<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub enum PatternBody {
-    Tuple(Vec<Pattern>),
-    Struct(Vec<(Ident, Pattern)>),
-    Variant(Box<Pattern>),
-    NarrowType(Box<(Pattern, Expr)>),
-    Named(Ident, Box<Pattern>),
-    Vector(Vec<Pattern>),
-    NarrowTraitBounds(Box<(Pattern, Expr)>),
-    UnionTy(Vec<Pattern>),
-    VariantTy(Vec<(Ident, Pattern)>),
-    NamedTy(Ident, Vec<Pattern>),
-    Type(Box<Pattern>),
-    Bind(BindingType, Ident),
+pub enum PatternBody<'i> {
+    Tuple(Vec<Pattern<'i>>),
+    Struct(Vec<(Ident<'i>, Pattern<'i>)>),
+    Variant(Box<Pattern<'i>>),
+    NarrowType(Box<(Pattern<'i>, Expr<'i>)>),
+    Named(Ident<'i>, Box<Pattern<'i>>),
+    Vector(Vec<Pattern<'i>>),
+    NarrowTraitBounds(Box<(Pattern<'i>, Expr<'i>)>),
+    UnionTy(Vec<Pattern<'i>>),
+    VariantTy(Vec<(Ident<'i>, Pattern<'i>)>),
+    NamedTy(Ident<'i>, Vec<Pattern<'i>>),
+    Type(Box<Pattern<'i>>),
+    Bind(BindingType, Ident<'i>),
 }
 
 #[derive(Debug)]
-pub enum DestructureProp {
-    Explicit(DestructureExplicitProp),
-    Implicit(DestructureImplicitProp),
+pub enum DestructureProp<'i> {
+    Explicit(DestructureExplicitProp<'i>),
+    Implicit(DestructureImplicitProp<'i>),
 }
 
 #[derive(Debug)]
-pub struct DestructureExplicitProp {
+pub struct DestructureExplicitProp<'i> {
     pub span: Span,
-    pub prop: Ident,
-    pub pattern: PatternBody,
+    pub prop: Ident<'i>,
+    pub pattern: PatternBody<'i>,
 }
 
 #[derive(Debug)]
-pub struct DestructureImplicitProp {
+pub struct DestructureImplicitProp<'i> {
     pub span: Span,
-    pub prop: Expr,
+    pub prop: Expr<'i>,
 }
 
 #[derive(Debug)]
-pub struct DestructureStruct {
+pub struct DestructureStruct<'i> {
     pub span: Span,
-    pub props: Vec<DestructureProp>,
-    pub name: Option<NamedType>,
+    pub props: Vec<DestructureProp<'i>>,
+    pub name: Option<NamedType<'i>>,
 }
 
 #[derive(Debug)]
-pub struct DestructureTuple {
+pub struct DestructureTuple<'i> {
     pub span: Span,
-    pub fields: Vec<Pattern>,
-    pub name: Option<NamedType>,
+    pub fields: Vec<Pattern<'i>>,
+    pub name: Option<NamedType<'i>>,
 }
 
 #[derive(Debug)]
-pub struct DestructureVector {
+pub struct DestructureVector<'i> {
     pub span: Span,
-    pub items: Vec<ElementPattern>,
+    pub items: Vec<ElementPattern<'i>>,
 }
 
 #[derive(Debug)]
-pub enum ElementPattern {
-    Rest(Rest),
-    Pattern(Pattern),
+pub enum ElementPattern<'i> {
+    Rest(Rest<'i>),
+    Pattern(Pattern<'i>),
 }
 
 #[derive(Debug)]
-pub struct Rest {
+pub struct Rest<'i> {
     pub span: Span,
-    pub binding: Option<Ident>,
+    pub binding: Option<Ident<'i>>,
 }
 
 #[derive(Debug)]
-pub struct DestructureUnion {
+pub struct DestructureUnion<'i> {
     pub span: Span,
-    pub ty: Type,
-    pub pattern: Box<Pattern>,
+    pub ty: Type<'i>,
+    pub pattern: Box<Pattern<'i>>,
 }
 #[derive(Debug)]
-pub struct DestructureVariant {
+pub struct DestructureVariant<'i> {
     pub span: Span,
-    pub name: Ident,
-    pub pattern: Option<Box<Pattern>>,
+    pub name: Ident<'i>,
+    pub pattern: Option<Box<Pattern<'i>>>,
 }
 
 #[derive(Debug)]
-pub enum Destructure {
-    Struct(DestructureStruct),
-    Tuple(DestructureTuple),
-    Vector(DestructureVector),
-    Union(DestructureUnion),
-    Variant(DestructureVariant),
+pub enum Destructure<'i> {
+    Struct(DestructureStruct<'i>),
+    Tuple(DestructureTuple<'i>),
+    Vector(DestructureVector<'i>),
+    Union(DestructureUnion<'i>),
+    Variant(DestructureVariant<'i>),
 }
 
 #[derive(Debug)]
@@ -350,9 +343,9 @@ pub struct Float {
 }
 
 #[derive(Debug)]
-pub struct StringLit {
+pub struct StringLit<'i> {
     pub span: Span,
-    pub value: String,
+    pub value: &'i str,
 }
 
 #[derive(Debug)]
@@ -362,296 +355,296 @@ pub struct Char {
 }
 
 #[derive(Debug)]
-pub struct Tuple {
+pub struct Tuple<'i> {
     pub span: Span,
-    pub fields: Vec<Expr>,
+    pub fields: Vec<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Struct {
+pub struct Struct<'i> {
     pub span: Span,
-    pub props: Vec<StructProp>,
-    pub ty: Option<NamedType>,
+    pub props: Vec<StructProp<'i>>,
+    pub ty: Option<NamedType<'i>>,
 }
 
 #[derive(Debug)]
-pub struct StructProp {
+pub struct StructProp<'i> {
     pub span: Span,
-    pub name: String,
-    pub value: Option<Expr>,
+    pub name: iiv::str::Str<'i>,
+    pub value: Option<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct If {
+pub struct If<'i> {
     pub span: Span,
-    pub condition: Box<Expr>,
-    pub yes: Box<Expr>,
-    pub no: Option<Box<Expr>>,
+    pub condition: Box<Expr<'i>>,
+    pub yes: Box<Expr<'i>>,
+    pub no: Option<Box<Expr<'i>>>,
 }
 
 #[derive(Debug)]
-pub struct While {
+pub struct While<'i> {
     pub span: Span,
-    pub condition: Box<Expr>,
-    pub body: Box<Expr>,
+    pub condition: Box<Expr<'i>>,
+    pub body: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Match {
+pub struct Match<'i> {
     pub span: Span,
-    pub scrutinee: Box<Expr>,
-    pub body: Vec<MatchCase>,
+    pub scrutinee: Box<Expr<'i>>,
+    pub body: Vec<MatchCase<'i>>,
 }
 
 #[derive(Debug)]
-pub struct MatchCase {
+pub struct MatchCase<'i> {
     pub span: Span,
-    pub pattern: Pattern,
-    pub value: MatchArm,
+    pub pattern: Pattern<'i>,
+    pub value: MatchArm<'i>,
 }
 
 #[derive(Debug)]
-pub enum MatchArm {
-    Break(Break),
-    Return(Return),
-    Continue(Continue),
-    Expr(Expr),
+pub enum MatchArm<'i> {
+    Break(Break<'i>),
+    Return(Return<'i>),
+    Continue(Continue<'i>),
+    Expr(Expr<'i>),
 }
 
 #[derive(Debug)]
-pub struct Call {
+pub struct Call<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub type_args: Vec<Type>,
-    pub args: Vec<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub type_args: Vec<Type<'i>>,
+    pub args: Vec<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Prop {
+pub struct Prop<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub prop: Ident,
-    pub tr: Option<Trait>,
+    pub lhs: Box<Expr<'i>>,
+    pub prop: Ident<'i>,
+    pub tr: Option<Trait<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Field {
+pub struct Field<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
     pub prop: Int,
 }
 
 #[derive(Debug)]
-pub struct Index {
+pub struct Index<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub index: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub index: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Cast {
+pub struct Cast<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub ty: Type,
+    pub lhs: Box<Expr<'i>>,
+    pub ty: Type<'i>,
 }
 
 #[derive(Debug)]
-pub struct Add {
+pub struct Add<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Sub {
+pub struct Sub<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Mul {
+pub struct Mul<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Div {
+pub struct Div<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct And {
+pub struct And<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Or {
+pub struct Or<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Greater {
+pub struct Greater<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Less {
+pub struct Less<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct GreaterEq {
+pub struct GreaterEq<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct LessEq {
+pub struct LessEq<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Equals {
+pub struct Equals<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Is {
+pub struct Is<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Pattern>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Pattern<'i>>,
 }
 
 #[derive(Debug)]
-pub struct NotEquals {
+pub struct NotEquals<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Assign {
+pub struct Assign<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Not {
+pub struct Not<'i> {
     pub span: Span,
-    pub rhs: Box<Expr>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Neg {
+pub struct Neg<'i> {
     pub span: Span,
-    pub rhs: Box<Expr>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct Bs {
+pub struct Bs<'i> {
     pub span: Span,
-    pub rhs: Box<Expr>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub struct AddAssign {
+pub struct AddAssign<'i> {
     pub span: Span,
-    pub lhs: Box<Expr>,
-    pub rhs: Box<Expr>,
+    pub lhs: Box<Expr<'i>>,
+    pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub enum VectorItem {
-    Spread(Spread),
-    Expr(Expr),
+pub enum VectorItem<'i> {
+    Spread(Spread<'i>),
+    Expr(Expr<'i>),
 }
 
 #[derive(Debug)]
-pub struct Spread {
+pub struct Spread<'i> {
     pub span: Span,
-    pub value: Expr,
+    pub value: Expr<'i>,
 }
 
 #[derive(Debug)]
-pub enum VectorBody {
-    Type(Type),
-    Items(Vec<VectorItem>),
+pub enum VectorBody<'i> {
+    Type(Type<'i>),
+    Items(Vec<VectorItem<'i>>),
 }
 
 #[derive(Debug)]
-pub struct Vector {
+pub struct Vector<'i> {
     pub span: Span,
-    pub body: VectorBody,
+    pub body: VectorBody<'i>,
 }
 
 #[derive(Debug)]
-pub struct Variant {
+pub struct Variant<'i> {
     pub span: Span,
-    pub ty: Option<NamedType>,
-    pub variant: Ident,
-    pub value: Option<Box<Expr>>,
+    pub ty: Option<NamedType<'i>>,
+    pub variant: Ident<'i>,
+    pub value: Option<Box<Expr<'i>>>,
 }
 
 #[derive(Debug)]
-pub enum Expr {
-    Variable(Ident),
-    Block(Block),
+pub enum Expr<'i> {
+    Variable(Ident<'i>),
+    Block(Block<'i>),
     Int(Int),
     Float(Float),
-    String(StringLit),
+    String(StringLit<'i>),
     Char(Char),
-    Tuple(Tuple),
-    Struct(Struct),
-    If(If),
-    While(While),
-    Match(Match),
-    Call(Call),
-    Prop(Prop),
-    Field(Field),
-    Index(Index),
-    Cast(Cast),
-    Add(Add),
-    Mul(Mul),
-    Eq(Equals),
-    Neq(NotEquals),
-    And(And),
-    Or(Or),
-    Geq(GreaterEq),
-    Leq(LessEq),
-    Lt(Less),
-    Gt(Greater),
-    Assign(Assign),
-    Div(Div),
-    Sub(Sub),
-    Neg(Neg),
-    Not(Not),
-    Bs(Bs),
-    Vec(Vector),
-    Type(Type),
-    Variant(Variant),
-    AddAssign(AddAssign),
-    Is(Is),
+    Tuple(Tuple<'i>),
+    Struct(Struct<'i>),
+    If(If<'i>),
+    While(While<'i>),
+    Match(Match<'i>),
+    Call(Call<'i>),
+    Prop(Prop<'i>),
+    Field(Field<'i>),
+    Index(Index<'i>),
+    Cast(Cast<'i>),
+    Add(Add<'i>),
+    Mul(Mul<'i>),
+    Eq(Equals<'i>),
+    Neq(NotEquals<'i>),
+    And(And<'i>),
+    Or(Or<'i>),
+    Geq(GreaterEq<'i>),
+    Leq(LessEq<'i>),
+    Lt(Less<'i>),
+    Gt(Greater<'i>),
+    Assign(Assign<'i>),
+    Div(Div<'i>),
+    Sub(Sub<'i>),
+    Neg(Neg<'i>),
+    Not(Not<'i>),
+    Bs(Bs<'i>),
+    Vec(Vector<'i>),
+    Type(Type<'i>),
+    Variant(Variant<'i>),
+    AddAssign(AddAssign<'i>),
+    Is(Is<'i>),
 }
 
-impl Expr {
+impl<'i> Expr<'i> {
     pub fn span(&self) -> &Span {
         unimplemented!()
     }

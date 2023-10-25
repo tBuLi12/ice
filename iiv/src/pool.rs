@@ -8,10 +8,43 @@ use std::{
     ptr, slice,
 };
 
-struct RawPool<'i, T> {
-    types_bufs: Vec<Box<[MaybeUninit<T>]>>,
-    index: HashMap<&'i T, Ref<'i, T>>,
+use crate::{fun, str::Str};
+
+struct PinnedVec<T> {
+    bufs: Vec<Box<[MaybeUninit<T>]>>,
     next_idx: usize,
+}
+
+impl<T> PinnedVec<T> {
+    fn get_new_box(size: usize) -> Box<[MaybeUninit<T>]> {
+        let layout = Layout::array::<MaybeUninit<T>>(size).unwrap();
+        assert!(layout.size() != 0);
+        let raw_buf = unsafe { alloc::alloc(layout) }.cast::<MaybeUninit<T>>();
+        let slice_ptr = ptr::slice_from_raw_parts_mut(raw_buf, size);
+        unsafe { Box::from_raw(slice_ptr) }
+    }
+
+    fn new() -> Self {
+        PinnedVec {
+            bufs: vec![Self::get_new_box(64)],
+            next_idx: 0,
+        }
+    }
+
+    fn next(&mut self) -> &mut MaybeUninit<T> {
+        let len = self.bufs.last().unwrap().len();
+        if self.next_idx == len {
+            self.next_idx = 0;
+            self.bufs.push(Self::get_new_box(len * 2));
+        }
+        let last = self.bufs.last_mut().unwrap();
+        &mut last[self.next_idx]
+    }
+}
+
+struct RawPool<'i, T> {
+    index: HashMap<&'i T, Ref<'i, T>>,
+    storage: PinnedVec<T>,
 }
 
 #[derive(Debug)]
@@ -62,29 +95,14 @@ impl<'i, T: Hash + Eq> RawPool<'i, T> {
     }
 
     fn put(&mut self, value: T) -> Ref<'_, T> {
-        let len = self.types_bufs.last().unwrap().len();
-        if self.next_idx == len {
-            self.next_idx = 0;
-            self.types_bufs.push(Self::get_new_box(len * 2));
-        }
-        let last = self.types_bufs.last_mut().unwrap();
-        Ref(last[self.next_idx].write(value))
+        Ref(self.storage.next().write(value))
     }
 
     fn new() -> Self {
         Self {
-            types_bufs: vec![Self::get_new_box(64)],
             index: HashMap::new(),
-            next_idx: 0,
+            storage: PinnedVec::new(),
         }
-    }
-
-    fn get_new_box(size: usize) -> Box<[MaybeUninit<T>]> {
-        let layout = Layout::array::<MaybeUninit<T>>(size).unwrap();
-        assert!(layout.size() != 0);
-        let raw_buf = unsafe { alloc::alloc(layout) }.cast::<MaybeUninit<T>>();
-        let slice_ptr = ptr::slice_from_raw_parts_mut(raw_buf, size);
-        unsafe { Box::from_raw(slice_ptr) }
     }
 }
 
@@ -94,6 +112,7 @@ struct RawListPool<'i, T> {
     next_idx: usize,
 }
 
+#[derive(Debug)]
 pub struct List<'i, T>(&'i [T]);
 
 impl<'i, T> Deref for List<'i, T> {
@@ -211,4 +230,12 @@ impl<'i, T: Hash + Eq + Ord> ListPool<'i, T> {
         value.dedup();
         self.get(value)
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct FuncRef<'i>(&'i fun::Function<'i>);
+
+pub struct FunPool<'i> {
+    storage: PinnedVec<fun::Function<'i>>,
+    index: HashMap<Str<'i>, FuncRef<'i>>,
 }

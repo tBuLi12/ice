@@ -1,7 +1,7 @@
-use crate::{ty::TypeRef, Instruction, Label, Value};
+use crate::{pool, ty::TypeRef, Instruction, Label, Value};
 
-pub struct Builder {
-    blocks: Vec<Vec<Instruction>>,
+pub struct Builder<'i> {
+    blocks: Vec<Vec<Instruction<'i>>>,
     current_block: usize,
 }
 
@@ -10,7 +10,7 @@ pub struct Block {
     idx: usize,
 }
 
-impl Builder {
+impl<'i> Builder<'i> {
     fn new() -> Self {
         Builder {
             blocks: vec![vec![]],
@@ -34,7 +34,9 @@ impl Builder {
     // pub fn call(&mut self, func: FuncId, args: &[Value]) -> Value {}
     // pub fn assign(&mut self, lhs: Value, rhs: Value) -> Value {}
     // pub fn ref_assign(&mut self, lhs: Value, rhs: Value) -> Value {}
-    // pub fn aggregate(&mut self, values: &[Value]) -> Value {}
+    pub fn aggregate(&mut self, values: &[Value]) -> Value {
+        unimplemented!()
+    }
     // pub fn name(&mut self, value: Value, ty: TypeId) -> Value {}
     // pub fn vector(&mut self, values: &[Value]) -> Value {}
     // pub fn get_prop(&mut self, value: Value, prop: Prop) -> Value {}
@@ -50,6 +52,10 @@ impl Builder {
         unimplemented!()
     }
     pub fn ty_expr(&mut self, ty: TypeRef<'_>) -> Value {
+        unimplemented!()
+    }
+
+    pub fn int_lit(&mut self, value: u32) -> Value {
         unimplemented!()
     }
 
