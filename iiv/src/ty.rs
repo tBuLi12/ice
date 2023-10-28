@@ -3,15 +3,16 @@ use std::fmt;
 use crate::{
     pool::{self, List},
     str::{Str, StrPool},
+    RawValue,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct TypeRef<'i>(pool::Ref<'i, Type<'i>>);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct ShapeRef<'i>(pool::Ref<'i, Shape<'i>>);
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PropRef<'i>(pool::Ref<'i, Prop<'i>>);
 
 impl<'i> PartialOrd for PropRef<'i> {
@@ -37,14 +38,14 @@ pub struct Named<'i> {
     pub proto: &'i Type<'i>,
 }
 
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum BuiltinType {
     Null,
     Int,
     Bool,
 }
 
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Type<'i> {
     Tuple(List<'i, TypeRef<'i>>),
     Struct(List<'i, PropRef<'i>>),
@@ -54,12 +55,12 @@ pub enum Type<'i> {
     Ref(TypeRef<'i>),
     // Named(Named<'i>),
     Type(ShapeRef<'i>),
-    Constant(/* sth goes here I guess */),
+    Constant(RawValue),
     Builtin(BuiltinType), // Named(Named<'i>),
     Invalid,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub enum Shape<'i> {
     Any,
     Tuple(ShapeRef<'i>),
@@ -68,7 +69,7 @@ pub enum Shape<'i> {
     Union(ShapeRef<'i>),
 }
 
-#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct Prop<'i>(Str<'i>, TypeRef<'i>);
 
 pub struct Pool<'i> {
@@ -77,15 +78,26 @@ pub struct Pool<'i> {
     prop_pool: pool::Pool<'i, Prop<'i>>,
     prop_list_pool: pool::ListPool<'i, PropRef<'i>>,
     shape_pool: pool::Pool<'i, Shape<'i>>,
-    str_pool: &'i StrPool<'i>,
+    pub str_pool: StrPool<'i>,
 }
 
 impl<'i> Pool<'i> {
+    pub fn new() -> Self {
+        Pool {
+            ty_pool: pool::Pool::new(),
+            ty_list_pool: pool::ListPool::new(),
+            prop_pool: pool::Pool::new(),
+            prop_list_pool: pool::ListPool::new(),
+            shape_pool: pool::Pool::new(),
+            str_pool: crate::str::StrPool::new(),
+        }
+    }
+
     pub fn get_tuple(&'i self, types: Vec<TypeRef<'i>>) -> TypeRef<'i> {
         TypeRef(self.ty_pool.get(Type::Tuple(self.get_ty_list(types))))
     }
 
-    fn get_ty_list(&'i self, types: Vec<TypeRef<'i>>) -> List<'i, TypeRef<'i>> {
+    pub fn get_ty_list(&'i self, types: Vec<TypeRef<'i>>) -> List<'i, TypeRef<'i>> {
         self.ty_list_pool.get(types)
     }
 
@@ -147,6 +159,10 @@ impl<'i> Pool<'i> {
                 .get(Type::Type(ShapeRef(self.shape_pool.get(Shape::Any)))),
         )
     }
+
+    pub fn get_ty_constant(&'i self, val: RawValue) -> TypeRef<'i> {
+        TypeRef(self.ty_pool.get(Type::Constant(val)))
+    }
 }
 
 impl<'i> TypeRef<'i> {
@@ -172,19 +188,31 @@ impl<'i> TypeRef<'i> {
             (Type::Union(ty), Type::Union(ty2)) => overlap_list(*ty, *ty2),
             (Type::Variant(props), Type::Variant(props2)) => overlap_props(*props, *props2),
             (Type::Ref(ty), Type::Ref(ty2)) => ty.intersects(*ty2),
-            (Type::Type(s1), Type::Type(s2)) => if s1 == s2 { TypeOverlap::Complete } else { TypeOverlap::None },
-            (Type::Constant(/* sth goes here I guess */), Type::Constant(/* sth goes here I guess */)) => TypeOverlap::Partial,
+            (Type::Type(s1), Type::Type(s2)) => {
+                if s1 == s2 {
+                    TypeOverlap::Complete
+                } else {
+                    TypeOverlap::None
+                }
+            }
+            (Type::Constant(val), Type::Constant(val2)) => {
+                if val == val2 {
+                    TypeOverlap::Complete
+                } else {
+                    TypeOverlap::Partial
+                }
+            }
             // the rest is listed explicitly to cause errors when more kinds are added, instead of silently returning None
-            (Type::Invalid, _) |
-            (Type::Tuple(_), _) |
-            (Type::Struct(_), _) |
-            (Type::Vector(_), _) |
-            (Type::Union(_), _) |
-            (Type::Variant(_), _) |
-            (Type::Ref(_), _) |
-            (Type::Type(_), _) |
-            (Type::Constant(), _) |
-            (Type::Builtin(_), _) => TypeOverlap::None,
+            (Type::Invalid, _)
+            | (Type::Tuple(_), _)
+            | (Type::Struct(_), _)
+            | (Type::Vector(_), _)
+            | (Type::Union(_), _)
+            | (Type::Variant(_), _)
+            | (Type::Ref(_), _)
+            | (Type::Type(_), _)
+            | (Type::Constant(_), _)
+            | (Type::Builtin(_), _) => TypeOverlap::None,
         }
     }
 }
@@ -256,7 +284,7 @@ impl<'i> fmt::Display for TypeRef<'i> {
             }
             Type::Ref(pointee) => write!(f, "ref {}", pointee),
             Type::Type(ty) => write!(f, "type"),
-            Type::Constant() => write!(f, "T"),
+            Type::Constant(val) => write!(f, "T{}", val.0),
             Type::Builtin(BuiltinType::Bool) => write!(f, "bool"),
             Type::Builtin(BuiltinType::Int) => write!(f, "int"),
             Type::Builtin(BuiltinType::Null) => write!(f, "null"),

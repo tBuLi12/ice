@@ -1,3 +1,7 @@
+use std::fs::File;
+
+use diagnostics::Diagnostics;
+use fun::Function;
 use pool::FuncRef;
 use ty::TypeRef;
 
@@ -9,7 +13,7 @@ mod ref_check;
 pub mod str;
 pub mod ty;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub first_line: u32,
     pub last_line: u32,
@@ -18,8 +22,58 @@ pub struct Span {
     pub end_highlight_offset: u32,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub struct RawValue(u16);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LeftSpan {
+    pub first_line: u32,
+    pub begin_offset: u32,
+    pub begin_highlight_offset: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RightSpan {
+    pub last_line: u32,
+    pub end_highlight_offset: u32,
+}
+
+impl Span {
+    pub fn to(self, other: Span) -> Span {
+        Span {
+            first_line: self.first_line,
+            last_line: other.last_line,
+            begin_offset: self.begin_offset,
+            begin_highlight_offset: self.begin_highlight_offset,
+            end_highlight_offset: other.end_highlight_offset,
+        }
+    }
+
+    pub fn extend_back(mut self, offset: u32) -> Span {
+        self.begin_highlight_offset -= offset;
+        self
+    }
+
+    pub fn first(mut self) -> Span {
+        self.end_highlight_offset = self.begin_highlight_offset + 1;
+        self
+    }
+
+    pub fn left(self) -> LeftSpan {
+        LeftSpan {
+            first_line: self.first_line,
+            begin_offset: self.begin_offset,
+            begin_highlight_offset: self.begin_highlight_offset,
+        }
+    }
+
+    pub fn right(self) -> RightSpan {
+        RightSpan {
+            last_line: self.last_line,
+            end_highlight_offset: self.end_highlight_offset,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct RawValue(pub u16);
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Prop(u8);
 #[derive(Clone, Copy)]
@@ -59,15 +113,46 @@ pub enum Instruction<'i> {
     Phi(Vec<(Label, RawValue)>),
     Return(RawValue),
     Ty(TypeRef<'i>),
+    Int(u32),
 }
 
 impl RawValue {
     pub const NULL: Self = Self(0);
 }
 
+#[derive(Clone, Copy, Debug)]
 pub struct Value<'i> {
     pub ty: TypeRef<'i>,
     pub raw: RawValue,
 }
 
-struct Ctx {}
+pub struct Source {
+    pub file: File,
+    pub name: String,
+}
+
+pub struct Ctx<'i> {
+    pub type_pool: crate::ty::Pool<'i>,
+    pub fun_pool: pool::FunPool<'i>,
+    pub diagnostcs: Diagnostics,
+    pub source: Source,
+}
+
+impl<'i> Ctx<'i> {
+    pub fn new(file: File, name: String) -> Self {
+        Ctx {
+            type_pool: crate::ty::Pool::new(),
+            fun_pool: pool::FunPool::new(),
+            diagnostcs: Diagnostics::new(),
+            source: Source { file, name },
+        }
+    }
+
+    pub fn flush_diagnostics(&self) -> bool {
+        self.diagnostcs.print_all(&self.source)
+    }
+}
+
+pub struct Package<'i> {
+    pub funcs: Vec<Function<'i>>,
+}

@@ -1,6 +1,8 @@
-use crate::{ty::TypeRef, Instruction};
+use crate::{pool, str::Str, ty::TypeRef, Instruction};
 
 pub struct Signature<'i> {
+    pub name: Str<'i>,
+    pub params: pool::List<'i, TypeRef<'i>>,
     pub ret_ty: TypeRef<'i>,
 }
 

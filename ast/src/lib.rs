@@ -1,90 +1,49 @@
-use iiv::Span;
+use iiv::{str::Str, LeftSpan, RightSpan, Span};
 
-#[derive(Debug)]
+macro_rules! spanned_enum {
+    (
+        pub enum $name:ident<$lf:lifetime> {
+            $(
+                $vname:ident($vtype:ty)
+            ),*$(,)?
+        }
+    ) => {
+        #[derive(Debug)]
+        pub enum $name<$lf> {
+            $(
+                $vname($vtype)
+            ),*
+        }
+
+        impl<$lf> Spanned for $name<$lf> {
+            fn left_span(&self) -> LeftSpan {
+                match self {
+                    $(
+                        Self::$vname(v) => v.left_span()
+                    ),*
+                }
+            }
+            fn right_span(&self) -> RightSpan {
+                match self {
+                    $(
+                        Self::$vname(v) => v.right_span()
+                    ),*
+                }
+            }
+        }
+    };
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Ident<'i> {
     pub span: Span,
     pub value: iiv::str::Str<'i>,
 }
 
 #[derive(Debug)]
-pub enum Type<'i> {
-    Named(NamedType<'i>),
-    Tuple(TupleType<'i>),
-    Struct(StructType<'i>),
-    Vector(VectorType<'i>),
-    Union(UnionType<'i>),
-    Variant(VariantType<'i>),
-}
-
-#[derive(Debug)]
-pub struct NamedType<'i> {
-    pub span: Span,
-    pub name: Path<'i>,
-    pub type_argument_names: Vec<Type<'i>>,
-}
-
-#[derive(Debug)]
-pub struct TupleType<'i> {
-    pub span: Span,
-    pub fields: Vec<Type<'i>>,
-}
-
-#[derive(Debug)]
-pub struct StructType<'i> {
-    pub span: Span,
-    pub properties: Vec<PropertyDeclaration<'i>>,
-}
-
-#[derive(Debug)]
-pub struct PropertyDeclaration<'i> {
-    pub span: Span,
-    pub name: String,
-    pub typ: Type<'i>,
-}
-
-#[derive(Debug)]
-pub struct VariantDeclaration<'i> {
-    pub span: Span,
-    pub name: String,
-    pub typ: Option<Type<'i>>,
-}
-
-#[derive(Debug)]
-pub struct UnionType<'i> {
-    pub span: Span,
-    pub elements: Vec<Type<'i>>,
-}
-
-#[derive(Debug)]
-pub struct VariantType<'i> {
-    pub span: Span,
-    pub variants: Vec<VariantDeclaration<'i>>,
-}
-
-#[derive(Debug)]
-pub struct VectorType<'i> {
-    pub span: Span,
-    pub element_ty: Box<Type<'i>>,
-}
-
-#[derive(Debug)]
-pub struct Path<'i> {
-    pub span: Span,
-    pub segments: Vec<&'i str>,
-}
-
-#[derive(Debug)]
-pub struct Trait<'i> {
-    pub span: Span,
-    pub name: Path<'i>,
-    pub type_args: Vec<Type<'i>>,
-}
-
-#[derive(Debug)]
 pub struct TypeParam<'i> {
-    pub span: Span,
     pub name: Ident<'i>,
-    pub trait_bounds: Vec<Trait<'i>>,
+    pub trait_bounds: Vec<Expr<'i>>,
 }
 
 #[derive(Debug)]
@@ -101,7 +60,7 @@ pub struct TypeDecl<'i> {
     pub type_params: Vec<TypeParam<'i>>,
     pub visibility: Visibility,
     pub proto_visibility: Visibility,
-    pub proto: Type<'i>,
+    pub proto: Expr<'i>,
 }
 
 #[derive(Debug)]
@@ -115,9 +74,8 @@ pub struct TraitDecl<'i> {
 
 #[derive(Debug)]
 pub struct Parameter<'i> {
-    pub span: Span,
     pub name: Ident<'i>,
-    pub ty: Type<'i>,
+    pub ty: Expr<'i>,
 }
 
 #[derive(Debug)]
@@ -127,7 +85,7 @@ pub struct Signature<'i> {
     pub is_mut: bool,
     pub type_params: Vec<TypeParam<'i>>,
     pub params: Vec<Parameter<'i>>,
-    pub return_ty: Option<Type<'i>>,
+    pub return_ty: Option<Expr<'i>>,
     pub visibility: Visibility,
 }
 
@@ -139,8 +97,8 @@ pub struct Function<'i> {
 
 #[derive(Debug)]
 pub struct TraitBound<'i> {
-    pub ty: Type<'i>,
-    pub tr: Trait<'i>,
+    pub ty: Expr<'i>,
+    pub tr: Expr<'i>,
 }
 
 #[derive(Debug)]
@@ -152,7 +110,7 @@ pub struct Promotion<'i> {
 #[derive(Debug)]
 pub struct Impl<'i> {
     pub span: Span,
-    pub ty: Type<'i>,
+    pub ty: Expr<'i>,
     pub type_params: Vec<TypeParam<'i>>,
     pub promotions: Vec<Promotion<'i>>,
     pub functions: Vec<Function<'i>>,
@@ -162,8 +120,8 @@ pub struct Impl<'i> {
 #[derive(Debug)]
 pub struct TraitImpl<'i> {
     pub span: Span,
-    pub ty: Type<'i>,
-    pub tr: Trait<'i>,
+    pub ty: Expr<'i>,
+    pub tr: Expr<'i>,
     pub type_params: Vec<TypeParam<'i>>,
     pub functions: Vec<Function<'i>>,
 }
@@ -193,13 +151,14 @@ pub struct Block<'i> {
     pub has_trailing_expression: bool,
 }
 
-#[derive(Debug)]
-pub enum BlockItem<'i> {
-    Expr(Expr<'i>),
-    Break(Break<'i>),
-    Return(Return<'i>),
-    Continue(Continue<'i>),
-    Bind(Binding<'i>),
+spanned_enum! {
+    pub enum BlockItem<'i> {
+        Expr(Expr<'i>),
+        Break(Break<'i>),
+        Return(Return<'i>),
+        Continue(Continue<'i>),
+        Bind(Binding<'i>),
+    }
 }
 
 #[derive(Debug)]
@@ -236,25 +195,79 @@ pub struct Binding<'i> {
 
 #[derive(Debug)]
 pub struct Pattern<'i> {
-    pub span: Span,
     pub body: PatternBody<'i>,
     pub guard: Option<Expr<'i>>,
 }
 
 #[derive(Debug)]
-pub enum PatternBody<'i> {
-    Tuple(Vec<Pattern<'i>>),
-    Struct(Vec<(Ident<'i>, Pattern<'i>)>),
-    Variant(Box<Pattern<'i>>),
-    NarrowType(Box<(Pattern<'i>, Expr<'i>)>),
-    Named(Ident<'i>, Box<Pattern<'i>>),
-    Vector(Vec<Pattern<'i>>),
-    NarrowTraitBounds(Box<(Pattern<'i>, Expr<'i>)>),
-    UnionTy(Vec<Pattern<'i>>),
-    VariantTy(Vec<(Ident<'i>, Pattern<'i>)>),
-    NamedTy(Ident<'i>, Vec<Pattern<'i>>),
-    Type(Box<Pattern<'i>>),
-    Bind(BindingType, Ident<'i>),
+pub struct NamedPattern<'i> {
+    pub name: Ident<'i>,
+    pub inner: Box<Pattern<'i>>,
+}
+
+#[derive(Debug)]
+pub struct VectorPattern<'i> {
+    pub span: Span,
+    pub patterns: Vec<Pattern<'i>>,
+}
+
+#[derive(Debug)]
+pub struct TuplePattern<'i> {
+    pub span: Span,
+    pub patterns: Vec<Pattern<'i>>,
+}
+
+#[derive(Debug)]
+pub struct UnionPattern<'i> {
+    pub span: Span,
+    pub patterns: Vec<Pattern<'i>>,
+}
+
+#[derive(Debug)]
+pub struct NamedTyPattern<'i> {
+    pub span: Span,
+    pub name: Ident<'i>,
+    pub agrs: Vec<Pattern<'i>>,
+}
+
+#[derive(Debug)]
+pub struct StructPattern<'i> {
+    pub span: Span,
+    pub inner: Vec<(Ident<'i>, Pattern<'i>)>,
+}
+
+#[derive(Debug)]
+pub struct VariantTyPattern<'i> {
+    pub span: Span,
+    pub inner: Vec<(Ident<'i>, Pattern<'i>)>,
+}
+
+#[derive(Debug)]
+pub struct BindPattern<'i> {
+    pub binding_type: BindingType,
+    pub name: Ident<'i>,
+}
+
+#[derive(Debug)]
+pub struct NarrowTypePattern<'i> {
+    pub inner: Box<Pattern<'i>>,
+    pub ty: Expr<'i>,
+}
+
+spanned_enum! {
+    pub enum PatternBody<'i> {
+        Tuple(TuplePattern<'i>),
+        Struct(StructPattern<'i>),
+        Variant(Box<Pattern<'i>>),
+        NarrowType(NarrowTypePattern<'i>),
+        Named(NamedPattern<'i>),
+        Vector(VectorPattern<'i>),
+        UnionTy(UnionPattern<'i>),
+        VariantTy(VariantTyPattern<'i>),
+        NamedTy(NamedTyPattern<'i>),
+        Type(Box<Pattern<'i>>),
+        Bind(BindPattern<'i>),
+    }
 }
 
 #[derive(Debug)]
@@ -280,14 +293,14 @@ pub struct DestructureImplicitProp<'i> {
 pub struct DestructureStruct<'i> {
     pub span: Span,
     pub props: Vec<DestructureProp<'i>>,
-    pub name: Option<NamedType<'i>>,
+    pub name: Option<Box<Expr<'i>>>,
 }
 
 #[derive(Debug)]
 pub struct DestructureTuple<'i> {
     pub span: Span,
     pub fields: Vec<Pattern<'i>>,
-    pub name: Option<NamedType<'i>>,
+    pub name: Option<Box<Expr<'i>>>,
 }
 
 #[derive(Debug)]
@@ -311,7 +324,7 @@ pub struct Rest<'i> {
 #[derive(Debug)]
 pub struct DestructureUnion<'i> {
     pub span: Span,
-    pub ty: Type<'i>,
+    pub ty: Expr<'i>,
     pub pattern: Box<Pattern<'i>>,
 }
 #[derive(Debug)]
@@ -330,7 +343,7 @@ pub enum Destructure<'i> {
     Variant(DestructureVariant<'i>),
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct Int {
     pub span: Span,
     pub value: u32,
@@ -342,10 +355,10 @@ pub struct Float {
     pub value: f64,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub struct StringLit<'i> {
     pub span: Span,
-    pub value: &'i str,
+    pub value: Str<'i>,
 }
 
 #[derive(Debug)]
@@ -364,13 +377,12 @@ pub struct Tuple<'i> {
 pub struct Struct<'i> {
     pub span: Span,
     pub props: Vec<StructProp<'i>>,
-    pub ty: Option<NamedType<'i>>,
+    pub ty: Option<Box<Expr<'i>>>,
 }
 
 #[derive(Debug)]
 pub struct StructProp<'i> {
-    pub span: Span,
-    pub name: iiv::str::Str<'i>,
+    pub name: Ident<'i>,
     pub value: Option<Expr<'i>>,
 }
 
@@ -398,150 +410,132 @@ pub struct Match<'i> {
 
 #[derive(Debug)]
 pub struct MatchCase<'i> {
-    pub span: Span,
     pub pattern: Pattern<'i>,
     pub value: MatchArm<'i>,
 }
 
-#[derive(Debug)]
-pub enum MatchArm<'i> {
-    Break(Break<'i>),
-    Return(Return<'i>),
-    Continue(Continue<'i>),
-    Expr(Expr<'i>),
+spanned_enum! {
+    pub enum MatchArm<'i> {
+        Break(Break<'i>),
+        Return(Return<'i>),
+        Continue(Continue<'i>),
+        Expr(Expr<'i>),
+    }
 }
 
 #[derive(Debug)]
 pub struct Call<'i> {
     pub span: Span,
     pub lhs: Box<Expr<'i>>,
-    pub type_args: Vec<Type<'i>>,
+    pub type_args: Vec<Expr<'i>>,
     pub args: Vec<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Prop<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub prop: Ident<'i>,
-    pub tr: Option<Trait<'i>>,
+    pub tr: Option<Box<Expr<'i>>>,
 }
 
 #[derive(Debug)]
 pub struct Field<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub prop: Int,
 }
 
 #[derive(Debug)]
 pub struct Index<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub index: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Cast<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
-    pub ty: Type<'i>,
+    pub ty: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Add<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Sub<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Mul<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Div<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct And<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Or<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Greater<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Less<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct GreaterEq<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct LessEq<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Equals<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Is<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Pattern<'i>>,
 }
 
 #[derive(Debug)]
 pub struct NotEquals<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Assign<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
@@ -559,14 +553,7 @@ pub struct Neg<'i> {
 }
 
 #[derive(Debug)]
-pub struct Bs<'i> {
-    pub span: Span,
-    pub rhs: Box<Expr<'i>>,
-}
-
-#[derive(Debug)]
 pub struct AddAssign<'i> {
-    pub span: Span,
     pub lhs: Box<Expr<'i>>,
     pub rhs: Box<Expr<'i>>,
 }
@@ -584,68 +571,230 @@ pub struct Spread<'i> {
 }
 
 #[derive(Debug)]
-pub enum VectorBody<'i> {
-    Type(Type<'i>),
-    Items(Vec<VectorItem<'i>>),
-}
-
-#[derive(Debug)]
 pub struct Vector<'i> {
     pub span: Span,
-    pub body: VectorBody<'i>,
+    pub body: Vec<Expr<'i>>,
 }
 
 #[derive(Debug)]
 pub struct Variant<'i> {
     pub span: Span,
-    pub ty: Option<NamedType<'i>>,
+    pub ty: Option<Box<Expr<'i>>>,
     pub variant: Ident<'i>,
     pub value: Option<Box<Expr<'i>>>,
 }
 
-#[derive(Debug)]
-pub enum Expr<'i> {
-    Variable(Ident<'i>),
-    Block(Block<'i>),
-    Int(Int),
-    Float(Float),
-    String(StringLit<'i>),
-    Char(Char),
-    Tuple(Tuple<'i>),
-    Struct(Struct<'i>),
-    If(If<'i>),
-    While(While<'i>),
-    Match(Match<'i>),
-    Call(Call<'i>),
-    Prop(Prop<'i>),
-    Field(Field<'i>),
-    Index(Index<'i>),
-    Cast(Cast<'i>),
-    Add(Add<'i>),
-    Mul(Mul<'i>),
-    Eq(Equals<'i>),
-    Neq(NotEquals<'i>),
-    And(And<'i>),
-    Or(Or<'i>),
-    Geq(GreaterEq<'i>),
-    Leq(LessEq<'i>),
-    Lt(Less<'i>),
-    Gt(Greater<'i>),
-    Assign(Assign<'i>),
-    Div(Div<'i>),
-    Sub(Sub<'i>),
-    Neg(Neg<'i>),
-    Not(Not<'i>),
-    Bs(Bs<'i>),
-    Vec(Vector<'i>),
-    Type(Type<'i>),
-    Variant(Variant<'i>),
-    AddAssign(AddAssign<'i>),
-    Is(Is<'i>),
+spanned_enum! {
+    pub enum Expr<'i> {
+        Variable(Ident<'i>),
+        Block(Block<'i>),
+        Int(Int),
+        Float(Float),
+        String(StringLit<'i>),
+        Char(Char),
+        Tuple(Tuple<'i>),
+        Struct(Struct<'i>),
+        If(If<'i>),
+        While(While<'i>),
+        Match(Match<'i>),
+        Call(Call<'i>),
+        Prop(Prop<'i>),
+        Field(Field<'i>),
+        Index(Index<'i>),
+        Cast(Cast<'i>),
+        Add(Add<'i>),
+        Mul(Mul<'i>),
+        Eq(Equals<'i>),
+        Neq(NotEquals<'i>),
+        And(And<'i>),
+        Or(Or<'i>),
+        Geq(GreaterEq<'i>),
+        Leq(LessEq<'i>),
+        Lt(Less<'i>),
+        Gt(Greater<'i>),
+        Assign(Assign<'i>),
+        Div(Div<'i>),
+        Sub(Sub<'i>),
+        Neg(Neg<'i>),
+        Not(Not<'i>),
+        Vec(Vector<'i>),
+        Variant(Variant<'i>),
+        AddAssign(AddAssign<'i>),
+        Is(Is<'i>),
+    }
 }
 
-impl<'i> Expr<'i> {
-    pub fn span(&self) -> &Span {
-        unimplemented!()
+trait OptSpanned {
+    fn opt_right_span(&self) -> Option<RightSpan>;
+}
+
+impl<T: Spanned> OptSpanned for Vec<T> {
+    fn opt_right_span(&self) -> Option<RightSpan> {
+        Some(self.last()?.right_span())
+    }
+}
+
+impl<T: Spanned> OptSpanned for Option<T> {
+    fn opt_right_span(&self) -> Option<RightSpan> {
+        self.as_ref().map(Spanned::right_span)
+    }
+}
+
+impl<T: Spanned> Spanned for Box<T> {
+    fn left_span(&self) -> LeftSpan {
+        T::left_span(&self)
+    }
+    fn right_span(&self) -> RightSpan {
+        T::right_span(&self)
+    }
+}
+
+pub trait Spanned {
+    fn span(&self) -> Span {
+        let left = self.left_span();
+        let right = self.right_span();
+        Span {
+            first_line: left.first_line,
+            last_line: right.last_line,
+            begin_offset: left.begin_offset,
+            begin_highlight_offset: left.begin_highlight_offset,
+            end_highlight_offset: right.end_highlight_offset,
+        }
+    }
+
+    fn left_span(&self) -> LeftSpan;
+    fn right_span(&self) -> RightSpan;
+}
+
+macro_rules! spanned_impls {
+    (@single $tyname:ident) => {
+        impl<'i> Spanned for $tyname<'i> {
+            fn span(&self) -> Span {
+                self.span
+            }
+            fn left_span(&self) -> LeftSpan {
+                self.span.left()
+            }
+            fn right_span(&self) -> RightSpan {
+                self.span.right()
+            }
+        }
+    };
+
+    (@single $tyname:ident : $left:ident - $(?$opts:ident)* $last:ident) => {
+        impl<'i> Spanned for $tyname<'i> {
+            fn left_span(&self) -> LeftSpan {
+                self.$left.left_span()
+            }
+            fn right_span(&self) -> RightSpan {
+                None
+                    $(.or_else(|| self.$opts.opt_right_span()))*
+                    .unwrap_or_else(|| self.$last.right_span())
+            }
+        }
+    };
+
+    ($($tyname:ident $(: $left:ident - $(?$opts:ident)* $last:ident)?),*$(,)?) => {
+        $(
+            spanned_impls!(@single $tyname $(: $left - $(?$opts)* $last)*);
+        )*
+    }
+}
+
+spanned_impls! {
+    Ident,
+    TypeParam : name - ?trait_bounds name,
+    Parameter : name - ty,
+    TypeDecl,
+    Signature,
+    Function: signature - body,
+    TraitBound: ty - tr,
+    Promotion,
+    Impl,
+    TraitImpl,
+    Import,
+    Block,
+    Break,
+    Return,
+    Continue,
+    Binding,
+    Pattern : body - ?guard body,
+    StringLit,
+    Tuple,
+    Struct,
+    StructProp : name - ?value name,
+    If,
+    While,
+    Match,
+    MatchCase : pattern - value,
+    Call,
+    Prop : lhs - prop,
+    Field : lhs - prop,
+    Index : lhs - index,
+    Cast : lhs - ty,
+    Add : lhs - rhs,
+    Sub : lhs - rhs,
+    Mul : lhs - rhs,
+    Div : lhs - rhs,
+    And : lhs - rhs,
+    Or : lhs - rhs,
+    Greater : lhs - rhs,
+    Less : lhs - rhs,
+    GreaterEq : lhs - rhs,
+    LessEq : lhs - rhs,
+    Equals : lhs - rhs,
+    Is : lhs - rhs,
+    NotEquals : lhs - rhs,
+    Assign : lhs - rhs,
+    Not,
+    Neg,
+    AddAssign : lhs - rhs,
+    Spread,
+    Vector,
+    Variant,
+    NamedPattern : name - inner,
+    NamedTyPattern,
+    BindPattern : name - name,
+    TuplePattern,
+    VectorPattern,
+    UnionPattern,
+    StructPattern,
+    VariantTyPattern,
+    NarrowTypePattern: inner - ty,
+}
+
+impl Spanned for Int {
+    fn span(&self) -> Span {
+        self.span
+    }
+    fn left_span(&self) -> LeftSpan {
+        self.span.left()
+    }
+    fn right_span(&self) -> RightSpan {
+        self.span.right()
+    }
+}
+
+impl Spanned for Float {
+    fn span(&self) -> Span {
+        self.span
+    }
+    fn left_span(&self) -> LeftSpan {
+        self.span.left()
+    }
+    fn right_span(&self) -> RightSpan {
+        self.span.right()
+    }
+}
+
+impl Spanned for Char {
+    fn span(&self) -> Span {
+        self.span
+    }
+    fn left_span(&self) -> LeftSpan {
+        self.span.left()
+    }
+    fn right_span(&self) -> RightSpan {
+        self.span.right()
     }
 }

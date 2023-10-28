@@ -10,6 +10,12 @@ pub struct StrPool<'i> {
 }
 
 impl<'i> StrPool<'i> {
+    pub fn new() -> Self {
+        StrPool {
+            pool: pool::ListPool::new(),
+        }
+    }
+
     pub fn get(&self, string: &str) -> Str<'_> {
         Str(self.pool.get(string.bytes().collect()))
     }
@@ -24,6 +30,20 @@ impl<'i> Deref for Str<'i> {
 
 impl<'i> fmt::Display for Str<'i> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", *self)
+        let s: &str = &*self;
+        write!(f, "{}", s)
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::StrPool;
+
+    #[test]
+    fn pool_test() {
+        let pool = StrPool::new();
+        let a = pool.get("a");
+        let a2 = pool.get("a");
+        assert!(a == a2);
     }
 }
