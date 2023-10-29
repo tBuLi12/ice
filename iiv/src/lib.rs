@@ -74,20 +74,20 @@ impl Span {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct RawValue(pub u16);
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Prop(u8);
 #[derive(Clone, Copy)]
 pub struct InstIndex(u16);
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct Label(u16);
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Elem {
     Index(RawValue),
     Prop(Prop),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub enum Instruction<'i> {
     Add(RawValue, RawValue),
     Sub(RawValue, RawValue),
@@ -154,5 +154,5 @@ impl<'i> Ctx<'i> {
 }
 
 pub struct Package<'i> {
-    pub funcs: Vec<Function<'i>>,
+    pub funcs: Vec<FuncRef<'i>>,
 }

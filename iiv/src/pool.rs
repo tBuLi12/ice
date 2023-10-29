@@ -1,7 +1,7 @@
 use std::{
     alloc::{self, Layout},
-    cell::UnsafeCell,
-    collections::{hash_map::Entry, HashMap},
+    cell::{RefCell, UnsafeCell},
+    collections::HashMap,
     fmt::Debug,
     hash::Hash,
     mem::MaybeUninit,
@@ -9,7 +9,7 @@ use std::{
     ptr, slice,
 };
 
-use crate::{fun, str::Str};
+use crate::{fun, str::Str, Instruction};
 
 struct PinnedVec<T> {
     bufs: Vec<Box<[MaybeUninit<T>]>>,
@@ -121,6 +121,10 @@ struct ListPoolStorage<T> {
 
 impl<T> ListPoolStorage<T> {
     fn put(&mut self, value: Vec<T>) -> List<'_, T> {
+        if value.is_empty() {
+            return List(unsafe { slice::from_raw_parts(self.buf[0].as_ptr() as *const _, 0) });
+        }
+
         let len = self.buf.last().unwrap().len();
         if (self.next_idx + value.len() - 1) == len {
             self.next_idx = 0;
@@ -151,7 +155,7 @@ impl<T> ListPoolStorage<T> {
     fn new() -> Self {
         Self {
             buf: vec![Self::get_new_box(64)],
-            next_idx: 0,
+            next_idx: 1,
         }
     }
 }
@@ -258,19 +262,67 @@ impl<'i, T: Hash + Eq + Ord> ListPool<'i, T> {
     }
 }
 
-#[derive(Clone, Copy)]
-pub struct FuncRef<'i>(&'i fun::Function<'i>);
+#[derive(Clone, Copy, Debug)]
+pub struct FuncRef<'i>(&'i RefCell<fun::Function<'i>>);
 
-pub struct FunPool<'i> {
-    storage: PinnedVec<fun::Function<'i>>,
+impl<'i> Hash for FuncRef<'i> {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        ptr::hash(self.0, state)
+    }
+}
+
+struct RawFunPool<'i> {
+    storage: PinnedVec<RefCell<fun::Function<'i>>>,
     index: HashMap<Str<'i>, FuncRef<'i>>,
 }
 
-impl<'i> FunPool<'i> {
+impl<'i> PartialEq for FuncRef<'i> {
+    fn eq(&self, other: &Self) -> bool {
+        ptr::eq(self.0, other.0)
+    }
+}
+impl<'i> Eq for FuncRef<'i> {}
+
+impl<'i> Deref for FuncRef<'i> {
+    type Target = RefCell<fun::Function<'i>>;
+    fn deref(&self) -> &Self::Target {
+        self.0
+    }
+}
+
+impl<'i> RawFunPool<'i> {
     pub fn new() -> Self {
-        FunPool {
+        RawFunPool {
             storage: PinnedVec::new(),
             index: HashMap::new(),
         }
+    }
+
+    pub fn insert(&'i mut self, name: Str<'i>, fun: fun::Function<'i>) -> FuncRef<'i> {
+        let fun = FuncRef(self.storage.next().write(RefCell::new(fun)));
+        self.index.insert(name, fun);
+        fun
+    }
+
+    pub fn get(&mut self, name: Str<'i>) -> Option<FuncRef<'i>> {
+        self.index.get(&name).copied()
+    }
+}
+
+pub struct FunPool<'i>(UnsafeCell<RawFunPool<'i>>);
+
+impl<'i> FunPool<'i> {
+    pub fn new() -> Self {
+        Self(UnsafeCell::new(RawFunPool::new()))
+    }
+
+    pub fn insert(&'i self, fun: fun::Function<'i>) -> FuncRef<'i> {
+        let inner = unsafe { &mut *self.0.get() };
+        inner.insert(fun.sig.name, fun)
+    }
+
+    pub fn get(&self, name: Str<'i>) -> Option<FuncRef<'i>> {
+        let inner = unsafe { &mut *self.0.get() };
+        inner.get(name)
     }
 }

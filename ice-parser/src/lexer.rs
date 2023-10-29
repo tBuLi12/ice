@@ -207,21 +207,23 @@ impl<'i, R: io::Read> Lexer<'i, R> {
 
     fn read_char(&mut self) -> Option<char> {
         let old = self.current;
+
+        if let Some(char) = old {
+            self.offset += 1;
+            if char == '\n' {
+                self.column = 0;
+                self.line += 1;
+            } else {
+                self.column += 1;
+            }
+        }
+
         self.current = match self.source.next() {
             None => None,
             Some(Err(e)) => panic!("{}", e),
-            Some(Ok(byte)) => {
-                let char: char = byte.into();
-                self.offset += 1;
-                if char == '\n' {
-                    self.column = 0;
-                    self.line += 1;
-                } else {
-                    self.column += 1;
-                }
-                Some(char)
-            }
+            Some(Ok(byte)) => Some(byte.into()),
         };
+
         old
     }
 }

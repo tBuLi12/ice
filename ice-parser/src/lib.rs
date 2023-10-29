@@ -12,8 +12,9 @@ pub struct Parser<'i, R> {
     current: Token<'i>,
 }
 
-trait AsSyntaxError {
+trait AsSyntaxError: Sized {
     fn expected(self, message: &'static str) -> Self;
+    fn invalid(self) -> Parsed<Self>;
 }
 
 #[derive(Debug)]
@@ -30,6 +31,13 @@ impl<T> AsSyntaxError for Parsed<T> {
             ParseError::InvalidSyntax(msg) => ParseError::InvalidSyntax(msg),
             ParseError::NoMatch => ParseError::InvalidSyntax(message),
         })
+    }
+    fn invalid(self) -> Parsed<Self> {
+        match self {
+            Ok(val) => Ok(Ok(val)),
+            Err(ParseError::NoMatch) => Ok(Err(ParseError::NoMatch)),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -151,7 +159,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
     ) -> Parsed<(T, Span)> {
         let lspan = self.eat_punct(left)?;
         let inner = fun(self)?;
-        let rspan = self.eat_punct(right).expected(")")?;
+        let rspan = self.eat_punct(right).expected(closing)?;
         Ok((inner, lspan.to(rspan)))
     }
 
@@ -177,7 +185,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
         let ((params, _), _) = self
             .parens(|p| {
                 p.list(Punctuation::Comma, |p| {
-                    let name = p.ident().expected("argument name")?;
+                    let name = p.ident()?;
                     p.eat_punct(Punctuation::Colon).expected(":")?;
                     let ty = p.parse_ty_name().expected("argument type")?;
                     Ok(Parameter { name, ty })
@@ -206,7 +214,6 @@ impl<'i, R: io::Read> Parser<'i, R> {
         let body = if self.eat_punct(Punctuation::ThinArrow).is_ok() {
             self.parse_expr().expected("an expression")?
         } else {
-            dbg!(self.current);
             self.parse_block().expected("-> or a block")?
         };
 
@@ -247,6 +254,16 @@ impl<'i, R: io::Read> Parser<'i, R> {
                     lhs: Box::new(expr),
                     rhs: Box::new(rhs),
                 })
+            } else if let Ok(((args, _), span)) = self
+                .parens(|p| p.list(Punctuation::Comma, |p| p.parse_expr()))
+                .invalid()?
+            {
+                expr = Expr::Call(Call {
+                    span,
+                    lhs: Box::new(expr),
+                    type_args: vec![],
+                    args,
+                });
             } else {
                 return Ok(expr);
             }

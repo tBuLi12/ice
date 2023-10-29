@@ -1,4 +1,4 @@
-use std::{fs::File, path::Path};
+use std::{collections::HashMap, fs::File, path::Path};
 
 // use cranelift::prelude::InstBuilder;
 use cranelift::{
@@ -6,11 +6,13 @@ use cranelift::{
         ir::{self, InstBuilder, Signature},
         isa, settings,
     },
-    prelude::{types, AbiParam, FunctionBuilder, FunctionBuilderContext},
+    prelude::{
+        types, AbiParam, FunctionBuilder, FunctionBuilderContext, StackSlotData, StackSlotKind,
+    },
 };
-use cranelift_module::{default_libcall_names, Linkage, Module};
+use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
-use iiv::ty::TypeRef;
+use iiv::{pool::FuncRef, ty::TypeRef};
 
 pub struct Backend {
     isa: isa::OwnedTargetIsa,
@@ -47,8 +49,11 @@ impl Backend {
 }
 
 impl<'b> PackageTransformer<'b> {
-    fn transform(mut self, package: &iiv::Package, out: impl AsRef<Path>) {
-        package.funcs.iter().for_each(|fun| {
+    fn transform<'i>(mut self, package: &iiv::Package<'i>, out: impl AsRef<Path>) {
+        let mut funs = HashMap::<FuncRef<'i>, FuncId>::new();
+        package.funcs.iter().for_each(|fun_ref| {
+            let fun = fun_ref.borrow();
+
             let id = {
                 let mut signature = self.module.make_signature();
                 for &param in fun.sig.params.iter() {
@@ -59,6 +64,12 @@ impl<'b> PackageTransformer<'b> {
                     .declare_function(&fun.sig.name, Linkage::Export, &signature)
             }
             .unwrap();
+            funs.insert(*fun_ref, id);
+        });
+
+        package.funcs.iter().for_each(|fun_ref| {
+            let fun = fun_ref.borrow();
+            let id = funs[fun_ref];
 
             let mut ctx = self.module.make_context();
 
@@ -75,7 +86,7 @@ impl<'b> PackageTransformer<'b> {
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
             builder.seal_block(entry);
-            gen(&mut builder, &fun.body[0]);
+            gen(&mut self.module, &mut builder, &fun.body[0], &funs);
             builder.finalize();
             self.module.define_function(id, &mut ctx).unwrap();
             self.module.clear_context(&mut ctx);
@@ -86,14 +97,19 @@ impl<'b> PackageTransformer<'b> {
     }
 }
 
-fn gen(builder: &mut cranelift::frontend::FunctionBuilder, insts: &[iiv::Instruction]) {
+fn gen<'i>(
+    module: &mut ObjectModule,
+    builder: &mut cranelift::frontend::FunctionBuilder,
+    insts: &[iiv::Instruction<'i>],
+    funs: &HashMap<FuncRef<'i>, FuncId>,
+) {
     let mut values = vec![];
 
     for param in builder.block_params(builder.current_block().unwrap()) {
         values.push(*param);
     }
 
-    // builder.
+    builder.create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12));
 
     for inst in insts {
         match inst {
@@ -116,7 +132,12 @@ fn gen(builder: &mut cranelift::frontend::FunctionBuilder, insts: &[iiv::Instruc
             iiv::Instruction::Lt(lhs, rhs) => unimplemented!(),
             iiv::Instruction::GtEq(lhs, rhs) => unimplemented!(),
             iiv::Instruction::LtEq(lhs, rhs) => unimplemented!(),
-            iiv::Instruction::Call(fun, args) => unimplemented!(),
+            iiv::Instruction::Call(fun, args) => {
+                let local_func = module.declare_func_in_func(funs[fun], &mut builder.func);
+                let args: Vec<_> = args.iter().map(|arg| values[arg.0 as usize]).collect();
+                let call = builder.ins().call(local_func, &args);
+                values.push(builder.inst_results(call)[0])
+            }
             iiv::Instruction::Assign(lhs, rhs) => unimplemented!(),
             iiv::Instruction::RefAssign(lhs, rhs) => unimplemented!(),
             iiv::Instruction::Tuple(tpl) => unimplemented!(),

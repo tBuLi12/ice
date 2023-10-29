@@ -1,7 +1,6 @@
 use std::{
     cell::UnsafeCell,
-    fs::File,
-    io::{BufRead, BufReader, Read, Seek, SeekFrom},
+    io::{BufReader, Read, Seek, SeekFrom},
 };
 
 use crate::{Source, Span};
@@ -151,7 +150,7 @@ impl Diagnostics {
         messages.push(message);
     }
 
-    pub fn print_all(&self, mut source: &Source) -> bool {
+    pub fn print_all(&self, source: &Source) -> bool {
         let messages = unsafe { &mut *self.0.get() };
         let has_errors = messages.len() != 0;
         for Diagnostic {
@@ -160,6 +159,7 @@ impl Diagnostics {
             level,
         } in messages
         {
+            println!("printing: {:?}", span);
             let margin = fmt::Margin(fmt::n_of_digits(span.last_line + 1));
             eprintln!("{}", message);
             eprintln!("{}", margin);
@@ -178,6 +178,7 @@ impl Diagnostics {
                 while let Some(byte) = bytes.next() {
                     let byte = char::from(byte.unwrap());
                     if byte == '\n' {
+                        print!("newline {}", column);
                         break;
                     }
 

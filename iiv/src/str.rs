@@ -1,9 +1,19 @@
-use std::{fmt, ops::Deref};
+use std::{
+    fmt::{self, Debug},
+    ops::Deref,
+};
 
 use crate::pool;
 
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Str<'i>(pool::List<'i, u8>);
+
+impl<'i> Debug for Str<'i> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let content: &str = &self;
+        f.debug_tuple("Str").field(&content).finish()
+    }
+}
 
 pub struct StrPool<'i> {
     pool: pool::ListPool<'i, u8>,

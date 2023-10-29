@@ -1,16 +1,7 @@
-use crate::{
-    fun::{Function, Signature},
-    pool,
-    str::Str,
-    ty::TypeRef,
-    Ctx, Instruction, RawValue, Value,
-};
+use crate::{pool::FuncRef, str::Str, ty::TypeRef, Instruction, RawValue, Value};
 
 pub struct FunctionBuilder<'i> {
     ty_pool: &'i crate::ty::Pool<'i>,
-    name: Str<'i>,
-    pub params: Vec<TypeRef<'i>>,
-    pub ret_ty: Option<TypeRef<'i>>,
     blocks: Vec<Vec<Instruction<'i>>>,
     current_block: usize,
     next_free_id: u16,
@@ -22,12 +13,9 @@ pub struct Block {
 }
 
 impl<'i> FunctionBuilder<'i> {
-    pub fn new(pool: &'i crate::ty::Pool<'i>, name: Str<'i>) -> Self {
+    pub fn new(pool: &'i crate::ty::Pool<'i>) -> Self {
         FunctionBuilder {
             ty_pool: pool,
-            name,
-            params: vec![],
-            ret_ty: None,
             blocks: vec![vec![]],
             current_block: 0,
             next_free_id: 0,
@@ -38,14 +26,6 @@ impl<'i> FunctionBuilder<'i> {
         let id = self.next_free_id;
         self.next_free_id += 1;
         RawValue(id)
-    }
-
-    pub fn parameter(&mut self, ty: TypeRef<'i>) -> Value<'i> {
-        self.params.push(ty);
-        Value {
-            ty,
-            raw: self.next_id(),
-        }
     }
 
     pub fn add(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
@@ -68,7 +48,25 @@ impl<'i> FunctionBuilder<'i> {
     // pub fn gt_eq(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
     // pub fn lt_eq(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
     // pub fn push(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
-    // pub fn call(&mut self, func: FuncId, args: &[Value<'i>]) -> Value<'i> {}
+
+    pub fn param(&mut self, ty: TypeRef<'i>) -> Value<'i> {
+        Value {
+            ty,
+            raw: self.next_id(),
+        }
+    }
+
+    pub fn call(&mut self, func: FuncRef<'i>, args: &[Value<'i>]) -> Value<'i> {
+        self.blocks[self.current_block].push(Instruction::Call(
+            func,
+            args.iter().map(|arg| arg.raw).collect(),
+        ));
+        Value {
+            ty: func.borrow().sig.ret_ty,
+            raw: self.next_id(),
+        }
+    }
+
     // pub fn assign(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
     // pub fn ref_assign(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
     pub fn make_tuple(&mut self, values: &[Value<'i>]) -> Value<'i> {
@@ -122,14 +120,7 @@ impl<'i> FunctionBuilder<'i> {
         self.blocks[self.current_block].push(Instruction::Return(val.raw));
     }
 
-    pub fn build(self) -> Function<'i> {
-        Function {
-            sig: Signature {
-                ret_ty: self.ret_ty.unwrap(),
-                params: self.ty_pool.get_ty_list(self.params),
-                name: self.name,
-            },
-            body: self.blocks,
-        }
+    pub fn build(self) -> Vec<Vec<Instruction<'i>>> {
+        self.blocks
     }
 }

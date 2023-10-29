@@ -31,5 +31,9 @@ fn main() {
         return;
     }
 
+    for fun in &package.funcs {
+        println!("{}", fun.borrow());
+    }
+
     backend.transform(&package, "out.o");
 }

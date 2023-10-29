@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use ast::{BlockItem, Expr, Ident, Module, Spanned};
 use iiv::{
     diagnostics, err,
+    fun::{Function, Signature},
+    pool::FuncRef,
     str::Str,
     ty::{TypeOverlap, TypeRef},
     Ctx, Package, Span, Value,
@@ -13,6 +15,7 @@ mod ty;
 pub struct Generator<'i> {
     global_scope: HashMap<Str<'i>, Object<'i>>,
     ty: &'i iiv::ty::Pool<'i>,
+    fun_pool: &'i iiv::pool::FunPool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
 }
 
@@ -22,7 +25,7 @@ pub struct FunctionGenerator<'i, 'g> {
     ty: &'i iiv::ty::Pool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
     constant_depth: usize,
-    current_return_ty: TypeRef<'i>,
+    ret_type: Option<TypeRef<'i>>,
     iiv: iiv::builder::FunctionBuilder<'i>,
 }
 
@@ -31,6 +34,7 @@ impl<'i> Generator<'i> {
         Generator {
             global_scope: HashMap::new(),
             ty: &ctx.type_pool,
+            fun_pool: &ctx.fun_pool,
             messages: &ctx.diagnostcs,
         }
     }
@@ -39,54 +43,84 @@ impl<'i> Generator<'i> {
         self.global_scope
             .insert(self.ty.str_pool.get("int"), Object::Type(self.ty.get_int()));
 
+        let funcs = &modules[0].functions;
+
+        let mut package_funs = vec![];
+        for fun_node in funcs {
+            let mut fun_gen = FunctionGenerator::new(&self);
+
+            let fun = self.fun_pool.insert(Function {
+                sig: Signature {
+                    name: fun_node.signature.name.value,
+                    params: self.ty.get_ty_list(
+                        fun_node
+                            .signature
+                            .params
+                            .iter()
+                            .map(|param| fun_gen.check_type(&param.ty))
+                            .collect(),
+                    ),
+                    ret_ty: fun_node
+                        .signature
+                        .return_ty
+                        .as_ref()
+                        .map(|expr| fun_gen.check_type(&expr))
+                        .unwrap_or_else(|| self.ty.get_null()),
+                },
+                body: vec![],
+            });
+
+            let name = fun_node.signature.name.value;
+
+            self.global_scope
+                .insert(fun_node.signature.name.value, Object::Fun(fun));
+            package_funs.push(fun);
+        }
+
+        for (&fun, fun_node) in package_funs.iter().zip(funcs) {
+            let gen = FunctionGenerator::new(&self);
+            gen.emit_function_body(&mut *fun.borrow_mut(), fun_node);
+        }
+
         Package {
-            funcs: modules[0]
-                .functions
-                .iter()
-                .map(|f| FunctionGenerator::new(&self, f.signature.name.value).emit_function(f))
-                .collect(),
+            funcs: package_funs,
         }
     }
 }
 
 impl<'i, 'g> FunctionGenerator<'i, 'g> {
-    pub fn new(parent: &'g Generator<'i>, name: Str<'i>) -> Self {
+    pub fn new(parent: &'g Generator<'i>) -> Self {
         Self {
             global_scope: &parent.global_scope,
             scopes: Vec::new(),
             ty: &parent.ty,
             messages: &parent.messages,
             constant_depth: 0,
-            current_return_ty: parent.ty.get_null(),
-            iiv: iiv::builder::FunctionBuilder::new(parent.ty, name),
+            ret_type: None,
+            iiv: iiv::builder::FunctionBuilder::new(parent.ty),
         }
     }
 
-    fn emit_function(mut self, fun: &ast::Function<'i>) -> iiv::fun::Function<'i> {
-        let (ret_ty, span) = fun
-            .signature
-            .return_ty
-            .as_ref()
-            .map(|ty| (self.check_type(ty), ty.span()))
-            .unwrap_or_else(|| (self.ty.get_null(), fun.signature.span()));
-
+    fn emit_function_body(
+        mut self,
+        fun: &mut iiv::fun::Function<'i>,
+        fun_node: &ast::Function<'i>,
+    ) {
         self.scopes.push(HashMap::new());
 
-        for param in &fun.signature.params {
-            let ty = self.check_type(&param.ty);
+        for (&ty, param) in fun.sig.params.iter().zip(&fun_node.signature.params) {
             self.scopes
                 .last_mut()
                 .unwrap()
-                .insert(param.name.value, Object::Value(self.iiv.parameter(ty)));
+                .insert(param.name.value, Object::Value(self.iiv.param(ty)));
         }
 
-        self.current_return_ty = ret_ty;
-        self.iiv.ret_ty = Some(ret_ty);
+        self.ret_type = Some(fun.sig.ret_ty);
 
-        let body = self.check_val(&fun.body);
-        let body = self.ensure_ty(&fun.body.span(), ret_ty, body);
+        let body = self.check_val(&fun_node.body);
+        let body = self.ensure_ty(&fun_node.body.span(), fun.sig.ret_ty, body);
         self.iiv.ret(body);
-        self.iiv.build()
+        fun.body = self.iiv.build();
     }
 
     fn check_val(&mut self, expr: &Expr) -> Value<'i> {
@@ -185,18 +219,18 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             BlockItem::Expr(expr) => self.check_val(expr),
             BlockItem::Break(_break) => self.never(),
             BlockItem::Return(ret) => {
+                let Some(return_type) = self.ret_type else {
+                    self.msg(err!(&ret.span, "return is invalid within this context"));
+                    return self.invalid();
+                };
+
                 let val = if let Some(e) = &ret.value {
                     self.check_val(&e)
                 } else {
                     self.null()
                 };
-                // let val = ret
-                //     .value
-                //     .as_ref()
-                //     .map(|e| self.check_val(e))
-                //     .unwrap_or(self.null());
 
-                self.ensure_ty(&ret.span, self.current_return_ty, val);
+                self.ensure_ty(&ret.span, return_type, val);
                 self.never()
             }
             BlockItem::Continue(Continue) => self.never(),
@@ -220,6 +254,10 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 raw,
                 ty: self.ty.get_ty_bool(),
             },
+            Object::Fun(_) => {
+                err!(span, "expected a value, found function");
+                self.invalid()
+            }
         }
     }
 
@@ -242,8 +280,12 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 }
             }
             Object::Type(ty) => ty,
-            Object::IsResult(raw) => {
+            Object::IsResult(_) => {
                 err!(span, "expected a type, found bool");
+                self.ty.get_ty_invalid()
+            }
+            Object::Fun(_) => {
+                err!(span, "expected a type, found function");
                 self.ty.get_ty_invalid()
             }
         }
@@ -351,7 +393,31 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 self.null().obj()
             }
             Expr::Match(Match) => unimplemented!(),
-            Expr::Call(Call) => unimplemented!(),
+            Expr::Call(call) => {
+                if let Object::Fun(fun_ref) = self.check(&call.lhs) {
+                    let fun = fun_ref.borrow();
+
+                    if fun.sig.params.len() != call.args.len() {
+                        self.msg(err!(
+                            &call.span(),
+                            "invalid number of arguments in this call"
+                        ));
+                    }
+
+                    let mut args: Vec<_> =
+                        call.args.iter().map(|arg| self.check_val(arg)).collect();
+
+                    for (i, (arg, &param)) in args.iter_mut().zip(fun.sig.params.iter()).enumerate()
+                    {
+                        *arg = self.ensure_ty(&call.args[i].span(), param, *arg);
+                    }
+
+                    self.iiv.call(fun_ref, &args).obj()
+                } else {
+                    self.msg(err!(&call.lhs.span(), "expected a callable"));
+                    self.invalid().obj()
+                }
+            }
             Expr::Prop(prop) => {
                 let lhs = self.check_val(&prop.lhs);
                 self.iiv.get_prop(lhs, prop.prop.value).obj()
@@ -430,5 +496,6 @@ enum Object<'i> {
     Value(Value<'i>),
     Place(Value<'i>),
     Type(TypeRef<'i>),
+    Fun(FuncRef<'i>),
     IsResult(iiv::RawValue),
 }
