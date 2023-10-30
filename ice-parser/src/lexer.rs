@@ -27,6 +27,7 @@ pub enum Punctuation {
     RBrace,
     Comma,
     Colon,
+    Period,
     Semicolon,
     ThinArrow,
     Minus,
@@ -135,32 +136,62 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             return None;
         }
 
-        macro_rules! punct {
-            ($name:ident, $len:literal) => {
+        macro_rules! puncts {
+            ($name:ident, $len:expr) => {{
+                self.read_char();
                 Some(Token::Punctuation(
                     Punctuation::$name,
                     self.current_span().extend_back($len),
                 ))
+            }};
+        }
+
+        macro_rules! punct_impl {
+            ([$char:literal => $name:ident , $($rest:tt)*] [$($out:tt)*] $none:expr, $depth:expr) => {
+                punct_impl!([$($rest)*] [$($out)*
+                    Some($char) => puncts!($name, $depth),
+                ] $none, $depth)
+            };
+
+            ([$char:literal => $name:ident { $($nested:tt)* } , $($rest:tt)*] [$($out:tt)*] $none:expr, $depth:expr) => {
+                punct_impl!([$($rest)*] [$($out)*
+                    Some($char) => {
+                        self.read_char();
+                        punct_impl!([$($nested)*] [] Some(Token::Punctuation(
+                            Punctuation::$name,
+                            self.current_span().extend_back($depth),
+                        )), $depth + 1)
+                    },
+                ] $none, $depth)
+            };
+
+            ([] [$($out:tt)*] $none:expr, $depth:expr) => {
+                match self.current {
+                    $($out)*
+                    _ => $none,
+                }
             };
         }
 
-        match self.read_char()? {
-            '+' => punct!(Plus, 1),
-            '(' => punct!(LParen, 1),
-            ')' => punct!(RParen, 1),
-            '{' => punct!(LBrace, 1),
-            '}' => punct!(RBrace, 1),
-            ':' => punct!(Colon, 1),
-            ';' => punct!(Colon, 1),
-            ',' => punct!(Comma, 1),
-            '-' => match self.current {
-                Some('>') => {
-                    self.read_char();
-                    punct!(ThinArrow, 2)
-                }
-                _ => punct!(Minus, 1),
+        macro_rules! punct {
+            ($($rest:tt)*) => {
+                punct_impl!([$($rest)*] [] None, 1)
+            };
+        }
+
+        punct! {
+            '+' => Plus,
+            '(' => LParen,
+            ')' => RParen,
+            '{' => LBrace,
+            '}' => RBrace,
+            ':' => Colon,
+            ';' => Colon,
+            ',' => Comma,
+            '.' => Period,
+            '-' => Minus {
+                '>' => ThinArrow,
             },
-            _ => None,
         }
     }
 
