@@ -1,4 +1,9 @@
-use crate::{pool::FuncRef, str::Str, ty::TypeRef, Instruction, RawValue, Value};
+use crate::{
+    pool::{self, FuncRef},
+    str::Str,
+    ty::TypeRef,
+    Elem, Instruction, Prop, RawValue, Value,
+};
 
 pub struct FunctionBuilder<'i> {
     ty_pool: &'i crate::ty::Pool<'i>,
@@ -73,13 +78,29 @@ impl<'i> FunctionBuilder<'i> {
         unimplemented!()
     }
 
-    pub fn make_struct(&mut self, props: &[(Str, Value<'i>)]) -> Value<'i> {
-        unimplemented!()
+    pub fn make_struct(&mut self, props: &[Value<'i>], ty: TypeRef<'i>) -> Value<'i> {
+        self.blocks[self.current_block].push(Instruction::Tuple(
+            props.iter().map(|prop| prop.raw).collect(),
+            ty,
+        ));
+
+        Value {
+            ty,
+            raw: self.next_id(),
+        }
     }
     // pub fn name(&mut self, value: Value<'i>, ty: TypeId) -> Value<'i> {}
     // pub fn vector(&mut self, values: &[Value<'i>]) -> Value<'i> {}
-    pub fn get_prop(&mut self, value: Value<'i>, prop: Str) -> Value<'i> {
-        unimplemented!()
+    pub fn get_prop(&mut self, value: Value<'i>, prop: u8, ty: TypeRef<'i>) -> Value<'i> {
+        self.blocks[self.current_block].push(Instruction::GetElem(
+            value.raw,
+            vec![Elem::Prop(Prop(prop))],
+        ));
+
+        Value {
+            ty,
+            raw: self.next_id(),
+        }
     }
     // pub fn ref_prop(&mut self, value: Value<'i>, prop: Prop) -> Value<'i> {}
     pub fn branch(

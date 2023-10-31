@@ -136,20 +136,22 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             return None;
         }
 
-        macro_rules! puncts {
-            ($name:ident, $len:expr) => {{
-                self.read_char();
+        macro_rules! punct {
+            ($name:ident, $len:expr) => {
                 Some(Token::Punctuation(
                     Punctuation::$name,
                     self.current_span().extend_back($len),
                 ))
-            }};
+            };
         }
 
         macro_rules! punct_impl {
             ([$char:literal => $name:ident , $($rest:tt)*] [$($out:tt)*] $none:expr, $depth:expr) => {
                 punct_impl!([$($rest)*] [$($out)*
-                    Some($char) => puncts!($name, $depth),
+                    Some($char) => {
+                        self.read_char();
+                        punct!($name, $depth)
+                    },
                 ] $none, $depth)
             };
 
@@ -173,20 +175,20 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             };
         }
 
-        macro_rules! punct {
+        macro_rules! puncts {
             ($($rest:tt)*) => {
                 punct_impl!([$($rest)*] [] None, 1)
             };
         }
 
-        punct! {
+        puncts! {
             '+' => Plus,
             '(' => LParen,
             ')' => RParen,
             '{' => LBrace,
             '}' => RBrace,
             ':' => Colon,
-            ';' => Colon,
+            ';' => Semicolon,
             ',' => Comma,
             '.' => Period,
             '-' => Minus {

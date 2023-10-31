@@ -16,7 +16,7 @@ fn main() {
 
     let mut parser = Parser::new(&ctx, BufReader::new(&ctx.source.file));
     let mut generator = Generator::new(&ctx);
-    let mut backend = Backend::new();
+    let mut backend = Backend::new(&ctx);
 
     let module = parser.parse_program();
     if ctx.flush_diagnostics() {

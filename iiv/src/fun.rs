@@ -1,6 +1,6 @@
 use std::{cell::UnsafeCell, fmt::Display};
 
-use crate::{pool, str::Str, ty::TypeRef, Instruction};
+use crate::{pool, str::Str, ty::TypeRef, Elem, Instruction};
 
 #[derive(Debug)]
 pub struct Signature<'i> {
@@ -57,9 +57,30 @@ impl<'i> Display for Function<'i> {
                     }
                     Instruction::Assign(lhs, rhs) => unimplemented!(),
                     Instruction::RefAssign(lhs, rhs) => unimplemented!(),
-                    Instruction::Tuple(tpl) => unimplemented!(),
+                    Instruction::Tuple(tpl, _) => {
+                        write!(f, "    %{} = (", i)?;
+                        for arg in tpl {
+                            write!(f, "%{}, ", arg.0)?;
+                        }
+                        writeln!(f, ")")?;
+                        i += 1;
+                    }
                     Instruction::Name(TypeId, Value) => unimplemented!(),
-                    Instruction::GetElem(lhs, path) => unimplemented!(),
+                    Instruction::GetElem(lhs, path) => {
+                        write!(f, "    %{} = elem %{} ", i, lhs.0)?;
+                        for elem in path {
+                            match elem {
+                                Elem::Index(idx) => {
+                                    write!(f, "%{} ", idx.0)?;
+                                }
+                                Elem::Prop(prop) => {
+                                    write!(f, "{} ", prop.0)?;
+                                }
+                            }
+                        }
+                        writeln!(f, "")?;
+                        i += 1;
+                    }
                     Instruction::GetElemRef(lhs, path) => unimplemented!(),
                     Instruction::Branch(lhs, yes, no) => unimplemented!(),
                     Instruction::Jump(Label) => unimplemented!(),

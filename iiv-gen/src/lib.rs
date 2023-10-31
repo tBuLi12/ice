@@ -123,7 +123,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         fun.body = self.iiv.build();
     }
 
-    fn check_val(&mut self, expr: &Expr) -> Value<'i> {
+    fn check_val(&mut self, expr: &Expr<'i>) -> Value<'i> {
         let obj = self.check(expr);
         self.get_val(&expr.span(), obj)
     }
@@ -135,7 +135,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         res
     }
 
-    fn check_type(&mut self, expr: &Expr) -> TypeRef<'i> {
+    fn check_type(&mut self, expr: &Expr<'i>) -> TypeRef<'i> {
         self.in_const_ctx(|g| {
             let obj = g.check(expr);
             g.get_type(&expr.span(), obj)
@@ -214,7 +214,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
-    fn check_statement(&mut self, item: &BlockItem) -> Value<'i> {
+    fn check_statement(&mut self, item: &BlockItem<'i>) -> Value<'i> {
         match item {
             BlockItem::Expr(expr) => self.check_val(expr),
             BlockItem::Break(_break) => self.never(),
@@ -291,7 +291,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
-    fn check_condition(&mut self, expr: &Expr) -> (Option<()>, Value<'i>) {
+    fn check_condition(&mut self, expr: &Expr<'i>) -> (Option<()>, Value<'i>) {
         match self.check(expr) {
             Object::IsResult(raw_val) => {
                 let val = Value {
@@ -309,7 +309,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
-    fn check(&mut self, expr: &Expr) -> Object<'i> {
+    fn check(&mut self, expr: &Expr<'i>) -> Object<'i> {
         match expr {
             Expr::Variable(ident) => self.resolve(ident),
             Expr::Block(block) => {
@@ -332,8 +332,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 self.iiv.make_tuple(&items).obj()
             }
             Expr::Struct(structure) => {
-                let mut is_const = true;
-                let props: Vec<_> = structure
+                let (props, vals): (Vec<_>, Vec<_>) = structure
                     .props
                     .iter()
                     .map(|prop| {
@@ -345,10 +344,26 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                                 value: prop.name.value,
                             })
                         };
-                        (prop.name.value, val)
+                        (
+                            self.ty.get_prop(prop.name.value, val.ty),
+                            (prop.name.value, val),
+                        )
+                    })
+                    .unzip();
+                let ty = self.ty.get_struct(props);
+                let iiv::ty::Type::Struct(prop_list) = *ty else {
+                    unreachable!()
+                };
+                let vals: Vec<_> = prop_list
+                    .iter()
+                    .map(|prop| {
+                        *vals
+                            .iter()
+                            .find_map(|(name, val)| if *name == prop.0 { Some(val) } else { None })
+                            .unwrap()
                     })
                     .collect();
-                self.iiv.make_struct(&props).obj()
+                self.iiv.make_struct(&vals, ty).obj()
             }
             Expr::If(if_expr) => {
                 let (scope, cond) = self.check_condition(&*if_expr.condition);
@@ -420,7 +435,18 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             }
             Expr::Prop(prop) => {
                 let lhs = self.check_val(&prop.lhs);
-                self.iiv.get_prop(lhs, prop.prop.value).obj()
+                if let Some((i, prop_ty)) = lhs.ty.prop(prop.prop.value) {
+                    dbg!(i);
+                    self.iiv.get_prop(lhs, i, prop_ty).obj()
+                } else {
+                    self.msg(err!(
+                        &prop.span(),
+                        "property {} does not exist on type {}",
+                        prop.prop.value,
+                        lhs.ty
+                    ));
+                    self.invalid().obj()
+                }
             }
             Expr::Field(Field) => unimplemented!(),
             Expr::Index(Index) => unimplemented!(),

@@ -75,7 +75,7 @@ impl Span {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct RawValue(pub u16);
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub struct Prop(u8);
+pub struct Prop(pub u8);
 #[derive(Clone, Copy)]
 pub struct InstIndex(u16);
 #[derive(Clone, Copy, Debug)]
@@ -104,7 +104,7 @@ pub enum Instruction<'i> {
     Call(FuncRef<'i>, Vec<RawValue>),
     Assign(RawValue, RawValue),
     RefAssign(RawValue, RawValue),
-    Tuple(Vec<RawValue>),
+    Tuple(Vec<RawValue>, TypeRef<'i>),
     Name(TypeRef<'i>, RawValue),
     GetElem(RawValue, Vec<Elem>),
     GetElemRef(RawValue, Vec<Elem>),

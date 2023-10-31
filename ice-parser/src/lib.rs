@@ -1,7 +1,7 @@
 use std::{io, mem};
 
 use ast::*;
-use iiv::{diagnostics, Ctx, Span};
+use iiv::{diagnostics, err, Ctx, Span};
 use lexer::{Keyword, Lexer, Punctuation, Token};
 
 mod lexer;
@@ -80,6 +80,11 @@ impl<'i, R: io::Read> Parser<'i, R> {
                     .messages
                     .add(diagnostics::error(&self.current.span(), msg.to_string())),
             }
+        }
+
+        if !matches!(self.current, Token::Eof(_)) {
+            self.messages
+                .add(err!(&self.current.span(), "unexpected token"))
         }
 
         Module {
@@ -222,7 +227,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
 
     fn parse_block(&mut self) -> Parsed<Expr<'i>> {
         let ((exprs, trailing_separator), span) =
-            self.braces(|p| p.list(Punctuation::Colon, |p| p.parse_block_item()))?;
+            self.braces(|p| p.list(Punctuation::Semicolon, |p| p.parse_block_item()))?;
 
         let len = exprs.len();
         Ok(Expr::Block(Block {
@@ -240,33 +245,108 @@ impl<'i, R: io::Read> Parser<'i, R> {
         self.parse_expr()
     }
 
-    fn parse_expr(&mut self) -> Parsed<Expr<'i>> {
-        let mut expr = self
-            .ident()
-            .map(Expr::Variable)
-            .or_else(|_| self.int_lit().map(Expr::Int))
-            .or_else(|_| self.str_lit().map(Expr::String))?;
+    fn parse_struct_or_block(&mut self) -> Parsed<Expr<'i>> {
+        enum StrucOrBlock<'i> {
+            Struct(Vec<StructProp<'i>>),
+            Block(Vec<BlockItem<'i>>, bool),
+        }
 
+        let (inner, span) = self.braces(|p| {
+            if let Ok(ident) = p.ident() {
+                if p.eat_punct(Punctuation::Colon).is_ok() {
+                    let first_val = p.parse_expr().expected("an expression")?;
+                    let _ = p.eat_punct(Punctuation::Comma);
+                    let (mut props, _) = p.list(Punctuation::Comma, |p| {
+                        let name = p.ident()?;
+                        if p.eat_punct(Punctuation::Colon).is_ok() {
+                            let value = p.parse_expr().expected("an expression")?;
+                            return Ok(StructProp {
+                                name,
+                                value: Some(value),
+                            });
+                        }
+                        Ok(StructProp { name, value: None })
+                    })?;
+                    props.insert(
+                        0,
+                        StructProp {
+                            name: ident,
+                            value: Some(first_val),
+                        },
+                    );
+                    Ok(StrucOrBlock::Struct(props))
+                } else {
+                    let first_expr = p.parse_rhs(Expr::Variable(ident))?;
+                    let semi = p.eat_punct(Punctuation::Semicolon).is_ok();
+                    let (mut exprs, trailing_expression) =
+                        p.list(Punctuation::Semicolon, |p| p.parse_block_item())?;
+                    exprs.insert(0, BlockItem::Expr(first_expr));
+                    let just_one = exprs.len() == 1;
+                    Ok(StrucOrBlock::Block(
+                        exprs,
+                        trailing_expression || (just_one && !semi),
+                    ))
+                }
+            } else {
+                let (exprs, trailing_expression) =
+                    p.list(Punctuation::Semicolon, |p| p.parse_block_item())?;
+                Ok(StrucOrBlock::Block(exprs, trailing_expression))
+            }
+        })?;
+
+        Ok(match inner {
+            StrucOrBlock::Block(items, has_trailing_expression) => Expr::Block(Block {
+                span,
+                items,
+                has_trailing_expression,
+            }),
+            StrucOrBlock::Struct(props) => Expr::Struct(Struct {
+                span,
+                props,
+                ty: None,
+            }),
+        })
+    }
+
+    fn parse_rhs(&mut self, mut lhs: Expr<'i>) -> Parsed<Expr<'i>> {
         loop {
             if self.eat_punct(Punctuation::Plus).is_ok() {
                 let rhs = self.parse_expr().expected("an expression")?;
-                expr = Expr::Add(Add {
-                    lhs: Box::new(expr),
+                lhs = Expr::Add(Add {
+                    lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
                 })
             } else if let Ok(((args, _), span)) = self
                 .parens(|p| p.list(Punctuation::Comma, |p| p.parse_expr()))
                 .invalid()?
             {
-                expr = Expr::Call(Call {
+                lhs = Expr::Call(Call {
                     span,
-                    lhs: Box::new(expr),
+                    lhs: Box::new(lhs),
                     type_args: vec![],
                     args,
                 });
+            } else if self.eat_punct(Punctuation::Period).is_ok() {
+                let prop = self.ident().expected("property name")?;
+                lhs = Expr::Prop(Prop {
+                    lhs: Box::new(lhs),
+                    prop,
+                    tr: None,
+                });
             } else {
-                return Ok(expr);
+                return Ok(lhs);
             }
         }
+    }
+
+    fn parse_expr(&mut self) -> Parsed<Expr<'i>> {
+        let mut expr = self
+            .ident()
+            .map(Expr::Variable)
+            .or_else(|_| self.int_lit().map(Expr::Int))
+            .or_else(|_| self.str_lit().map(Expr::String))
+            .or_else(|_| self.parse_struct_or_block())?;
+
+        self.parse_rhs(expr)
     }
 }

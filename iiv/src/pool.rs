@@ -9,14 +9,17 @@ use std::{
     ptr, slice,
 };
 
-use crate::{fun, str::Str, Instruction};
+use crate::{fun, str::Str};
 
 struct PinnedVec<T> {
+    // This is probably UB when the enclosing pool cell is mutably borrowed, because the slice is owned - use ptrs
     bufs: Vec<Box<[MaybeUninit<T>]>>,
     next_idx: usize,
 }
 
 impl<T> PinnedVec<T> {
+    const INITIAL_SIZE: usize = 64;
+
     fn get_new_box(size: usize) -> Box<[MaybeUninit<T>]> {
         let layout = Layout::array::<T>(size).unwrap();
         assert!(layout.size() != 0);
@@ -27,9 +30,13 @@ impl<T> PinnedVec<T> {
 
     fn new() -> Self {
         PinnedVec {
-            bufs: vec![Self::get_new_box(64)],
+            bufs: vec![Self::get_new_box(Self::INITIAL_SIZE)],
             next_idx: 0,
         }
+    }
+
+    fn len(&self) -> usize {
+        self.bufs.last().unwrap().len() - Self::INITIAL_SIZE + self.next_idx
     }
 
     fn next(&mut self) -> &mut MaybeUninit<T> {
@@ -104,6 +111,30 @@ impl<'i, T: Hash + Eq + Debug> RawPool<'i, T> {
         let val = Ref(self.storage.next().write(value));
         self.index.insert(val.0, val);
         val
+    }
+
+    fn index_of(&'i self, value: Ref<'i, T>) -> usize {
+        let (size, offset) = self
+            .storage
+            .bufs
+            .iter()
+            .rev()
+            .find_map(|buf| {
+                let range = buf.as_ptr_range();
+                let raw_ref = value.0 as *const _ as *const _;
+                if range.contains(&raw_ref) {
+                    Some((buf.len(), unsafe { raw_ref.offset_from(range.start) }))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+
+        size - PinnedVec::<T>::INITIAL_SIZE + offset as usize
+    }
+
+    fn len(&'i self) -> usize {
+        self.storage.len()
     }
 
     fn new() -> Self {
@@ -236,6 +267,16 @@ impl<'i, T: Hash + Eq + Debug> Pool<'i, T> {
     pub fn get(&self, value: T) -> Ref<'_, T> {
         let inner = unsafe { &mut *self.0.get() };
         inner.get(value)
+    }
+
+    pub fn index_of(&'i self, value: Ref<'i, T>) -> usize {
+        let inner = unsafe { &*self.0.get() };
+        inner.index_of(value)
+    }
+
+    pub fn len(&'i self) -> usize {
+        let inner = unsafe { &*self.0.get() };
+        inner.len()
     }
 
     pub fn new() -> Self {

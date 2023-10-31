@@ -1,4 +1,4 @@
-use std::fmt;
+use std::{fmt, ops::Deref};
 
 use crate::{
     pool::{self, List},
@@ -9,11 +9,27 @@ use crate::{
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct TypeRef<'i>(pool::Ref<'i, Type<'i>>);
 
+impl<'i> Deref for TypeRef<'i> {
+    type Target = Type<'i>;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct ShapeRef<'i>(pool::Ref<'i, Shape<'i>>);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct PropRef<'i>(pool::Ref<'i, Prop<'i>>);
+
+impl<'i> Deref for PropRef<'i> {
+    type Target = Prop<'i>;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
 
 impl<'i> PartialOrd for PropRef<'i> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
@@ -70,7 +86,7 @@ pub enum Shape<'i> {
 }
 
 #[derive(Clone, Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub struct Prop<'i>(Str<'i>, TypeRef<'i>);
+pub struct Prop<'i>(pub Str<'i>, pub TypeRef<'i>);
 
 pub struct Pool<'i> {
     ty_pool: pool::Pool<'i, Type<'i>>,
@@ -91,6 +107,14 @@ impl<'i> Pool<'i> {
             shape_pool: pool::Pool::new(),
             str_pool: crate::str::StrPool::new(),
         }
+    }
+
+    pub fn index_of(&'i self, value: TypeRef<'i>) -> usize {
+        self.ty_pool.index_of(value.0)
+    }
+
+    pub fn len(&'i self) -> usize {
+        self.ty_pool.len()
     }
 
     pub fn get_tuple(&'i self, types: Vec<TypeRef<'i>>) -> TypeRef<'i> {
@@ -166,17 +190,16 @@ impl<'i> Pool<'i> {
 }
 
 impl<'i> TypeRef<'i> {
-    pub fn prop(&self, name: Str<'i>) -> TypeRef<'i> {
+    pub fn prop(&self, name: Str<'i>) -> Option<(u8, TypeRef<'i>)> {
         match *self.0 {
-            Type::Struct(props) => {
-                props
-                    .into_iter()
-                    .find(|&&prop| prop.0 .0 == name)
-                    .unwrap()
-                    .0
-                     .1
-            }
-            _ => panic!(),
+            Type::Struct(props) => Some(props.into_iter().enumerate().find_map(|(i, &prop)| {
+                if prop.0 .0 == name {
+                    Some((i as u8, prop.0 .1))
+                } else {
+                    None
+                }
+            })?),
+            _ => None,
         }
     }
 
