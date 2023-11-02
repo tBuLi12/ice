@@ -316,6 +316,12 @@ impl<'i, R: io::Read> Parser<'i, R> {
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
                 })
+            } else if self.eat_punct(Punctuation::DoubleEq).is_ok() {
+                let rhs = self.parse_expr().expected("an expression")?;
+                lhs = Expr::Eq(Equals {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
             } else if let Ok(((args, _), span)) = self
                 .parens(|p| p.list(Punctuation::Comma, |p| p.parse_expr()))
                 .invalid()?
@@ -339,13 +345,33 @@ impl<'i, R: io::Read> Parser<'i, R> {
         }
     }
 
+    fn parse_if(&mut self) -> Parsed<Expr<'i>> {
+        let if_span = self.eat_kw(Keyword::If)?;
+        let (condition, _) = self.parens(|p| p.parse_expr()).expected("a condition")?;
+        let yes = self.parse_expr().expected("an expression")?;
+        let no = if self.eat_kw(Keyword::Else).is_ok() {
+            let no = self.parse_expr().expected("an expression")?;
+            Some(no)
+        } else {
+            None
+        };
+        Ok(Expr::If(If {
+            span: if_span.to(no.as_ref().map(|e| e.span()).unwrap_or_else(|| yes.span())),
+            condition: Box::new(condition),
+            yes: Box::new(yes),
+            no: no.map(Box::new),
+        }))
+    }
+
     fn parse_expr(&mut self) -> Parsed<Expr<'i>> {
-        let mut expr = self
+        let expr = self
             .ident()
             .map(Expr::Variable)
             .or_else(|_| self.int_lit().map(Expr::Int))
             .or_else(|_| self.str_lit().map(Expr::String))
-            .or_else(|_| self.parse_struct_or_block())?;
+            .or_else(|_| self.parse_struct_or_block())
+            .invalid()?
+            .or_else(|_| self.parse_if())?;
 
         self.parse_rhs(expr)
     }

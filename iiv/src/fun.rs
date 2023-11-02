@@ -1,6 +1,6 @@
 use std::{cell::UnsafeCell, fmt::Display};
 
-use crate::{pool, str::Str, ty::TypeRef, Elem, Instruction};
+use crate::{builder::Block, pool, str::Str, ty::TypeRef, Elem, Instruction};
 
 #[derive(Debug)]
 pub struct Signature<'i> {
@@ -12,11 +12,13 @@ pub struct Signature<'i> {
 #[derive(Debug)]
 pub struct Function<'i> {
     pub sig: Signature<'i>,
-    pub body: Vec<Vec<Instruction<'i>>>,
+    pub body: Vec<Block<'i>>,
 }
 
 impl<'i> Display for Function<'i> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        use crate::diagnostics::fmt;
+
         write!(f, "fun {}(", self.sig.name)?;
         let mut i = 0;
         for param in self.sig.params.iter() {
@@ -25,8 +27,8 @@ impl<'i> Display for Function<'i> {
         }
         writeln!(f, "): {}", self.sig.ret_ty)?;
         for (block_index, block) in self.body.iter().enumerate() {
-            writeln!(f, "b{}:", block_index)?;
-            for inst in block {
+            writeln!(f, "b{} {}:", block_index, fmt::List(&block.params))?;
+            for inst in &block.instructions {
                 match inst {
                     Instruction::Int(val) => {
                         writeln!(f, "    %{} = {}", i, val)?;
@@ -41,7 +43,10 @@ impl<'i> Display for Function<'i> {
                     Instruction::Div(lhs, rhs) => unimplemented!(),
                     Instruction::Not(Value) => unimplemented!(),
                     Instruction::Neg(Value) => unimplemented!(),
-                    Instruction::Eq(lhs, rhs) => unimplemented!(),
+                    Instruction::Eq(lhs, rhs) => {
+                        writeln!(f, "    %{} = %{} == %{}", i, lhs.0, rhs.0)?;
+                        i += 1;
+                    }
                     Instruction::Neq(lhs, rhs) => unimplemented!(),
                     Instruction::Gt(lhs, rhs) => unimplemented!(),
                     Instruction::Lt(lhs, rhs) => unimplemented!(),
@@ -82,9 +87,20 @@ impl<'i> Display for Function<'i> {
                         i += 1;
                     }
                     Instruction::GetElemRef(lhs, path) => unimplemented!(),
-                    Instruction::Branch(lhs, yes, no) => unimplemented!(),
-                    Instruction::Jump(Label) => unimplemented!(),
-                    Instruction::Phi(labels) => unimplemented!(),
+                    Instruction::Branch(lhs, yes, yes_args, no, no_args) => {
+                        writeln!(
+                            f,
+                            "    br %{} ? b{} {} : b{} {}",
+                            lhs.0,
+                            yes.0,
+                            fmt::List(&yes_args),
+                            no.0,
+                            fmt::List(&no_args),
+                        )?;
+                    }
+                    Instruction::Jump(label, args) => {
+                        writeln!(f, "    jmp b{} {}", label.0, fmt::List(&args))?;
+                    }
                     Instruction::Return(val) => {
                         writeln!(f, "    return %{}", val.0)?;
                     }

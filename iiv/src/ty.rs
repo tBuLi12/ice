@@ -1,4 +1,4 @@
-use std::{fmt, ops::Deref};
+use std::{env::consts::FAMILY, fmt, ops::Deref};
 
 use crate::{
     pool::{self, List},
@@ -190,6 +190,13 @@ impl<'i> Pool<'i> {
 }
 
 impl<'i> TypeRef<'i> {
+    pub fn elem(&self, i: u8) -> Option<TypeRef<'i>> {
+        match *self.0 {
+            Type::Struct(props) => Some(props[i as usize].1),
+            _ => None,
+        }
+    }
+
     pub fn prop(&self, name: Str<'i>) -> Option<(u8, TypeRef<'i>)> {
         match *self.0 {
             Type::Struct(props) => Some(props.into_iter().enumerate().find_map(|(i, &prop)| {
@@ -205,6 +212,13 @@ impl<'i> TypeRef<'i> {
 
     pub fn intersects(self, other: TypeRef<'i>) -> TypeOverlap {
         match (&*self.0, &*other.0) {
+            (Type::Builtin(types), Type::Builtin(types2)) => {
+                if types == types2 {
+                    TypeOverlap::Complete
+                } else {
+                    TypeOverlap::None
+                }
+            }
             (Type::Tuple(types), Type::Tuple(types2)) => overlap_list(*types, *types2),
             (Type::Struct(props), Type::Struct(props2)) => overlap_props(*props, *props2),
             (Type::Vector(ty), Type::Vector(ty2)) => ty.intersects(*ty2),
@@ -238,6 +252,13 @@ impl<'i> TypeRef<'i> {
             | (Type::Builtin(_), _) => TypeOverlap::None,
         }
     }
+
+    pub fn has_primitive_repr(self) -> bool {
+        match *self {
+            Type::Ref(_) | Type::Constant(_) | Type::Builtin(_) => true,
+            _ => false,
+        }
+    }
 }
 
 fn overlap_props(p1: List<'_, PropRef<'_>>, p2: List<'_, PropRef<'_>>) -> TypeOverlap {
@@ -265,7 +286,7 @@ fn overlap_list(t1: List<'_, TypeRef<'_>>, t2: List<'_, TypeRef<'_>>) -> TypeOve
         .fold(TypeOverlap::Complete, std::cmp::min)
 }
 
-#[derive(PartialEq, Eq, PartialOrd, Ord)]
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum TypeOverlap {
     None,
     Partial,

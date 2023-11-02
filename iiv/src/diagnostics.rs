@@ -42,7 +42,7 @@ macro_rules! err {
 
 pub struct Diagnostics(UnsafeCell<Vec<Diagnostic>>);
 
-mod fmt {
+pub mod fmt {
     pub mod color {
         pub const RED: &'static str = "\u{001b}[31;1m";
         pub const BLUE: &'static str = "\u{001b}[36;1m";
@@ -73,6 +73,17 @@ mod fmt {
             assert_eq!(n_of_digits(10), 2);
             assert_eq!(n_of_digits(99), 2);
             assert_eq!(n_of_digits(100), 3);
+        }
+    }
+
+    pub struct List<'a, T>(pub &'a [T]);
+    impl<'a, T: Display> Display for List<'a, T> {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "[")?;
+            for item in self.0 {
+                write!(f, "{}, ", item)?;
+            }
+            write!(f, "]")
         }
     }
 

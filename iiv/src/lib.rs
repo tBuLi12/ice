@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::{fmt::Display, fs::File};
 
 use diagnostics::Diagnostics;
 use fun::Function;
@@ -74,12 +74,19 @@ impl Span {
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct RawValue(pub u16);
+
+impl Display for RawValue {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "%{}", self.0)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Prop(pub u8);
 #[derive(Clone, Copy)]
 pub struct InstIndex(u16);
 #[derive(Clone, Copy, Debug)]
-pub struct Label(u16);
+pub struct Label(pub u16);
 
 #[derive(Clone, Copy, Debug)]
 pub enum Elem {
@@ -108,9 +115,8 @@ pub enum Instruction<'i> {
     Name(TypeRef<'i>, RawValue),
     GetElem(RawValue, Vec<Elem>),
     GetElemRef(RawValue, Vec<Elem>),
-    Branch(RawValue, Label, Label),
-    Jump(Label),
-    Phi(Vec<(Label, RawValue)>),
+    Branch(RawValue, Label, Vec<RawValue>, Label, Vec<RawValue>),
+    Jump(Label, Vec<RawValue>),
     Return(RawValue),
     Ty(TypeRef<'i>),
     Int(u32),

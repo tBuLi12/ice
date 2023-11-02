@@ -1,20 +1,13 @@
-use std::{
-    cell::UnsafeCell,
-    collections::HashMap,
-    fs::File,
-    iter::{zip, Sum},
-    ops,
-    path::Path,
-};
+use std::{cell::UnsafeCell, collections::HashMap, fs::File, path::Path};
 
 // use cranelift::prelude::InstBuilder;
 use cranelift::{
     codegen::{
-        ir::{self, stackslot::StackSize, InstBuilder},
+        ir::{self, InstBuilder},
         isa, settings,
     },
     prelude::{
-        types, AbiParam, FunctionBuilder, FunctionBuilderContext, MemFlags, StackSlotData,
+        types, AbiParam, FunctionBuilder, FunctionBuilderContext, IntCC, MemFlags, StackSlotData,
         StackSlotKind,
     },
 };
@@ -48,6 +41,7 @@ struct FunctionTransformer<'i, 'b, 'p, 'fb> {
     funs: &'p HashMap<FuncRef<'i>, FuncId>,
     fb: &'fb mut FunctionBuilder<'p>,
     values: Vec<ClftValue<'i>>,
+    blocks: Vec<ir::Block>,
 }
 
 struct LayoutCache<'i> {
@@ -66,6 +60,34 @@ struct ClftValue<'i> {
     value: ClftValueRaw,
     ty: TypeRef<'i>,
 }
+
+#[derive(Clone, Copy)]
+struct Location<'i> {
+    offset: u32,
+    ptr: ClftValue<'i>,
+}
+
+impl<'i> From<ClftValue<'i>> for Location<'i> {
+    fn from(value: ClftValue<'i>) -> Self {
+        Location {
+            offset: 0,
+            ptr: value,
+        }
+    }
+}
+
+// impl<'i> ClftValue<'i> {
+//     fn new(value: ir::Value, ty: TypeRef<'i>) -> Self {
+//         ClftValue {
+//             value: if ty.has_primitive_repr() {
+//                 ClftValueRaw::Ssa(value)
+//             } else {
+//                 ClftValueRaw::Ptr(value)
+//             },
+//             ty,
+//         }
+//     }
+// }
 
 impl<'i> Backend<'i> {
     pub fn new(ctx: &'i Ctx<'i>) -> Self {
@@ -151,8 +173,10 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
                 ty_pool: self.ty_pool,
                 fb: &mut builder,
                 values: Vec::new(),
+                blocks: vec![entry],
             }
-            .gen(&fun.sig, &fun.body[0]);
+            .gen(&fun.sig, &fun.body);
+            builder.seal_all_blocks();
             builder.finalize();
             self.module.define_function(id, &mut ctx).unwrap();
             println!("{}", ctx.func);
@@ -172,7 +196,114 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
         }
     }
 
-    fn gen(&mut self, sig: &iiv::fun::Signature<'i>, insts: &[iiv::Instruction<'i>]) {
+    fn read(&mut self, location: Location<'i>) -> ClftValue<'i> {
+        let ty = location.ptr.ty;
+        if ty.has_primitive_repr() {
+            let value = match location.ptr.value {
+                ClftValueRaw::Ssa(val) => val,
+                ClftValueRaw::StackMemory(slot) => {
+                    self.fb
+                        .ins()
+                        .stack_load(as_ty(ty), slot, location.offset as i32)
+                }
+            };
+            ClftValue {
+                ty,
+                value: ClftValueRaw::Ssa(value),
+            }
+        } else {
+            let copied = self.alloc(ty);
+            self.write(copied.into(), location);
+            copied
+        }
+    }
+
+    fn write(&mut self, location: Location<'i>, data: Location<'i>) {
+        match (location.ptr, data.ptr) {
+            (
+                ClftValue {
+                    value: ClftValueRaw::Ssa(_),
+                    ..
+                },
+                _,
+            ) => {
+                panic!("at the disco cannot write to ssa value");
+            }
+            (
+                ClftValue {
+                    value: ClftValueRaw::StackMemory(dst_slot),
+                    ty,
+                },
+                ClftValue {
+                    value: ClftValueRaw::StackMemory(src_slot),
+                    ..
+                },
+            ) => {
+                let l = self.layouts.layout_of(ty);
+                let dst = self
+                    .fb
+                    .ins()
+                    .stack_addr(types::R64, dst_slot, location.offset as i32);
+                let src = self
+                    .fb
+                    .ins()
+                    .stack_addr(types::R64, src_slot, data.offset as i32);
+                self.fb.emit_small_memory_copy(
+                    self.module.target_config(),
+                    dst,
+                    src,
+                    l.size as u64,
+                    1,
+                    1,
+                    true,
+                    MemFlags::new(),
+                );
+            }
+            (
+                ClftValue {
+                    value: ClftValueRaw::StackMemory(dst_slot),
+                    ..
+                },
+                ClftValue {
+                    value: ClftValueRaw::Ssa(value),
+                    ..
+                },
+            ) => {
+                self.fb
+                    .ins()
+                    .stack_store(value, dst_slot, location.offset as i32);
+            }
+        }
+    }
+
+    fn alloc(&mut self, ty: TypeRef<'i>) -> ClftValue<'i> {
+        let layout = self.layouts.layout_of(ty);
+        let slot = self
+            .fb
+            .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, layout.size));
+
+        ClftValue {
+            value: ClftValueRaw::StackMemory(slot),
+            ty,
+        }
+    }
+
+    fn elem(&mut self, location: Location<'i>, elem: usize) -> Location<'i> {
+        let raw_value = location.ptr.value;
+        let ty = location.ptr.ty;
+        let prop_ty = ty.elem(elem as u8).expect("invalid element reference");
+        let layout = self.layouts.layout_of(ty);
+
+        Location {
+            offset: location.offset + layout.fields[elem],
+            ptr: ClftValue {
+                value: raw_value,
+                ty: prop_ty,
+            },
+        }
+    }
+
+    fn gen(&mut self, sig: &iiv::fun::Signature<'i>, blocks: &[iiv::builder::Block<'i>]) {
         for (param, &ty) in self
             .fb
             .block_params(self.fb.current_block().unwrap())
@@ -185,150 +316,119 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
             })
         }
 
-        self.fb
-            .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, 12));
+        for block in &blocks[1..] {
+            let new_block = self.fb.create_block();
+            self.blocks.push(new_block);
+            for param in &block.params {
+                self.fb.append_block_param(new_block, as_ty(*param));
+            }
+        }
 
-        for inst in insts {
-            match inst {
-                iiv::Instruction::Int(val) => self.values.push(ClftValue {
-                    value: ClftValueRaw::Ssa(self.fb.ins().iconst(types::I64, *val as i64)),
-                    ty: self.ty_pool.get_int(),
-                }),
-                iiv::Instruction::Add(lhs, rhs) => {
-                    let ty = self.values[lhs.0 as usize].ty;
-                    let lhs = self.get(*lhs);
-                    let rhs = self.get(*rhs);
-                    self.values.push(ClftValue {
-                        value: ClftValueRaw::Ssa(self.fb.ins().iadd(lhs, rhs)),
-                        ty,
-                    })
-                }
-                iiv::Instruction::Sub(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Mul(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Div(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Not(Value) => unimplemented!(),
-                iiv::Instruction::Neg(Value) => unimplemented!(),
-                iiv::Instruction::Eq(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Neq(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Gt(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Lt(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::GtEq(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::LtEq(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Call(fun, args) => {
-                    let local_func = self
-                        .module
-                        .declare_func_in_func(self.funs[fun], &mut self.fb.func);
-                    let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
-                    let call = self.fb.ins().call(local_func, &args);
-                    self.values.push(ClftValue {
-                        value: ClftValueRaw::Ssa(self.fb.inst_results(call)[0]),
-                        ty: fun.borrow().sig.ret_ty,
-                    })
-                }
-                iiv::Instruction::Assign(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::RefAssign(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Tuple(tpl, ty) => {
-                    let layout = self.layouts.layout_of(*ty);
-                    let slot = self.fb.create_sized_stack_slot(StackSlotData::new(
-                        StackSlotKind::ExplicitSlot,
-                        layout.size,
-                    ));
-                    for (val, &offset) in tpl.iter().zip(&layout.fields) {
-                        match self.values[val.0 as usize] {
-                            ClftValue {
-                                value: ClftValueRaw::Ssa(value),
-                                ty,
-                            } => {
-                                self.fb.ins().stack_store(value, slot, offset as i32);
-                            }
-                            ClftValue {
-                                value: ClftValueRaw::StackMemory(src_slot),
-                                ty,
-                            } => {
-                                let l = self.layouts.layout_of(ty);
-                                let dst = self.fb.ins().stack_addr(types::R64, slot, offset as i32);
-                                let src = self.fb.ins().stack_addr(types::R64, src_slot, 0);
-                                self.fb.emit_small_memory_copy(
-                                    self.module.target_config(),
-                                    dst,
-                                    src,
-                                    l.size as u64,
-                                    1,
-                                    1,
-                                    true,
-                                    MemFlags::new(),
-                                );
-                            }
+        for (i, block) in blocks.iter().enumerate() {
+            self.fb.switch_to_block(self.blocks[i]);
+            for param in self
+                .fb
+                .block_params(self.blocks[i])
+                .iter()
+                .zip(&block.params)
+            {
+                self.values.push(ClftValue {
+                    value: ClftValueRaw::Ssa(*param.0),
+                    ty: *param.1,
+                });
+            }
+            for inst in &block.instructions {
+                match inst {
+                    iiv::Instruction::Int(val) => self.values.push(ClftValue {
+                        value: ClftValueRaw::Ssa(self.fb.ins().iconst(types::I64, *val as i64)),
+                        ty: self.ty_pool.get_int(),
+                    }),
+                    iiv::Instruction::Add(lhs, rhs) => {
+                        let ty = self.values[lhs.0 as usize].ty;
+                        let lhs = self.get(*lhs);
+                        let rhs = self.get(*rhs);
+                        self.values.push(ClftValue {
+                            value: ClftValueRaw::Ssa(self.fb.ins().iadd(lhs, rhs)),
+                            ty,
+                        })
+                    }
+                    iiv::Instruction::Sub(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Mul(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Div(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Not(Value) => unimplemented!(),
+                    iiv::Instruction::Neg(Value) => unimplemented!(),
+                    iiv::Instruction::Eq(lhs, rhs) => {
+                        let lhs = self.get(*lhs);
+                        let rhs = self.get(*rhs);
+                        self.values.push(ClftValue {
+                            value: ClftValueRaw::Ssa(self.fb.ins().icmp(IntCC::Equal, lhs, rhs)),
+                            ty: self.ty_pool.get_ty_bool(),
+                        })
+                    }
+                    iiv::Instruction::Neq(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Gt(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Lt(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::GtEq(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::LtEq(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Call(fun, args) => {
+                        let local_func = self
+                            .module
+                            .declare_func_in_func(self.funs[fun], &mut self.fb.func);
+                        let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
+                        let call = self.fb.ins().call(local_func, &args);
+                        self.values.push(ClftValue {
+                            value: ClftValueRaw::Ssa(self.fb.inst_results(call)[0]),
+                            ty: fun.borrow().sig.ret_ty,
+                        })
+                    }
+                    iiv::Instruction::Assign(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::RefAssign(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Tuple(tpl, ty) => {
+                        let tuple_value = self.alloc(*ty);
+                        self.values.push(tuple_value);
+
+                        let tuple_location: Location = tuple_value.into();
+
+                        for (i, val) in tpl.iter().enumerate() {
+                            let field_location = self.elem(tuple_location, i);
+                            self.write(field_location, self.values[val.0 as usize].into());
                         }
                     }
-                    self.values.push(ClftValue {
-                        value: ClftValueRaw::StackMemory(slot),
-                        ty: *ty,
-                    });
-                }
-                iiv::Instruction::Name(TypeId, Value) => unimplemented!(),
-                iiv::Instruction::GetElem(lhs, path) => {
-                    let value = self.values[lhs.0 as usize];
-                    let layout = self.layouts.layout_of(value.ty);
-                    match (&*value.ty, value.value) {
-                        (iiv::ty::Type::Struct(props), ClftValueRaw::StackMemory(slot)) => {
-                            let iiv::Elem::Prop(iiv::Prop(idx)) = path[0] else {
-                                panic!("invalid get_elem");
-                            };
-                            let prop_ty = props[idx as usize].1;
-                            let prop_layout = self.layouts.layout_of(prop_ty);
-                            let primitive = matches!(*prop_ty, iiv::ty::Type::Builtin(_));
-                            let prop_value = if primitive {
-                                ClftValue {
-                                    ty: prop_ty,
-                                    value: ClftValueRaw::Ssa(self.fb.ins().stack_load(
-                                        as_ty(prop_ty),
-                                        slot,
-                                        layout.fields[idx as usize] as i32,
-                                    )),
-                                }
-                            } else {
-                                let prop_slot =
-                                    self.fb.create_sized_stack_slot(StackSlotData::new(
-                                        StackSlotKind::ExplicitSlot,
-                                        prop_layout.size,
-                                    ));
-                                let dst = self.fb.ins().stack_addr(types::R64, prop_slot, 0);
-                                let src = self.fb.ins().stack_addr(
-                                    types::R64,
-                                    slot,
-                                    layout.fields[idx as usize] as i32,
-                                );
-                                self.fb.emit_small_memory_copy(
-                                    self.module.target_config(),
-                                    dst,
-                                    src,
-                                    prop_layout.size.into(),
-                                    1,
-                                    1,
-                                    true,
-                                    MemFlags::new(),
-                                );
-                                ClftValue {
-                                    ty: prop_ty,
-                                    value: ClftValueRaw::StackMemory(prop_slot),
-                                }
-                            };
-                            self.values.push(prop_value);
-                        }
-                        _ => panic!("invalid get_elem"),
+                    iiv::Instruction::Name(TypeId, Value) => unimplemented!(),
+                    iiv::Instruction::GetElem(lhs, path) => {
+                        let value = self.values[lhs.0 as usize];
+                        let iiv::Elem::Prop(iiv::Prop(idx)) = path[0] else {
+                            panic!("invalid get_elem");
+                        };
+
+                        let elem_loc = self.elem(value.into(), idx as usize);
+                        let elem_value = self.read(elem_loc);
+                        self.values.push(elem_value);
                     }
-                }
-                iiv::Instruction::GetElemRef(lhs, path) => unimplemented!(),
-                iiv::Instruction::Branch(lhs, yes, no) => unimplemented!(),
-                iiv::Instruction::Jump(Label) => unimplemented!(),
-                iiv::Instruction::Phi(labels) => unimplemented!(),
-                iiv::Instruction::Return(val) => {
-                    let val = self.get(*val);
-                    self.fb.ins().return_(&[val]);
-                }
-                iiv::Instruction::Ty(TypeId) => unimplemented!(),
-            };
+                    iiv::Instruction::GetElemRef(lhs, path) => unimplemented!(),
+                    iiv::Instruction::Branch(lhs, yes, yes_args, no, no_args) => {
+                        let yes_args: Vec<_> = yes_args.iter().map(|arg| self.get(*arg)).collect();
+                        let no_args: Vec<_> = no_args.iter().map(|arg| self.get(*arg)).collect();
+                        let cond = self.get(*lhs);
+                        self.fb.ins().brif(
+                            cond,
+                            self.blocks[yes.0 as usize],
+                            &yes_args,
+                            self.blocks[no.0 as usize],
+                            &no_args,
+                        );
+                    }
+                    iiv::Instruction::Jump(label, args) => {
+                        let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
+                        self.fb.ins().jump(self.blocks[label.0 as usize], &args);
+                    }
+                    iiv::Instruction::Return(val) => {
+                        let val = self.get(*val);
+                        self.fb.ins().return_(&[val]);
+                    }
+                    iiv::Instruction::Ty(TypeId) => unimplemented!(),
+                };
+            }
         }
     }
 }

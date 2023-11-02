@@ -154,12 +154,12 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         Value { raw: value.raw, ty }
     }
 
-    fn make_type_union(&'i mut self, span: &Span, types: &[TypeRef<'i>]) -> TypeRef<'i> {
+    fn make_type_union(&mut self, span: &Span, types: &[TypeRef<'i>]) -> TypeRef<'i> {
         let mut unqiue = vec![];
 
         'outer: for &ty in types {
             for &member in unqiue.iter() {
-                match ty.intersects(member) {
+                match dbg!(ty.intersects(member)) {
                     TypeOverlap::Complete => continue 'outer,
                     TypeOverlap::Partial => {
                         self.msg(err!(
@@ -175,6 +175,10 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             unqiue.push(ty);
         }
 
+        dbg!(&unqiue);
+        if let [only] = unqiue[..] {
+            return only;
+        }
         self.ty.get_union(unqiue)
     }
 
@@ -376,8 +380,8 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
                 self.iiv.select(yes_block);
                 let yes = self.check_val(&if_expr.yes);
+                let yes_cp = self.iiv.set_up_patch();
                 drop(scope);
-                self.iiv.jump(after_block);
 
                 self.iiv.select(no_block);
                 let no = if let Some(ref expr) = if_expr.no {
@@ -385,10 +389,20 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 } else {
                     self.null()
                 };
-                self.iiv.jump(after_block);
+
+                let result_ty = self.make_type_union(&if_expr.span, &[no.ty, yes.ty]);
+
+                let no = self.ensure_ty(&if_expr.span, result_ty, no);
+                self.iiv.jump(after_block, &[no]);
+
+                self.iiv.select(yes_block);
+                let cp2 = self.iiv.start_patch(yes_cp);
+                let yes = self.ensure_ty(&if_expr.span, result_ty, yes);
+                self.iiv.jump(after_block, &[yes]);
+                self.iiv.end_patch(yes_cp, cp2);
 
                 self.iiv.select(after_block);
-                self.iiv.phi(&[(yes_block, yes), (no_block, no)]).obj()
+                dbg!(self.iiv.block_param(result_ty)).obj()
             }
             Expr::While(while_expr) => {
                 let cond_block = self.iiv.create_block();
@@ -399,7 +413,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 let body = self.iiv.create_block();
                 let after = self.iiv.create_block();
 
-                self.iiv.jump(body);
+                self.iiv.jump(body, &[]);
                 self.iiv.select(body);
                 self.check_val(&*while_expr.body);
                 self.iiv.branch(cond, cond_block, after);
@@ -457,7 +471,11 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 self.iiv.add(lhs, rhs).obj()
             }
             Expr::Mul(Mul) => unimplemented!(),
-            Expr::Eq(Equals) => unimplemented!(),
+            Expr::Eq(equals) => {
+                let lhs = self.check_val(&equals.lhs);
+                let rhs = self.check_val(&equals.rhs);
+                self.iiv.equals(lhs, rhs).obj()
+            }
             Expr::Neq(NotEquals) => unimplemented!(),
             Expr::And(And) => unimplemented!(),
             Expr::Or(Or) => unimplemented!(),

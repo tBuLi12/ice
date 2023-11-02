@@ -16,6 +16,8 @@ pub struct Lexer<'i, R> {
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Keyword {
     Fun,
+    If,
+    Else,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -31,6 +33,8 @@ pub enum Punctuation {
     Semicolon,
     ThinArrow,
     Minus,
+    Eq,
+    DoubleEq,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -117,6 +121,8 @@ impl<'i, R: io::Read> Lexer<'i, R> {
 
         Some(match &ident[..] {
             "fun" => Token::Keyword(Keyword::Fun, span),
+            "if" => Token::Keyword(Keyword::If, span),
+            "else" => Token::Keyword(Keyword::Else, span),
             _ => Token::Ident(Ident {
                 span,
                 value: self.str_pool.get(&ident),
@@ -193,6 +199,9 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             '.' => Period,
             '-' => Minus {
                 '>' => ThinArrow,
+            },
+            '=' => Eq {
+                '=' => DoubleEq,
             },
         }
     }
