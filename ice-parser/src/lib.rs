@@ -10,6 +10,7 @@ pub struct Parser<'i, R> {
     lexer: Lexer<'i, R>,
     messages: &'i iiv::diagnostics::Diagnostics,
     current: Token<'i>,
+    default_binding: Option<BindingType>,
 }
 
 trait AsSyntaxError: Sized {
@@ -65,6 +66,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
                 begin_highlight_offset: 0,
                 end_highlight_offset: 0,
             }),
+            default_binding: None,
         };
         parser.next_token();
         parser
@@ -237,7 +239,58 @@ impl<'i, R: io::Read> Parser<'i, R> {
         }))
     }
 
+    fn pattern_ident(&mut self, name: Ident<'i>) -> Pattern<'i> {
+        if let Some(binding_type) = self.default_binding {
+            Pattern {
+                body: PatternBody::Bind(BindPattern { binding_type, name }),
+                guard: None,
+            }
+        } else {
+            Pattern {
+                body: PatternBody::Literal(Expr::Variable(name)),
+                guard: None,
+            }
+        }
+    }
+
+    fn parse_pattern(&mut self) -> Parsed<Pattern<'i>> {
+        if let Ok(name) = self.ident() {
+            return Ok(self.pattern_ident(name));
+        }
+
+        let ((struct_pattern, _), span) = self
+            .braces(|p| {
+                p.list(Punctuation::Comma, |p| {
+                    let name = p.ident().expected("a property name")?;
+                    Ok((name, p.pattern_ident(name)))
+                })
+            })
+            .expected("a pattern")?;
+        Ok(Pattern {
+            guard: None,
+            body: PatternBody::Struct(StructPattern {
+                span,
+                inner: struct_pattern,
+            }),
+        })
+    }
+
     fn parse_block_item(&mut self) -> Parsed<BlockItem<'i>> {
+        if let Ok(span) = self.eat_kw(Keyword::Let) {
+            self.default_binding = Some(BindingType::Let);
+            let binding = self.parse_pattern().expected("a pattern")?;
+            self.default_binding = None;
+
+            self.eat_punct(Punctuation::Eq).expected("=")?;
+            let value = self.parse_expr().expected("an initializer")?;
+
+            return Ok(BlockItem::Bind(Binding {
+                span: span.to(binding.span()),
+                binding,
+                value,
+            }));
+        }
+
         Ok(BlockItem::Expr(self.parse_expr()?))
     }
 

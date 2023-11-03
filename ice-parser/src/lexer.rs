@@ -18,6 +18,9 @@ pub enum Keyword {
     Fun,
     If,
     Else,
+    Let,
+    Var,
+    Const,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -123,6 +126,9 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             "fun" => Token::Keyword(Keyword::Fun, span),
             "if" => Token::Keyword(Keyword::If, span),
             "else" => Token::Keyword(Keyword::Else, span),
+            "let" => Token::Keyword(Keyword::Let, span),
+            "var" => Token::Keyword(Keyword::Var, span),
+            "const" => Token::Keyword(Keyword::Const, span),
             _ => Token::Ident(Ident {
                 span,
                 value: self.str_pool.get(&ident),

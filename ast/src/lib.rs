@@ -179,7 +179,7 @@ pub struct Continue<'i> {
     pub value: Option<Expr<'i>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub enum BindingType {
     Let,
     Var,
@@ -256,6 +256,7 @@ pub struct NarrowTypePattern<'i> {
 
 spanned_enum! {
     pub enum PatternBody<'i> {
+        Literal(Expr<'i>),
         Tuple(TuplePattern<'i>),
         Struct(StructPattern<'i>),
         Variant(Box<Pattern<'i>>),

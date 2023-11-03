@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use ast::{BlockItem, Expr, Ident, Module, Spanned};
+use ast::{BindPattern, BlockItem, Expr, Ident, Module, Pattern, PatternBody, Spanned};
 use iiv::{
     diagnostics, err,
     fun::{Function, Signature},
     pool::FuncRef,
     str::Str,
-    ty::{TypeOverlap, TypeRef},
+    ty::{Type, TypeOverlap, TypeRef},
     Ctx, Package, Span, Value,
 };
 
@@ -218,6 +218,30 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
+    fn bind(&mut self, pattern: &Pattern<'i>, value: Value<'i>) {
+        match &pattern.body {
+            PatternBody::Bind(BindPattern { binding_type, name }) => {
+                self.define(&name, Object::Value(value));
+            }
+            PatternBody::Literal(_) => unimplemented!(),
+            PatternBody::Struct(struct_pattern) => {
+                if let Type::Struct(_) = *value.ty {
+                    for (name, prop_pattern) in &struct_pattern.inner {
+                        let prop = self.get_prop(value, name);
+                        self.bind(prop_pattern, prop);
+                    }
+                } else {
+                    self.msg(err!(
+                        &pattern.span(),
+                        "expected a struct type, found {}",
+                        value.ty
+                    ));
+                }
+            }
+            _ => unimplemented!(),
+        }
+    }
+
     fn check_statement(&mut self, item: &BlockItem<'i>) -> Value<'i> {
         match item {
             BlockItem::Expr(expr) => self.check_val(expr),
@@ -238,7 +262,12 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 self.never()
             }
             BlockItem::Continue(Continue) => self.never(),
-            BlockItem::Bind(binding) => self.null(),
+            BlockItem::Bind(binding) => {
+                let initializer = self.check_val(&binding.value);
+                self.bind(&binding.binding, initializer);
+
+                self.null()
+            }
         }
     }
 
@@ -313,14 +342,30 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
+    fn get_prop(&mut self, value: Value<'i>, prop: &Ident<'i>) -> Value<'i> {
+        if let Some((i, prop_ty)) = value.ty.prop(prop.value) {
+            self.iiv.get_prop(value, i, prop_ty)
+        } else {
+            self.msg(err!(
+                &prop.span(),
+                "property {} does not exist on type {}",
+                prop.value,
+                value.ty
+            ));
+            self.invalid()
+        }
+    }
+
     fn check(&mut self, expr: &Expr<'i>) -> Object<'i> {
         match expr {
             Expr::Variable(ident) => self.resolve(ident),
             Expr::Block(block) => {
+                self.begin_scope();
                 let mut last: Option<Value<'i>> = None;
                 for item in &block.items {
                     last = Some(self.check_statement(item));
                 }
+                self.end_scope();
                 if let (Some(value), true) = (last, block.has_trailing_expression) {
                     value.obj()
                 } else {
@@ -449,18 +494,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             }
             Expr::Prop(prop) => {
                 let lhs = self.check_val(&prop.lhs);
-                if let Some((i, prop_ty)) = lhs.ty.prop(prop.prop.value) {
-                    dbg!(i);
-                    self.iiv.get_prop(lhs, i, prop_ty).obj()
-                } else {
-                    self.msg(err!(
-                        &prop.span(),
-                        "property {} does not exist on type {}",
-                        prop.prop.value,
-                        lhs.ty
-                    ));
-                    self.invalid().obj()
-                }
+                self.get_prop(lhs, &prop.prop).obj()
             }
             Expr::Field(Field) => unimplemented!(),
             Expr::Index(Index) => unimplemented!(),
@@ -497,6 +531,18 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 }
 
 impl<'i, 'g> FunctionGenerator<'i, 'g> {
+    fn begin_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn end_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn define(&mut self, name: &Ident<'i>, object: Object<'i>) {
+        self.scopes.last_mut().unwrap().insert(name.value, object);
+    }
+
     fn resolve(&mut self, name: &Ident) -> Object<'i> {
         for scope in &self.scopes {
             if let Some(obj) = scope.get(&name.value) {
