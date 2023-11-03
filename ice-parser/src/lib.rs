@@ -253,7 +253,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
         }
     }
 
-    fn parse_pattern(&mut self) -> Parsed<Pattern<'i>> {
+    fn parse_untyped_pattern(&mut self) -> Parsed<Pattern<'i>> {
         if let Ok(name) = self.ident() {
             return Ok(self.pattern_ident(name));
         }
@@ -273,6 +273,21 @@ impl<'i, R: io::Read> Parser<'i, R> {
                 inner: struct_pattern,
             }),
         })
+    }
+
+    fn parse_pattern(&mut self) -> Parsed<Pattern<'i>> {
+        let mut pattern = self.parse_untyped_pattern()?;
+        while self.eat_punct(Punctuation::Colon).is_ok() {
+            let ty = self.parse_ty_name().expected("a type")?;
+            pattern = Pattern {
+                guard: None,
+                body: PatternBody::NarrowType(NarrowTypePattern {
+                    inner: Box::new(pattern),
+                    ty,
+                }),
+            };
+        }
+        Ok(pattern)
     }
 
     fn parse_block_item(&mut self) -> Parsed<BlockItem<'i>> {

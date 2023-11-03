@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use ast::{BindPattern, BlockItem, Expr, Ident, Module, Pattern, PatternBody, Spanned};
+use ast::{
+    BindPattern, BlockItem, Expr, Ident, Module, NarrowTypePattern, Pattern, PatternBody, Spanned,
+};
 use iiv::{
     diagnostics, err,
     fun::{Function, Signature},
@@ -223,6 +225,12 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             PatternBody::Bind(BindPattern { binding_type, name }) => {
                 self.define(&name, Object::Value(value));
             }
+            PatternBody::NarrowType(NarrowTypePattern { inner, ty }) => {
+                let target_ty = self.check_type(ty);
+                let narrowed = self.ensure_ty(&ty.span(), target_ty, value);
+                self.bind(&inner, narrowed);
+            }
+
             PatternBody::Literal(_) => unimplemented!(),
             PatternBody::Struct(struct_pattern) => {
                 if let Type::Struct(_) = *value.ty {
