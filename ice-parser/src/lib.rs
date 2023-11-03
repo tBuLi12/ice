@@ -127,6 +127,16 @@ impl<'i, R: io::Read> Parser<'i, R> {
         get_token!(self.Ident)
     }
 
+    fn bool_lit(&mut self) -> Parsed<Bool> {
+        if let Ok(span) = self.eat_kw(Keyword::True) {
+            Ok(Bool { span, value: true })
+        } else if let Ok(span) = self.eat_kw(Keyword::False) {
+            Ok(Bool { span, value: false })
+        } else {
+            Err(ParseError::NoMatch)
+        }
+    }
+
     fn int_lit(&mut self) -> Parsed<Int> {
         get_token!(self.Int)
     }
@@ -247,7 +257,10 @@ impl<'i, R: io::Read> Parser<'i, R> {
             }
         } else {
             Pattern {
-                body: PatternBody::Literal(Expr::Variable(name)),
+                body: PatternBody::Bind(BindPattern {
+                    binding_type: BindingType::Let,
+                    name,
+                }),
                 guard: None,
             }
         }
@@ -256,6 +269,17 @@ impl<'i, R: io::Read> Parser<'i, R> {
     fn parse_untyped_pattern(&mut self) -> Parsed<Pattern<'i>> {
         if let Ok(name) = self.ident() {
             return Ok(self.pattern_ident(name));
+        }
+
+        if self.eat_punct(Punctuation::Period).is_ok() {
+            let name = self.ident().expected("a variant name")?;
+            return Ok(Pattern {
+                body: PatternBody::Variant(VariantPattern {
+                    name,
+                    inner: Box::new(self.pattern_ident(name)),
+                }),
+                guard: None,
+            });
         }
 
         let ((struct_pattern, _), span) = self
@@ -309,8 +333,46 @@ impl<'i, R: io::Read> Parser<'i, R> {
         Ok(BlockItem::Expr(self.parse_expr()?))
     }
 
+    fn parse_ty_prop(&mut self) -> Parsed<TyProp<'i>> {
+        let name = self.ident()?;
+        let ty = if self.eat_punct(Punctuation::Colon).is_ok() {
+            let ty = self.parse_ty_name().expected("a type name")?;
+            Some(ty)
+        } else {
+            None
+        };
+        Ok(TyProp { name, ty })
+    }
+
+    fn parse_struct_or_variant_ty(&mut self) -> Parsed<Expr<'i>> {
+        let ((props, is_variant), span) = self.braces(|p| {
+            if p.eat_punct(Punctuation::Pipe).is_ok() {
+                return Ok((p.list(Punctuation::Pipe, |p| p.parse_ty_prop())?.0, true));
+            }
+            let first = p.parse_ty_prop()?;
+            if p.eat_punct(Punctuation::Pipe).is_ok() {
+                let mut prop_list = p.list(Punctuation::Pipe, |p| p.parse_ty_prop())?.0;
+                prop_list.push(first);
+                return Ok((prop_list, true));
+            }
+            if p.eat_punct(Punctuation::Comma).is_ok() {
+                let mut prop_list = p.list(Punctuation::Comma, |p| p.parse_ty_prop())?.0;
+                prop_list.push(first);
+                return Ok((prop_list, false));
+            }
+            Ok((vec![first], false))
+        })?;
+        if is_variant {
+            Ok(Expr::VariantTy(PropsTy { span, props }))
+        } else {
+            Ok(Expr::StructTy(PropsTy { span, props }))
+        }
+    }
+
     fn parse_ty_name(&mut self) -> Parsed<Expr<'i>> {
-        self.parse_expr()
+        self.ident()
+            .map(Expr::Variable)
+            .or_else(|_| self.parse_struct_or_variant_ty())
     }
 
     fn parse_struct_or_block(&mut self) -> Parsed<Expr<'i>> {
@@ -407,6 +469,12 @@ impl<'i, R: io::Read> Parser<'i, R> {
                     prop,
                     tr: None,
                 });
+            } else if self.eat_kw(Keyword::Is).is_ok() {
+                let pattern = self.parse_pattern().expected("a pattern")?;
+                lhs = Expr::Is(Is {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(pattern),
+                })
             } else {
                 return Ok(lhs);
             }
@@ -431,13 +499,36 @@ impl<'i, R: io::Read> Parser<'i, R> {
         }))
     }
 
+    fn parse_variant_lit(&mut self) -> Parsed<Expr<'i>> {
+        let span = self.eat_punct(Punctuation::Period)?;
+        let name = self.ident().expected("variant name")?;
+        if let Ok((expr, paren_span)) = self.parens(|p| p.parse_expr()).invalid()? {
+            Ok(Expr::Variant(Variant {
+                span: span.to(paren_span),
+                ty: None,
+                variant: name,
+                value: Some(Box::new(expr)),
+            }))
+        } else {
+            Ok(Expr::Variant(Variant {
+                span: span.to(name.span()),
+                ty: None,
+                variant: name,
+                value: None,
+            }))
+        }
+    }
+
     fn parse_expr(&mut self) -> Parsed<Expr<'i>> {
         let expr = self
             .ident()
             .map(Expr::Variable)
             .or_else(|_| self.int_lit().map(Expr::Int))
             .or_else(|_| self.str_lit().map(Expr::String))
+            .or_else(|_| self.bool_lit().map(Expr::Bool))
             .or_else(|_| self.parse_struct_or_block())
+            .invalid()?
+            .or_else(|_| self.parse_variant_lit())
             .invalid()?
             .or_else(|_| self.parse_if())?;
 

@@ -1,14 +1,16 @@
 use std::collections::HashMap;
 
 use ast::{
-    BindPattern, BlockItem, Expr, Ident, Module, NarrowTypePattern, Pattern, PatternBody, Spanned,
+    BindPattern, BlockItem, Expr, Ident, Module, NarrowTypePattern, Pattern, PatternBody, PropsTy,
+    Spanned,
 };
 use iiv::{
+    builder::BlockRef,
     diagnostics, err,
     fun::{Function, Signature},
-    pool::FuncRef,
+    pool::{FuncRef, List},
     str::Str,
-    ty::{Type, TypeOverlap, TypeRef},
+    ty::{PropRef, Type, TypeOverlap, TypeRef},
     Ctx, Package, Span, Value,
 };
 
@@ -43,7 +45,9 @@ impl<'i> Generator<'i> {
 
     pub fn emit_iiv(&mut self, modules: &[Module<'i>]) -> Package<'i> {
         self.global_scope
-            .insert(self.ty.str_pool.get("int"), Object::Type(self.ty.get_int()));
+            .insert(self.ty.str_pool.get("int"), self.ty.get_int().obj());
+        self.global_scope
+            .insert(self.ty.str_pool.get("bool"), self.ty.get_ty_bool().obj());
 
         let funcs = &modules[0].functions;
 
@@ -126,7 +130,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     }
 
     fn check_val(&mut self, expr: &Expr<'i>) -> Value<'i> {
-        let obj = self.check(expr);
+        let obj = self.check(expr, None);
         self.get_val(&expr.span(), obj)
     }
 
@@ -139,7 +143,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
     fn check_type(&mut self, expr: &Expr<'i>) -> TypeRef<'i> {
         self.in_const_ctx(|g| {
-            let obj = g.check(expr);
+            let obj = g.check(expr, None);
             g.get_type(&expr.span(), obj)
         })
     }
@@ -151,7 +155,19 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
     fn ensure_ty(&mut self, span: &Span, ty: TypeRef<'i>, value: Value<'i>) -> Value<'i> {
         if value.ty != ty {
-            self.msg(err!(span, "expected type {}, got {} instead", ty, value.ty));
+            match (&*value.ty, &*ty) {
+                (Type::Variant(props1), Type::Variant(props2)) => {
+                    if props1
+                        .iter()
+                        .all(|prop| props2.iter().find(|prop2| prop == *prop2).is_some())
+                    {
+                        return self.iiv.variant_cast(ty, value);
+                    };
+                }
+                _ => {
+                    self.msg(err!(span, "expected type {}, got {} instead", ty, value.ty));
+                }
+            }
         }
         Value { raw: value.raw, ty }
     }
@@ -220,7 +236,9 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
-    fn bind(&mut self, pattern: &Pattern<'i>, value: Value<'i>) {
+    fn bind(&mut self, pattern: &Pattern<'i>, value: Value<'i>, no_match_block: Option<BlockRef>) {
+        dbg!("BINDING");
+        dbg!(value);
         match &pattern.body {
             PatternBody::Bind(BindPattern { binding_type, name }) => {
                 self.define(&name, Object::Value(value));
@@ -228,15 +246,50 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             PatternBody::NarrowType(NarrowTypePattern { inner, ty }) => {
                 let target_ty = self.check_type(ty);
                 let narrowed = self.ensure_ty(&ty.span(), target_ty, value);
-                self.bind(&inner, narrowed);
+                self.bind(&inner, narrowed, no_match_block);
             }
-
+            PatternBody::Variant(vairant) => {
+                dbg!("B VARIANT");
+                if let Type::Variant(elems) = *value.ty {
+                    let i = elems.iter().enumerate().find_map(|(i, elem)| {
+                        if elem.0 == vairant.name.value {
+                            Some(i)
+                        } else {
+                            None
+                        }
+                    });
+                    if let Some(i) = i {
+                        let discriminant = self.iiv.discriminant(value);
+                        let expected = self.iiv.int_lit(i as u32);
+                        let cond = self.iiv.equals(discriminant, expected);
+                        let next_block = self.iiv.create_block();
+                        self.iiv.branch(cond, next_block, no_match_block.unwrap());
+                        self.iiv.append_block(next_block);
+                        self.iiv.select(next_block);
+                        let inner = self.iiv.get_prop(value, i as u8, elems[i].1);
+                        self.bind(&vairant.inner, inner, no_match_block);
+                    } else {
+                        self.msg(err!(
+                            &pattern.span(),
+                            "variant {} not found on type {}",
+                            vairant.name.value,
+                            value.ty
+                        ));
+                    }
+                } else {
+                    self.msg(err!(
+                        &pattern.span(),
+                        "expected a variant type, found {}",
+                        value.ty
+                    ));
+                }
+            }
             PatternBody::Literal(_) => unimplemented!(),
             PatternBody::Struct(struct_pattern) => {
                 if let Type::Struct(_) = *value.ty {
                     for (name, prop_pattern) in &struct_pattern.inner {
                         let prop = self.get_prop(value, name);
-                        self.bind(prop_pattern, prop);
+                        self.bind(prop_pattern, prop, no_match_block);
                     }
                 } else {
                     self.msg(err!(
@@ -272,7 +325,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             BlockItem::Continue(Continue) => self.never(),
             BlockItem::Bind(binding) => {
                 let initializer = self.check_val(&binding.value);
-                self.bind(&binding.binding, initializer);
+                self.bind(&binding.binding, initializer, None);
 
                 self.null()
             }
@@ -291,10 +344,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             }
             Object::Value(val) | Object::Place(val) => val,
             Object::Type(ty) => self.iiv.ty_expr(ty),
-            Object::IsResult(raw) => Value {
-                raw,
-                ty: self.ty.get_ty_bool(),
-            },
+            Object::Condition(raw) => panic!("unexpected condition returned"),
             Object::Fun(_) => {
                 err!(span, "expected a value, found function");
                 self.invalid()
@@ -321,10 +371,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 }
             }
             Object::Type(ty) => ty,
-            Object::IsResult(_) => {
-                err!(span, "expected a type, found bool");
-                self.ty.get_ty_invalid()
-            }
+            Object::Condition(_) => panic!("unexpedted condition"),
             Object::Fun(_) => {
                 err!(span, "expected a type, found function");
                 self.ty.get_ty_invalid()
@@ -332,20 +379,17 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
-    fn check_condition(&mut self, expr: &Expr<'i>) -> (Option<()>, Value<'i>) {
-        match self.check(expr) {
-            Object::IsResult(raw_val) => {
-                let val = Value {
-                    raw: raw_val,
-                    ty: self.ty.get_ty_bool(),
-                };
-                (Some(()), val)
-                // fine, but close the scope later
-            }
+    fn check_condition(&mut self, expr: &Expr<'i>, false_block: BlockRef) -> usize {
+        match self.check(expr, Some(false_block)) {
+            Object::Condition(scopes) => scopes,
             obj => {
                 let val = self.get_val(&expr.span(), obj);
                 let val = self.ensure_ty(&expr.span(), self.ty.get_ty_bool(), val);
-                (None, val)
+                let next_block = self.iiv.create_block();
+                self.iiv.branch(val, next_block, false_block);
+                self.iiv.append_block(next_block);
+                self.iiv.select(next_block);
+                0
             }
         }
     }
@@ -364,7 +408,22 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
-    fn check(&mut self, expr: &Expr<'i>) -> Object<'i> {
+    fn resolve_props(&mut self, props: &PropsTy<'i>) -> Vec<PropRef<'i>> {
+        props
+            .props
+            .iter()
+            .map(|prop| {
+                let ty = if let Some(ty_name) = &prop.ty {
+                    self.check_type(&ty_name)
+                } else {
+                    self.ty.get_null()
+                };
+                self.ty.get_prop(prop.name.value, ty)
+            })
+            .collect()
+    }
+
+    fn check(&mut self, expr: &Expr<'i>, false_block: Option<BlockRef>) -> Object<'i> {
         match expr {
             Expr::Variable(ident) => self.resolve(ident),
             Expr::Block(block) => {
@@ -381,6 +440,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 }
             }
             Expr::Int(int) => self.iiv.int_lit(int.value).obj(),
+            Expr::Bool(boolean) => self.iiv.bool_lit(boolean.value).obj(),
             Expr::Float(Float) => unimplemented!(),
             Expr::String(StringLit) => unimplemented!(),
             Expr::Char(Char) => unimplemented!(),
@@ -423,19 +483,20 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 self.iiv.make_struct(&vals, ty).obj()
             }
             Expr::If(if_expr) => {
-                let (scope, cond) = self.check_condition(&*if_expr.condition);
-
-                let yes_block = self.iiv.create_block();
                 let no_block = self.iiv.create_block();
                 let after_block = self.iiv.create_block();
 
-                self.iiv.branch(cond, yes_block, no_block);
+                let scopes = self.check_condition(&*if_expr.condition, no_block);
 
-                self.iiv.select(yes_block);
+                let yes_block = self.iiv.get_current_block();
                 let yes = self.check_val(&if_expr.yes);
                 let yes_cp = self.iiv.set_up_patch();
-                drop(scope);
 
+                for _ in 0..scopes {
+                    self.end_scope();
+                }
+
+                self.iiv.append_block(no_block);
                 self.iiv.select(no_block);
                 let no = if let Some(ref expr) = if_expr.no {
                     self.check_val(expr)
@@ -445,15 +506,16 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
                 let result_ty = self.make_type_union(&if_expr.span, &[no.ty, yes.ty]);
 
-                let no = self.ensure_ty(&if_expr.span, result_ty, no);
+                let no = self.ensure_ty(&if_expr.span(), result_ty, no);
                 self.iiv.jump(after_block, &[no]);
 
                 self.iiv.select(yes_block);
                 let cp2 = self.iiv.start_patch(yes_cp);
-                let yes = self.ensure_ty(&if_expr.span, result_ty, yes);
+                let yes = self.ensure_ty(&if_expr.yes.span(), result_ty, yes);
                 self.iiv.jump(after_block, &[yes]);
                 self.iiv.end_patch(yes_cp, cp2);
 
+                self.iiv.append_block(after_block);
                 self.iiv.select(after_block);
                 dbg!(self.iiv.block_param(result_ty)).obj()
             }
@@ -461,22 +523,21 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 let cond_block = self.iiv.create_block();
                 self.iiv.select(cond_block);
 
-                let (scope, cond) = self.check_condition(&while_expr.condition);
-
                 let body = self.iiv.create_block();
                 let after = self.iiv.create_block();
+
+                let scopes = self.check_condition(&while_expr.condition, after);
 
                 self.iiv.jump(body, &[]);
                 self.iiv.select(body);
                 self.check_val(&*while_expr.body);
-                self.iiv.branch(cond, cond_block, after);
 
                 self.iiv.select(after);
                 self.null().obj()
             }
             Expr::Match(Match) => unimplemented!(),
             Expr::Call(call) => {
-                if let Object::Fun(fun_ref) = self.check(&call.lhs) {
+                if let Object::Fun(fun_ref) = self.check(&call.lhs, None) {
                     let fun = fun_ref.borrow();
 
                     if fun.sig.params.len() != call.args.len() {
@@ -531,9 +592,50 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             Expr::Neg(Neg) => unimplemented!(),
             Expr::Not(Not) => unimplemented!(),
             Expr::Vec(Vector) => unimplemented!(),
-            Expr::Variant(Variant) => unimplemented!(),
+            Expr::Variant(variant) => {
+                let value = if let Some(val) = &variant.value {
+                    self.check_val(&val)
+                } else {
+                    self.null()
+                };
+                let variant_ty = self
+                    .ty
+                    .get_variant(vec![self.ty.get_prop(variant.variant.value, value.ty)]);
+                self.iiv.variant(variant_ty, 0, value).obj()
+            }
             Expr::AddAssign(AddAssign) => unimplemented!(),
-            Expr::Is(AddAssign) => unimplemented!(),
+            Expr::Is(is_expr) => {
+                dbg!("ISSS");
+                let lhs = dbg!(self.check_val(&is_expr.lhs));
+                self.begin_scope();
+                if let Some(false_block) = false_block {
+                    self.bind(&is_expr.rhs, lhs, Some(false_block));
+                    Object::Condition(1)
+                } else {
+                    let false_block = self.iiv.create_block();
+                    let after_block = self.iiv.create_block();
+                    self.bind(&is_expr.rhs, lhs, Some(false_block));
+                    let true_val = self.iiv.bool_lit(true);
+                    self.iiv.jump(after_block, &[true_val]);
+                    self.iiv.append_block(false_block);
+                    self.iiv.select(false_block);
+                    let false_val = self.iiv.bool_lit(false);
+                    self.iiv.jump(after_block, &[false_val]);
+                    self.iiv.append_block(after_block);
+                    self.iiv.select(after_block);
+                    let value = self.iiv.block_param(self.ty.get_ty_bool());
+                    self.end_scope();
+                    Object::Value(value)
+                }
+            }
+            Expr::VariantTy(props) => {
+                let props = self.resolve_props(props);
+                self.ty.get_variant(props).obj()
+            }
+            Expr::StructTy(props) => {
+                let props = self.resolve_props(props);
+                self.ty.get_struct(props).obj()
+            }
         }
     }
 }
@@ -587,6 +689,12 @@ impl<'i> ObjContent<'i> for Value<'i> {
     }
 }
 
+impl<'i> ObjContent<'i> for TypeRef<'i> {
+    fn obj(self) -> Object<'i> {
+        Object::Type(self)
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 enum Object<'i> {
     Trait,
@@ -595,5 +703,5 @@ enum Object<'i> {
     Place(Value<'i>),
     Type(TypeRef<'i>),
     Fun(FuncRef<'i>),
-    IsResult(iiv::RawValue),
+    Condition(usize),
 }

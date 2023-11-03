@@ -1,7 +1,7 @@
 use std::io;
 
 use ast::{Ident, Int, StringLit};
-use iiv::{str::StrPool, Span};
+use iiv::{err, str::StrPool, Span};
 
 pub struct Lexer<'i, R> {
     str_pool: &'i StrPool<'i>,
@@ -21,6 +21,9 @@ pub enum Keyword {
     Let,
     Var,
     Const,
+    Is,
+    True,
+    False,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -38,6 +41,7 @@ pub enum Punctuation {
     Minus,
     Eq,
     DoubleEq,
+    Pipe,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -129,6 +133,9 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             "let" => Token::Keyword(Keyword::Let, span),
             "var" => Token::Keyword(Keyword::Var, span),
             "const" => Token::Keyword(Keyword::Const, span),
+            "is" => Token::Keyword(Keyword::Is, span),
+            "true" => Token::Keyword(Keyword::True, span),
+            "false" => Token::Keyword(Keyword::False, span),
             _ => Token::Ident(Ident {
                 span,
                 value: self.str_pool.get(&ident),
@@ -193,7 +200,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             };
         }
 
-        puncts! {
+        let punct = puncts! {
             '+' => Plus,
             '(' => LParen,
             ')' => RParen,
@@ -203,13 +210,23 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             ';' => Semicolon,
             ',' => Comma,
             '.' => Period,
+            '|' => Pipe,
             '-' => Minus {
                 '>' => ThinArrow,
             },
             '=' => Eq {
                 '=' => DoubleEq,
             },
+        };
+        if punct.is_none() {
+            self.read_char();
+            self.messages.add(err!(
+                &self.current_span().extend_back(1),
+                "unknown punctuation"
+            ));
+            return Some(self.next());
         }
+        punct
     }
 
     fn read_numeric_literal(&mut self) -> Option<Token<'i>> {

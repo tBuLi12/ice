@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, collections::HashMap, fs::File, path::Path};
+use std::{cell::UnsafeCell, collections::HashMap, f32::consts::E, fs::File, path::Path};
 
 // use cranelift::prelude::InstBuilder;
 use cranelift::{
@@ -7,11 +7,11 @@ use cranelift::{
         isa, settings,
     },
     prelude::{
-        types, AbiParam, FunctionBuilder, FunctionBuilderContext, IntCC, MemFlags, StackSlotData,
-        StackSlotKind,
+        types, AbiParam, FunctionBuilder, FunctionBuilderContext, GlobalValueData, IntCC, MemFlags,
+        StackSlotData, StackSlotKind,
     },
 };
-use cranelift_module::{default_libcall_names, FuncId, Linkage, Module};
+use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use iiv::{
     pool::FuncRef,
@@ -135,10 +135,18 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
 
             let id = {
                 let mut signature = self.module.make_signature();
+                let return_via_pointer = !fun.sig.ret_ty.has_primitive_repr();
+
+                if return_via_pointer {
+                    signature
+                        .params
+                        .push(AbiParam::new(self.module.target_config().pointer_type()));
+                } else {
+                    signature.returns.push(AbiParam::new(as_ty(fun.sig.ret_ty)));
+                }
                 for &param in fun.sig.params.iter() {
                     signature.params.push(AbiParam::new(as_ty(param)));
                 }
-                signature.returns.push(AbiParam::new(as_ty(fun.sig.ret_ty)));
                 self.module
                     .declare_function(&fun.sig.name, Linkage::Export, &signature)
             }
@@ -153,13 +161,22 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
 
             let mut ctx = self.module.make_context();
 
+            let return_via_pointer = !fun.sig.ret_ty.has_primitive_repr();
+
+            if return_via_pointer {
+                ctx.func
+                    .signature
+                    .params
+                    .push(AbiParam::new(self.module.target_config().pointer_type()));
+            } else {
+                ctx.func
+                    .signature
+                    .returns
+                    .push(AbiParam::new(as_ty(fun.sig.ret_ty)));
+            }
             for &param in fun.sig.params.iter() {
                 ctx.func.signature.params.push(AbiParam::new(as_ty(param)));
             }
-            ctx.func
-                .signature
-                .returns
-                .push(AbiParam::new(as_ty(fun.sig.ret_ty)));
 
             let mut builder = FunctionBuilder::new(&mut ctx.func, self.fun_builder_ctx);
             let entry = builder.create_block();
@@ -212,7 +229,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                 value: ClftValueRaw::Ssa(value),
             }
         } else {
-            let copied = self.alloc(ty);
+            let copied = self.alloc(ty).0;
             self.write(copied.into(), location);
             copied
         }
@@ -232,14 +249,16 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
             (
                 ClftValue {
                     value: ClftValueRaw::StackMemory(dst_slot),
-                    ty,
+                    ..
                 },
                 ClftValue {
                     value: ClftValueRaw::StackMemory(src_slot),
-                    ..
+                    ty,
                 },
             ) => {
                 let l = self.layouts.layout_of(ty);
+                dbg!(ty);
+                dbg!(l);
                 let dst = self
                     .fb
                     .ins()
@@ -276,16 +295,19 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
         }
     }
 
-    fn alloc(&mut self, ty: TypeRef<'i>) -> ClftValue<'i> {
+    fn alloc(&mut self, ty: TypeRef<'i>) -> (ClftValue<'i>, ir::StackSlot) {
         let layout = self.layouts.layout_of(ty);
         let slot = self
             .fb
             .create_sized_stack_slot(StackSlotData::new(StackSlotKind::ExplicitSlot, layout.size));
 
-        ClftValue {
-            value: ClftValueRaw::StackMemory(slot),
-            ty,
-        }
+        (
+            ClftValue {
+                value: ClftValueRaw::StackMemory(slot),
+                ty,
+            },
+            slot,
+        )
     }
 
     fn elem(&mut self, location: Location<'i>, elem: usize) -> Location<'i> {
@@ -303,13 +325,55 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
         }
     }
 
+    fn raw_union(&mut self, mut location: Location<'i>) -> Location<'i> {
+        location.offset += 8;
+        let iiv::ty::Type::Variant(props) = *location.ptr.ty else {
+            panic!("invalid raw_union")
+        };
+
+        let (biggest_elem, _) = props
+            .iter()
+            .map(|prop| (prop.1, self.layouts.layout_of(prop.1).size))
+            .max_by_key(|(_, size)| *size)
+            .unwrap();
+
+        location.ptr.ty = biggest_elem;
+        location
+    }
+
+    fn discriminant(&mut self, mut location: Location<'i>) -> Location<'i> {
+        location.ptr.ty = self.ty_pool.get_int();
+        location
+    }
+
+    fn get_int(&mut self, value: u64) -> ClftValue<'i> {
+        ClftValue {
+            value: ClftValueRaw::Ssa(self.fb.ins().iconst(types::I64, value as i64)),
+            ty: self.ty_pool.get_int(),
+        }
+    }
+
+    fn get_bool(&mut self, value: bool) -> ClftValue<'i> {
+        ClftValue {
+            value: ClftValueRaw::Ssa(self.fb.ins().iconst(types::I8, if value { 1 } else { 0 })),
+            ty: self.ty_pool.get_ty_bool(),
+        }
+    }
+
     fn gen(&mut self, sig: &iiv::fun::Signature<'i>, blocks: &[iiv::builder::Block<'i>]) {
-        for (param, &ty) in self
+        let mut params = self
             .fb
             .block_params(self.fb.current_block().unwrap())
-            .iter()
-            .zip(sig.params.iter())
-        {
+            .iter();
+
+        let return_via_pointer = !sig.ret_ty.has_primitive_repr();
+        let return_pointer = if return_via_pointer {
+            Some(*params.next().unwrap())
+        } else {
+            None
+        };
+
+        for (param, &ty) in params.zip(sig.params.iter()) {
             self.values.push(ClftValue {
                 value: ClftValueRaw::Ssa(*param),
                 ty,
@@ -323,6 +387,8 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                 self.fb.append_block_param(new_block, as_ty(*param));
             }
         }
+
+        let mut loc = 1;
 
         for (i, block) in blocks.iter().enumerate() {
             self.fb.switch_to_block(self.blocks[i]);
@@ -338,11 +404,17 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                 });
             }
             for inst in &block.instructions {
+                loc += 1;
+                self.fb.set_srcloc(ir::SourceLoc::new(loc));
                 match inst {
-                    iiv::Instruction::Int(val) => self.values.push(ClftValue {
-                        value: ClftValueRaw::Ssa(self.fb.ins().iconst(types::I64, *val as i64)),
-                        ty: self.ty_pool.get_int(),
-                    }),
+                    iiv::Instruction::Int(val) => {
+                        let int = self.get_int(*val as u64);
+                        self.values.push(int)
+                    }
+                    iiv::Instruction::Bool(val) => {
+                        let boolean = self.get_bool(*val);
+                        self.values.push(boolean)
+                    }
                     iiv::Instruction::Add(lhs, rhs) => {
                         let ty = self.values[lhs.0 as usize].ty;
                         let lhs = self.get(*lhs);
@@ -371,20 +443,40 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                     iiv::Instruction::GtEq(lhs, rhs) => unimplemented!(),
                     iiv::Instruction::LtEq(lhs, rhs) => unimplemented!(),
                     iiv::Instruction::Call(fun, args) => {
+                        let ret_ty = fun.borrow().sig.ret_ty;
+                        let return_via_pointer = !ret_ty.has_primitive_repr();
+                        let mut raw_args = Vec::new();
+                        let ret_ptr = if return_via_pointer {
+                            let (ret, ret_slot) = self.alloc(ret_ty);
+                            let ret_ptr = self.fb.ins().stack_addr(
+                                self.module.target_config().pointer_type(),
+                                ret_slot,
+                                0,
+                            );
+                            raw_args.push(ret_ptr);
+                            Some(ret)
+                        } else {
+                            None
+                        };
+
                         let local_func = self
                             .module
                             .declare_func_in_func(self.funs[fun], &mut self.fb.func);
-                        let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
-                        let call = self.fb.ins().call(local_func, &args);
-                        self.values.push(ClftValue {
-                            value: ClftValueRaw::Ssa(self.fb.inst_results(call)[0]),
-                            ty: fun.borrow().sig.ret_ty,
+                        raw_args.extend(args.iter().map(|arg| self.get(*arg)));
+                        let call = self.fb.ins().call(local_func, &raw_args);
+                        self.values.push(if let Some(val) = ret_ptr {
+                            val
+                        } else {
+                            ClftValue {
+                                value: ClftValueRaw::Ssa(self.fb.inst_results(call)[0]),
+                                ty: ret_ty,
+                            }
                         })
                     }
                     iiv::Instruction::Assign(lhs, rhs) => unimplemented!(),
                     iiv::Instruction::RefAssign(lhs, rhs) => unimplemented!(),
                     iiv::Instruction::Tuple(tpl, ty) => {
-                        let tuple_value = self.alloc(*ty);
+                        let tuple_value = self.alloc(*ty).0;
                         self.values.push(tuple_value);
 
                         let tuple_location: Location = tuple_value.into();
@@ -423,13 +515,123 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         self.fb.ins().jump(self.blocks[label.0 as usize], &args);
                     }
                     iiv::Instruction::Return(val) => {
-                        let val = self.get(*val);
-                        self.fb.ins().return_(&[val]);
+                        if let Some(ret_ptr) = return_pointer {
+                            let ClftValue {
+                                value: ClftValueRaw::StackMemory(slot),
+                                ..
+                            } = self.values[val.0 as usize]
+                            else {
+                                panic!("invalid return type")
+                            };
+                            let addr = self.fb.ins().stack_addr(
+                                self.module.target_config().pointer_type(),
+                                slot,
+                                0,
+                            );
+                            let layout = self.layouts.layout_of(sig.ret_ty);
+                            self.fb.emit_small_memory_copy(
+                                self.module.target_config(),
+                                ret_ptr,
+                                addr,
+                                layout.size as u64,
+                                1,
+                                1,
+                                true,
+                                MemFlags::new(),
+                            );
+                            self.fb.ins().return_(&[]);
+                        } else {
+                            let val = self.get(*val);
+                            self.fb.ins().return_(&[val]);
+                        }
                     }
                     iiv::Instruction::Ty(TypeId) => unimplemented!(),
+                    iiv::Instruction::Variant(ty, idx, val) => {
+                        let variant = self.alloc(*ty).0;
+                        let idx_val = self.get_int(*idx);
+                        let discriminant = self.discriminant(variant.into());
+                        self.write(discriminant, idx_val.into());
+                        let value_loc = self.elem(variant.into(), *idx as usize);
+                        self.write(value_loc, self.values[val.0 as usize].into());
+                        self.values.push(variant);
+                    }
+                    iiv::Instruction::VariantCast(ty, val) => {
+                        let target = self.alloc(*ty).0;
+                        let discriminant = self.discriminant(target.into());
+                        let src_variant = self.values[val.0 as usize];
+                        let src_discriminant = self.discriminant(src_variant.into());
+                        let src_value = self.raw_union(src_variant.into());
+                        let value = self.raw_union(target.into());
+                        self.fb.set_srcloc(ir::SourceLoc::new(loc + 1));
+                        dbg!("VAR CAST");
+                        self.write(value, src_value.into());
+                        self.fb.set_srcloc(ir::SourceLoc::new(loc));
+                        let cast_table = self
+                            .module
+                            .declare_data("cast_table", Linkage::Local, false, false)
+                            .unwrap();
+                        let indices: Vec<_> = match (&**ty, &*src_variant.ty) {
+                            (
+                                iiv::ty::Type::Variant(dst_elems),
+                                iiv::ty::Type::Variant(src_elems),
+                            ) => src_elems
+                                .iter()
+                                .map(|elem| {
+                                    dst_elems.iter().position(|e| *e == *elem).unwrap() as u64
+                                })
+                                .collect(),
+                            _ => panic!("variant cast has non-variant operands"),
+                        };
+                        let mut data_decs = DataDescription::new();
+                        data_decs.define(bytes_of(&indices).into());
+                        self.module.define_data(cast_table, &data_decs).unwrap();
+                        let global = self
+                            .module
+                            .declare_data_in_func(cast_table, &mut self.fb.func);
+                        let item_val = self
+                            .fb
+                            .ins()
+                            .symbol_value(self.module.target_config().pointer_type(), global);
+
+                        let ClftValue {
+                            value: ClftValueRaw::Ssa(src_discriminant_val),
+                            ..
+                        } = self.read(src_discriminant)
+                        else {
+                            panic!("invalid discriminant type")
+                        };
+                        let addr = self.fb.ins().iadd(item_val, src_discriminant_val);
+                        let new_discriminant =
+                            self.fb.ins().load(types::I64, MemFlags::new(), addr, 0);
+                        self.write(
+                            discriminant,
+                            ClftValue {
+                                ty: self.ty_pool.get_int(),
+                                value: ClftValueRaw::Ssa(new_discriminant),
+                            }
+                            .into(),
+                        );
+
+                        self.values.push(target);
+                    }
+                    iiv::Instruction::Discriminant(value) => {
+                        let value = self.values[value.0 as usize];
+                        let discriminant_loc = self.discriminant(value.into());
+                        let discriminant = self.read(discriminant_loc);
+                        self.values.push(discriminant);
+                    }
                 };
             }
         }
+    }
+}
+
+fn bytes_of<T>(slice: &[T]) -> &[u8] {
+    unsafe {
+        std::slice::from_raw_parts(
+            slice.as_ptr() as *const u8,
+            slice.len() * std::mem::size_of_val(slice),
+        )
     }
 }
 
@@ -493,15 +695,14 @@ impl<'i> LayoutCache<'i> {
                 //         .unwrap()
                 unimplemented!()
             }
-            Type::Variant(variants) => {
-                // Layout { size: 8, align: 8 }
-                //     + variants
-                //         .iter()
-                //         .map(|field| self.layout_of(field.1))
-                //         .reduce(ops::BitAnd::bitand)
-                //         .unwrap()
-                unimplemented!()
-            }
+            Type::Variant(variants) => variants.iter().fold(
+                Layout {
+                    size: 8,
+                    align: 8,
+                    fields: vec![],
+                },
+                |layout, elem| layout.with_variant(self.layout_of(elem.1)),
+            ),
             Type::Invalid => panic!("size_of invalid type"),
             Type::Type(_) => panic!("invalid type - type"),
         };
@@ -515,7 +716,7 @@ impl<'i> LayoutCache<'i> {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct Layout {
     size: u32,
     align: u32,
@@ -540,8 +741,14 @@ impl Layout {
         self
     }
 
-    fn ovelay_field(&mut self, field: &Layout) {
-        unimplemented!()
+    fn ovelay_variant(&mut self, variant: &Layout) {
+        self.fields.push(8);
+        self.size = self.size.max(variant.size + 8);
+    }
+
+    fn with_variant(mut self, variant: &Layout) -> Self {
+        self.ovelay_variant(variant);
+        self
     }
 
     fn empty() -> Layout {
@@ -565,6 +772,8 @@ fn as_ty<'i>(ty: TypeRef<'i>) -> ir::Type {
 
     match *ty {
         Type::Builtin(BuiltinType::Int) => types::I64,
+        Type::Struct(_) => types::I64,
+        Type::Variant(_) => types::I64,
         _ => unimplemented!(),
     }
 }

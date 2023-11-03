@@ -206,6 +206,12 @@ pub struct NamedPattern<'i> {
 }
 
 #[derive(Debug)]
+pub struct VariantPattern<'i> {
+    pub name: Ident<'i>,
+    pub inner: Box<Pattern<'i>>,
+}
+
+#[derive(Debug)]
 pub struct VectorPattern<'i> {
     pub span: Span,
     pub patterns: Vec<Pattern<'i>>,
@@ -259,7 +265,7 @@ spanned_enum! {
         Literal(Expr<'i>),
         Tuple(TuplePattern<'i>),
         Struct(StructPattern<'i>),
-        Variant(Box<Pattern<'i>>),
+        Variant(VariantPattern<'i>),
         NarrowType(NarrowTypePattern<'i>),
         Named(NamedPattern<'i>),
         Vector(VectorPattern<'i>),
@@ -350,6 +356,12 @@ pub struct Int {
     pub value: u32,
 }
 
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub struct Bool {
+    pub span: Span,
+    pub value: bool,
+}
+
 #[derive(Debug)]
 pub struct Float {
     pub span: Span,
@@ -379,6 +391,18 @@ pub struct Struct<'i> {
     pub span: Span,
     pub props: Vec<StructProp<'i>>,
     pub ty: Option<Box<Expr<'i>>>,
+}
+
+#[derive(Debug)]
+pub struct PropsTy<'i> {
+    pub span: Span,
+    pub props: Vec<TyProp<'i>>,
+}
+
+#[derive(Debug)]
+pub struct TyProp<'i> {
+    pub name: Ident<'i>,
+    pub ty: Option<Expr<'i>>,
 }
 
 #[derive(Debug)]
@@ -590,6 +614,7 @@ spanned_enum! {
         Variable(Ident<'i>),
         Block(Block<'i>),
         Int(Int),
+        Bool(Bool),
         Float(Float),
         String(StringLit<'i>),
         Char(Char),
@@ -622,6 +647,8 @@ spanned_enum! {
         Variant(Variant<'i>),
         AddAssign(AddAssign<'i>),
         Is(Is<'i>),
+        VariantTy(PropsTy<'i>),
+        StructTy(PropsTy<'i>),
     }
 }
 
@@ -754,6 +781,7 @@ spanned_impls! {
     Vector,
     Variant,
     NamedPattern : name - inner,
+    VariantPattern : name - inner,
     NamedTyPattern,
     BindPattern : name - name,
     TuplePattern,
@@ -762,6 +790,8 @@ spanned_impls! {
     StructPattern,
     VariantTyPattern,
     NarrowTypePattern: inner - ty,
+    PropsTy,
+    TyProp: name - ?ty name,
 }
 
 impl Spanned for Int {
@@ -789,6 +819,18 @@ impl Spanned for Float {
 }
 
 impl Spanned for Char {
+    fn span(&self) -> Span {
+        self.span
+    }
+    fn left_span(&self) -> LeftSpan {
+        self.span.left()
+    }
+    fn right_span(&self) -> RightSpan {
+        self.span.right()
+    }
+}
+
+impl Spanned for Bool {
     fn span(&self) -> Span {
         self.span
     }

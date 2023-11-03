@@ -34,6 +34,10 @@ impl<'i> Display for Function<'i> {
                         writeln!(f, "    %{} = {}", i, val)?;
                         i += 1;
                     }
+                    Instruction::Bool(val) => {
+                        writeln!(f, "    %{} = {}", i, val)?;
+                        i += 1;
+                    }
                     Instruction::Add(lhs, rhs) => {
                         writeln!(f, "    %{} = %{} + %{}", i, lhs.0, rhs.0)?;
                         i += 1;
@@ -105,6 +109,22 @@ impl<'i> Display for Function<'i> {
                         writeln!(f, "    return %{}", val.0)?;
                     }
                     Instruction::Ty(TypeId) => unimplemented!(),
+                    Instruction::Variant(ty, discriminant, inner) => {
+                        writeln!(
+                            f,
+                            "    %{} = variant {} {} %{}",
+                            i, ty, discriminant, inner.0
+                        )?;
+                        i += 1;
+                    }
+                    Instruction::VariantCast(ty, inner) => {
+                        writeln!(f, "    %{} = variant cast {} %{}", i, ty, inner.0)?;
+                        i += 1;
+                    }
+                    Instruction::Discriminant(value) => {
+                        writeln!(f, "    %{} = discriminant %{}", i, value.0)?;
+                        i += 1;
+                    }
                 };
             }
         }

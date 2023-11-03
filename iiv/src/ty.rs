@@ -193,6 +193,7 @@ impl<'i> TypeRef<'i> {
     pub fn elem(&self, i: u8) -> Option<TypeRef<'i>> {
         match *self.0 {
             Type::Struct(props) => Some(props[i as usize].1),
+            Type::Variant(elems) => Some(elems[i as usize].1),
             _ => None,
         }
     }

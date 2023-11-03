@@ -120,6 +120,10 @@ pub enum Instruction<'i> {
     Return(RawValue),
     Ty(TypeRef<'i>),
     Int(u32),
+    Bool(bool),
+    Variant(TypeRef<'i>, u64, RawValue),
+    VariantCast(TypeRef<'i>, RawValue),
+    Discriminant(RawValue),
 }
 
 impl RawValue {

@@ -8,7 +8,9 @@ use crate::{
 pub struct FunctionBuilder<'i> {
     ty_pool: &'i crate::ty::Pool<'i>,
     blocks: Vec<Block<'i>>,
+    block_refs: Vec<Option<usize>>,
     current_block: usize,
+    current_block_ref: BlockRef,
     next_free_id: u16,
 }
 
@@ -34,7 +36,9 @@ impl<'i> FunctionBuilder<'i> {
                 params: vec![],
                 instructions: vec![],
             }],
+            block_refs: vec![Some(0)],
             current_block: 0,
+            current_block_ref: BlockRef { idx: 0 },
             next_free_id: 0,
         }
     }
@@ -58,7 +62,7 @@ impl<'i> FunctionBuilder<'i> {
         for block in &mut self.blocks[(self.current_block + 1)..] {
             for inst in &mut block.instructions {
                 match inst {
-                    Instruction::Int(val) => {}
+                    Instruction::Int(_) | Instruction::Bool(_) => {}
                     Instruction::Add(lhs, rhs)
                     | Instruction::Sub(lhs, rhs)
                     | Instruction::Mul(lhs, rhs)
@@ -79,6 +83,9 @@ impl<'i> FunctionBuilder<'i> {
                     | Instruction::Name(_, val)
                     | Instruction::Return(val)
                     | Instruction::Neg(val)
+                    | Instruction::Variant(_, _, val)
+                    | Instruction::VariantCast(_, val)
+                    | Instruction::Discriminant(val)
                     | Instruction::Not(val) => {
                         val.0 += diff;
                     }
@@ -119,6 +126,39 @@ impl<'i> FunctionBuilder<'i> {
 
         Value {
             ty: lhs.ty,
+            raw: self.next_id(),
+        }
+    }
+
+    pub fn variant(&mut self, ty: TypeRef<'i>, idx: u64, value: Value<'i>) -> Value<'i> {
+        self.blocks[self.current_block]
+            .instructions
+            .push(Instruction::Variant(ty, idx, value.raw));
+
+        Value {
+            ty,
+            raw: self.next_id(),
+        }
+    }
+
+    pub fn discriminant(&mut self, value: Value<'i>) -> Value<'i> {
+        self.blocks[self.current_block]
+            .instructions
+            .push(Instruction::Discriminant(value.raw));
+
+        Value {
+            ty: self.ty_pool.get_int(),
+            raw: self.next_id(),
+        }
+    }
+
+    pub fn variant_cast(&mut self, ty: TypeRef<'i>, value: Value<'i>) -> Value<'i> {
+        self.blocks[self.current_block]
+            .instructions
+            .push(Instruction::VariantCast(ty, value.raw));
+
+        Value {
+            ty,
             raw: self.next_id(),
         }
     }
@@ -243,16 +283,40 @@ impl<'i> FunctionBuilder<'i> {
         }
     }
 
-    pub fn create_block(&mut self) -> BlockRef {
-        let block_ref = self.blocks.len();
+    pub fn bool_lit(&mut self, value: bool) -> Value<'i> {
+        self.blocks[self.current_block]
+            .instructions
+            .push(Instruction::Bool(value));
+        Value {
+            ty: self.ty_pool.get_ty_bool(),
+            raw: self.next_id(),
+        }
+    }
+
+    pub fn append_block(&mut self, block: BlockRef) {
+        let idx = self.blocks.len();
         self.blocks.push(Block {
             instructions: vec![],
             params: vec![],
         });
-        BlockRef { idx: block_ref }
+        if self.block_refs[block.idx].is_some() {
+            panic!("block inserted twice");
+        }
+        self.block_refs[block.idx] = Some(idx);
     }
+
+    pub fn create_block(&mut self) -> BlockRef {
+        let idx = self.block_refs.len();
+        self.block_refs.push(None);
+        BlockRef { idx }
+    }
+
     pub fn select(&mut self, block: BlockRef) {
-        self.current_block = block.idx;
+        let Some(idx) = self.block_refs[block.idx] else {
+            panic!("cannot select uninserted block");
+        };
+        self.current_block = idx;
+        self.current_block_ref = block;
     }
 
     pub fn ret(&mut self, val: Value<'i>) {
@@ -261,7 +325,27 @@ impl<'i> FunctionBuilder<'i> {
             .push(Instruction::Return(val.raw));
     }
 
-    pub fn build(self) -> Vec<Block<'i>> {
+    pub fn get_current_block(&self) -> BlockRef {
+        self.current_block_ref
+    }
+
+    pub fn build(mut self) -> Vec<Block<'i>> {
+        for block in &mut self.blocks {
+            match block.instructions.last_mut() {
+                Some(Instruction::Jump(block, _)) => {
+                    block.0 = self.block_refs[block.0 as usize].expect("uninserted block") as u16;
+                }
+                Some(Instruction::Branch(_, yes, _, no, _)) => {
+                    yes.0 = self.block_refs[yes.0 as usize].expect("uninserted block") as u16;
+                    no.0 = self.block_refs[no.0 as usize].expect("uninserted block") as u16;
+                }
+                Some(Instruction::Return(_)) => {}
+                inst => {
+                    panic!("invalid terminator {:#?}", self.blocks)
+                }
+            }
+        }
+
         self.blocks
     }
 }
