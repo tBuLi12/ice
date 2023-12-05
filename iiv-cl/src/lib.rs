@@ -16,7 +16,7 @@ use cranelift_object::{ObjectBuilder, ObjectModule};
 use iiv::{
     pool::FuncRef,
     ty::{BuiltinType, TypeRef},
-    Ctx,
+    Ctx, RawValue,
 };
 
 pub struct Backend<'i> {
@@ -49,13 +49,13 @@ struct LayoutCache<'i> {
     ty_pool: &'i iiv::ty::Pool<'i>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum ClftValueRaw {
     Ssa(ir::Value),
     StackMemory(ir::StackSlot),
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct ClftValue<'i> {
     value: ClftValueRaw,
     ty: TypeRef<'i>,
@@ -207,7 +207,8 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
 
 impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
     fn get(&mut self, value: iiv::RawValue) -> ir::Value {
-        match self.values[value.0 as usize].value {
+        let val = self.val(value);
+        match val.value {
             ClftValueRaw::Ssa(value) => value,
             ClftValueRaw::StackMemory(slot) => self.fb.ins().stack_addr(types::R64, slot, 0),
         }
@@ -235,6 +236,53 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
         }
     }
 
+    fn address_of(&mut self, location: Location<'i>) -> ClftValue<'i> {
+        let ty = location.ptr.ty;
+        let value = match location.ptr.value {
+            ClftValueRaw::Ssa(val) => panic!("address of an SSA value"),
+            ClftValueRaw::StackMemory(slot) => {
+                self.fb
+                    .ins()
+                    .stack_addr(as_ty(ty), slot, location.offset as i32)
+            }
+        };
+        ClftValue {
+            ty: self.ty_pool.get_ref(location.ptr.ty),
+            value: ClftValueRaw::Ssa(value),
+        }
+    }
+
+    fn ptr_write(&mut self, dst: ir::Value, data: Location<'i>) {
+        match data.ptr {
+            ClftValue {
+                value: ClftValueRaw::Ssa(val),
+                ..
+            } => {
+                self.fb.ins().store(MemFlags::new(), val, dst, 0);
+            }
+            ClftValue {
+                value: ClftValueRaw::StackMemory(slot),
+                ty,
+            } => {
+                let l = self.layouts.layout_of(ty);
+                let src = self
+                    .fb
+                    .ins()
+                    .stack_addr(types::R64, slot, data.offset as i32);
+                self.fb.emit_small_memory_copy(
+                    self.module.target_config(),
+                    dst,
+                    src,
+                    l.size as u64,
+                    1,
+                    1,
+                    true,
+                    MemFlags::new(),
+                );
+            }
+        }
+    }
+
     fn write(&mut self, location: Location<'i>, data: Location<'i>) {
         match (location.ptr, data.ptr) {
             (
@@ -257,8 +305,6 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                 },
             ) => {
                 let l = self.layouts.layout_of(ty);
-                dbg!(ty);
-                dbg!(l);
                 let dst = self
                     .fb
                     .ins()
@@ -360,6 +406,17 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
         }
     }
 
+    fn val(&mut self, val: RawValue) -> ClftValue<'i> {
+        if val.0 == RawValue::NULL.0 {
+            return ClftValue {
+                ty: self.ty_pool.get_null(),
+                value: ClftValueRaw::Ssa(self.fb.ins().iconst(types::I8, 0 as i64)),
+            };
+        }
+
+        self.values[val.0 as usize]
+    }
+
     fn gen(&mut self, sig: &iiv::fun::Signature<'i>, blocks: &[iiv::builder::Block<'i>]) {
         let mut params = self
             .fb
@@ -416,7 +473,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         self.values.push(boolean)
                     }
                     iiv::Instruction::Add(lhs, rhs) => {
-                        let ty = self.values[lhs.0 as usize].ty;
+                        let ty = self.val(*lhs).ty;
                         let lhs = self.get(*lhs);
                         let rhs = self.get(*rhs);
                         self.values.push(ClftValue {
@@ -473,7 +530,17 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             }
                         })
                     }
-                    iiv::Instruction::Assign(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Assign(lhs, rhs) => {
+                        let ClftValue {
+                            value: ClftValueRaw::Ssa(ptr),
+                            ..
+                        } = self.val(*lhs)
+                        else {
+                            panic!("non pointer assignment")
+                        };
+                        let rhs = self.val(*rhs);
+                        self.ptr_write(ptr, rhs.into());
+                    }
                     iiv::Instruction::RefAssign(lhs, rhs) => unimplemented!(),
                     iiv::Instruction::Tuple(tpl, ty) => {
                         let tuple_value = self.alloc(*ty).0;
@@ -483,21 +550,40 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
 
                         for (i, val) in tpl.iter().enumerate() {
                             let field_location = self.elem(tuple_location, i);
-                            self.write(field_location, self.values[val.0 as usize].into());
+                            let elem_loc = self.val(*val).into();
+                            self.write(field_location, elem_loc);
                         }
                     }
                     iiv::Instruction::Name(TypeId, Value) => unimplemented!(),
                     iiv::Instruction::GetElem(lhs, path) => {
-                        let value = self.values[lhs.0 as usize];
-                        let iiv::Elem::Prop(iiv::Prop(idx)) = path[0] else {
-                            panic!("invalid get_elem");
-                        };
+                        let value = self.val(*lhs);
+                        let mut elem_loc = value.into();
 
-                        let elem_loc = self.elem(value.into(), idx as usize);
+                        for elem in path {
+                            let iiv::Elem::Prop(iiv::Prop(idx)) = elem else {
+                                panic!("invalid get_elem");
+                            };
+                            elem_loc = self.elem(elem_loc, *idx as usize);
+                        }
+
                         let elem_value = self.read(elem_loc);
                         self.values.push(elem_value);
                     }
-                    iiv::Instruction::GetElemRef(lhs, path) => unimplemented!(),
+                    iiv::Instruction::GetElemRef(lhs, path) => {
+                        let value = self.val(*lhs);
+                        let mut elem_loc = value.into();
+
+                        for elem in path {
+                            let iiv::Elem::Prop(iiv::Prop(idx)) = elem else {
+                                panic!("invalid get_elem");
+                            };
+                            dbg!("REFF", lhs.0);
+                            elem_loc = self.elem(elem_loc, *idx as usize);
+                        }
+
+                        let elem_ptr = self.address_of(elem_loc);
+                        self.values.push(elem_ptr);
+                    }
                     iiv::Instruction::Branch(lhs, yes, yes_args, no, no_args) => {
                         let yes_args: Vec<_> = yes_args.iter().map(|arg| self.get(*arg)).collect();
                         let no_args: Vec<_> = no_args.iter().map(|arg| self.get(*arg)).collect();
@@ -519,7 +605,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             let ClftValue {
                                 value: ClftValueRaw::StackMemory(slot),
                                 ..
-                            } = self.values[val.0 as usize]
+                            } = self.val(*val)
                             else {
                                 panic!("invalid return type")
                             };
@@ -552,13 +638,14 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         let discriminant = self.discriminant(variant.into());
                         self.write(discriminant, idx_val.into());
                         let value_loc = self.elem(variant.into(), *idx as usize);
-                        self.write(value_loc, self.values[val.0 as usize].into());
+                        let src_loc = self.val(*val).into();
+                        self.write(value_loc, src_loc);
                         self.values.push(variant);
                     }
                     iiv::Instruction::VariantCast(ty, val) => {
                         let target = self.alloc(*ty).0;
                         let discriminant = self.discriminant(target.into());
-                        let src_variant = self.values[val.0 as usize];
+                        let src_variant = self.val(*val);
                         let src_discriminant = self.discriminant(src_variant.into());
                         let src_value = self.raw_union(src_variant.into());
                         let value = self.raw_union(target.into());
@@ -615,7 +702,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         self.values.push(target);
                     }
                     iiv::Instruction::Discriminant(value) => {
-                        let value = self.values[value.0 as usize];
+                        let value = self.val(*value);
                         let discriminant_loc = self.discriminant(value.into());
                         let discriminant = self.read(discriminant_loc);
                         self.values.push(discriminant);
@@ -769,11 +856,13 @@ enum LayoutState {
 
 fn as_ty<'i>(ty: TypeRef<'i>) -> ir::Type {
     use iiv::ty::Type;
-
+    dbg!(ty);
     match *ty {
         Type::Builtin(BuiltinType::Int) => types::I64,
+        Type::Builtin(BuiltinType::Null) => types::I8,
         Type::Struct(_) => types::I64,
         Type::Variant(_) => types::I64,
+        Type::Ref(_) => types::I64,
         _ => unimplemented!(),
     }
 }

@@ -127,7 +127,7 @@ pub enum Instruction<'i> {
 }
 
 impl RawValue {
-    pub const NULL: Self = Self(0);
+    pub const NULL: Self = Self(u16::MAX);
 }
 
 #[derive(Clone, Copy, Debug)]

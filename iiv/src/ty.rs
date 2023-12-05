@@ -191,6 +191,7 @@ impl<'i> Pool<'i> {
 
 impl<'i> TypeRef<'i> {
     pub fn elem(&self, i: u8) -> Option<TypeRef<'i>> {
+        dbg!(&*self.0, i);
         match *self.0 {
             Type::Struct(props) => Some(props[i as usize].1),
             Type::Variant(elems) => Some(elems[i as usize].1),
@@ -200,13 +201,15 @@ impl<'i> TypeRef<'i> {
 
     pub fn prop(&self, name: Str<'i>) -> Option<(u8, TypeRef<'i>)> {
         match *self.0 {
-            Type::Struct(props) => Some(props.into_iter().enumerate().find_map(|(i, &prop)| {
-                if prop.0 .0 == name {
-                    Some((i as u8, prop.0 .1))
-                } else {
-                    None
-                }
-            })?),
+            Type::Struct(props) | Type::Variant(props) => {
+                Some(props.into_iter().enumerate().find_map(|(i, &prop)| {
+                    if prop.0 .0 == name {
+                        Some((i as u8, prop.0 .1))
+                    } else {
+                        None
+                    }
+                })?)
+            }
             _ => None,
         }
     }

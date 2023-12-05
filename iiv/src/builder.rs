@@ -110,11 +110,16 @@ impl<'i> FunctionBuilder<'i> {
                 }
             }
         }
-        self.next_free_id = dbg!(end + diff);
+        self.next_free_id = end + diff;
     }
 
     fn next_id(&mut self) -> RawValue {
         let id = self.next_free_id;
+
+        if id == 5 {
+            // panic!("EEEEEE");
+        }
+
         self.next_free_id += 1;
         RawValue(id)
     }
@@ -244,6 +249,68 @@ impl<'i> FunctionBuilder<'i> {
         Value {
             ty,
             raw: self.next_id(),
+        }
+    }
+
+    pub fn get_deep_prop(
+        &mut self,
+        value: Value<'i>,
+        props: Vec<u8>,
+        ty: TypeRef<'i>,
+    ) -> Value<'i> {
+        dbg!(value.raw);
+        self.blocks[self.current_block]
+            .instructions
+            .push(Instruction::GetElem(
+                value.raw,
+                props
+                    .into_iter()
+                    .map(|prop| Elem::Prop(Prop(prop)))
+                    .collect(),
+            ));
+
+        Value {
+            ty,
+            raw: self.next_id(),
+        }
+    }
+
+    pub fn get_prop_ref(&mut self, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
+        self.blocks[self.current_block]
+            .instructions
+            .push(Instruction::GetElemRef(
+                value.raw,
+                props
+                    .into_iter()
+                    .map(|prop| Elem::Prop(Prop(prop)))
+                    .collect(),
+            ));
+
+        Value {
+            ty: self.ty_pool.get_ref(value.ty),
+            raw: self.next_id(),
+        }
+    }
+
+    pub fn ref_to(&mut self, value: Value<'i>) -> Value<'i> {
+        self.blocks[self.current_block]
+            .instructions
+            .push(Instruction::GetElemRef(value.raw, vec![]));
+
+        Value {
+            ty: self.ty_pool.get_ref(value.ty),
+            raw: self.next_id(),
+        }
+    }
+
+    pub fn assign(&mut self, place: Value<'i>, value: Value<'i>) -> Value<'i> {
+        self.blocks[self.current_block]
+            .instructions
+            .push(Instruction::Assign(place.raw, value.raw));
+
+        Value {
+            ty: self.ty_pool.get_null(),
+            raw: RawValue::NULL,
         }
     }
     // pub fn ref_prop(&mut self, value: Value<'i>, prop: Prop) -> Value<'i> {}

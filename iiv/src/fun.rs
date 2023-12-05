@@ -28,6 +28,7 @@ impl<'i> Display for Function<'i> {
         writeln!(f, "): {}", self.sig.ret_ty)?;
         for (block_index, block) in self.body.iter().enumerate() {
             writeln!(f, "b{} {}:", block_index, fmt::List(&block.params))?;
+            i += block.params.len();
             for inst in &block.instructions {
                 match inst {
                     Instruction::Int(val) => {
@@ -64,7 +65,9 @@ impl<'i> Display for Function<'i> {
                         writeln!(f, ")")?;
                         i += 1;
                     }
-                    Instruction::Assign(lhs, rhs) => unimplemented!(),
+                    Instruction::Assign(lhs, rhs) => {
+                        writeln!(f, "    store {} <- {}", lhs.0, rhs.0)?;
+                    }
                     Instruction::RefAssign(lhs, rhs) => unimplemented!(),
                     Instruction::Tuple(tpl, _) => {
                         write!(f, "    %{} = (", i)?;
@@ -90,7 +93,21 @@ impl<'i> Display for Function<'i> {
                         writeln!(f, "")?;
                         i += 1;
                     }
-                    Instruction::GetElemRef(lhs, path) => unimplemented!(),
+                    Instruction::GetElemRef(lhs, path) => {
+                        write!(f, "    %{} = elem ref %{} ", i, lhs.0)?;
+                        for elem in path {
+                            match elem {
+                                Elem::Index(idx) => {
+                                    write!(f, "%{} ", idx.0)?;
+                                }
+                                Elem::Prop(prop) => {
+                                    write!(f, "{} ", prop.0)?;
+                                }
+                            }
+                        }
+                        writeln!(f, "")?;
+                        i += 1;
+                    }
                     Instruction::Branch(lhs, yes, yes_args, no, no_args) => {
                         writeln!(
                             f,

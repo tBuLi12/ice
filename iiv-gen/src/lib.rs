@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use ast::{
-    BindPattern, BlockItem, Expr, Ident, Module, NarrowTypePattern, Pattern, PatternBody, PropsTy,
-    Spanned,
+    BindPattern, BindingType, BlockItem, Expr, Ident, Module, NarrowTypePattern, Pattern,
+    PatternBody, PropsTy, Spanned,
 };
 use iiv::{
     builder::BlockRef,
@@ -240,9 +240,11 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         dbg!("BINDING");
         dbg!(value);
         match &pattern.body {
-            PatternBody::Bind(BindPattern { binding_type, name }) => {
-                self.define(&name, Object::Value(value));
-            }
+            PatternBody::Bind(BindPattern { binding_type, name }) => match binding_type {
+                BindingType::Let => self.define(&name, Object::Value(value)),
+                BindingType::Var => self.define(&name, Object::Place(value, vec![])),
+                _ => unimplemented!(),
+            },
             PatternBody::NarrowType(NarrowTypePattern { inner, ty }) => {
                 let target_ty = self.check_type(ty);
                 let narrowed = self.ensure_ty(&ty.span(), target_ty, value);
@@ -288,7 +290,8 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             PatternBody::Struct(struct_pattern) => {
                 if let Type::Struct(_) = *value.ty {
                     for (name, prop_pattern) in &struct_pattern.inner {
-                        let prop = self.get_prop(value, name);
+                        let prop = self.get_prop(value.obj(), name);
+                        let prop = self.get_val(&pattern.span(), prop);
                         self.bind(prop_pattern, prop, no_match_block);
                     }
                 } else {
@@ -342,7 +345,14 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 err!(span, "expected a value, found module");
                 self.invalid()
             }
-            Object::Value(val) | Object::Place(val) => val,
+            Object::Value(val) => val,
+            Object::Place(val, offsets) => {
+                if offsets.is_empty() {
+                    val
+                } else {
+                    self.iiv.get_deep_prop(val, offsets, val.ty)
+                }
+            }
             Object::Type(ty) => self.iiv.ty_expr(ty),
             Object::Condition(raw) => panic!("unexpected condition returned"),
             Object::Fun(_) => {
@@ -362,7 +372,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 err!(span, "expected a type, found module");
                 self.ty.get_ty_invalid()
             }
-            Object::Value(val) | Object::Place(val) => {
+            Object::Value(val) | Object::Place(val, _) => {
                 if val.ty == self.ty.get_ty_type() {
                     self.ty.get_ty_constant(val.raw)
                 } else {
@@ -394,17 +404,40 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         }
     }
 
-    fn get_prop(&mut self, value: Value<'i>, prop: &Ident<'i>) -> Value<'i> {
-        if let Some((i, prop_ty)) = value.ty.prop(prop.value) {
-            self.iiv.get_prop(value, i, prop_ty)
-        } else {
-            self.msg(err!(
-                &prop.span(),
-                "property {} does not exist on type {}",
-                prop.value,
-                value.ty
-            ));
-            self.invalid()
+    fn get_prop(&mut self, value: Object<'i>, prop: &Ident<'i>) -> Object<'i> {
+        match value {
+            Object::Place(mut place, mut offsets) => {
+                if let Some((i, prop_ty)) = place.ty.prop(prop.value) {
+                    offsets.push(i);
+                    place.ty = prop_ty;
+                    Object::Place(place, offsets)
+                } else {
+                    self.msg(err!(
+                        &prop.span(),
+                        "property {} does not exist on type {}",
+                        prop.value,
+                        place.ty
+                    ));
+                    Object::Place(self.invalid(), vec![])
+                }
+            }
+            Object::Value(value) => {
+                if let Some((i, prop_ty)) = value.ty.prop(prop.value) {
+                    self.iiv.get_prop(value, i, prop_ty).obj()
+                } else {
+                    self.msg(err!(
+                        &prop.span(),
+                        "property {} does not exist on type {}",
+                        prop.value,
+                        value.ty
+                    ));
+                    Object::Value(self.invalid())
+                }
+            }
+            _ => {
+                self.msg(err!(&prop.span(), "no such property"));
+                Object::Place(self.invalid(), vec![])
+            }
         }
     }
 
@@ -562,12 +595,26 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 }
             }
             Expr::Prop(prop) => {
-                let lhs = self.check_val(&prop.lhs);
-                self.get_prop(lhs, &prop.prop).obj()
+                let lhs = self.check(&prop.lhs, false_block);
+                self.get_prop(lhs, &prop.prop)
             }
             Expr::Field(Field) => unimplemented!(),
             Expr::Index(Index) => unimplemented!(),
             Expr::Cast(Cast) => unimplemented!(),
+            Expr::RefTo(ref_to) => {
+                let checked = self.check(&ref_to.rhs, false_block);
+                match checked {
+                    Object::Place(place, offsets) => {
+                        let r = self.iiv.get_prop_ref(place, offsets, place.ty);
+                        dbg!(r.ty);
+                        r.obj()
+                    }
+                    _ => {
+                        self.msg(err!(&ref_to.rhs.span(), "expected an assignable l-value"));
+                        self.invalid().obj()
+                    }
+                }
+            }
             Expr::Add(add) => {
                 let lhs = self.check_val(&add.lhs);
                 let rhs = self.check_val(&add.rhs);
@@ -586,7 +633,31 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             Expr::Leq(LessEq) => unimplemented!(),
             Expr::Lt(Less) => unimplemented!(),
             Expr::Gt(Greater) => unimplemented!(),
-            Expr::Assign(Assign) => unimplemented!(),
+            Expr::Assign(assign) => {
+                let rhs = self.check_val(&assign.rhs);
+                let lhs = self.check(&assign.lhs, false_block);
+                match lhs {
+                    Object::Place(place, offsets) => {
+                        let rhs = self.ensure_ty(&assign.rhs.span(), place.ty, rhs);
+                        let prop_ref = self.iiv.get_prop_ref(place, offsets, place.ty);
+                        self.iiv.assign(prop_ref, rhs).obj()
+                    }
+                    other => {
+                        let lhs = self.get_val(&assign.lhs.span(), other);
+                        if let Type::Ref(inner) = *lhs.ty {
+                            let rhs = self.ensure_ty(&assign.rhs.span(), inner, rhs);
+                            self.iiv.assign(lhs, rhs).obj()
+                        } else {
+                            self.msg(err!(
+                                &assign.lhs.span(),
+                                "expected an assignable l-value, got {}",
+                                lhs.ty
+                            ));
+                            self.invalid().obj()
+                        }
+                    }
+                }
+            }
             Expr::Div(Div) => unimplemented!(),
             Expr::Sub(Sub) => unimplemented!(),
             Expr::Neg(Neg) => unimplemented!(),
@@ -656,12 +727,12 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     fn resolve(&mut self, name: &Ident) -> Object<'i> {
         for scope in &self.scopes {
             if let Some(obj) = scope.get(&name.value) {
-                return *obj;
+                return obj.clone();
             }
         }
 
         if let Some(obj) = self.global_scope.get(&name.value) {
-            return *obj;
+            return obj.clone();
         }
 
         self.msg(err!(
@@ -695,12 +766,12 @@ impl<'i> ObjContent<'i> for TypeRef<'i> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 enum Object<'i> {
     Trait,
     Module,
     Value(Value<'i>),
-    Place(Value<'i>),
+    Place(Value<'i>, Vec<u8>),
     Type(TypeRef<'i>),
     Fun(FuncRef<'i>),
     Condition(usize),

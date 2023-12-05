@@ -315,8 +315,16 @@ impl<'i, R: io::Read> Parser<'i, R> {
     }
 
     fn parse_block_item(&mut self) -> Parsed<BlockItem<'i>> {
-        if let Ok(span) = self.eat_kw(Keyword::Let) {
-            self.default_binding = Some(BindingType::Let);
+        let binding_type = if let Ok(span) = self.eat_kw(Keyword::Let) {
+            Some((span, BindingType::Let))
+        } else if let Ok(span) = self.eat_kw(Keyword::Var) {
+            Some((span, BindingType::Var))
+        } else {
+            None
+        };
+
+        if let Some((span, binding_type)) = binding_type {
+            self.default_binding = Some(binding_type);
             let binding = self.parse_pattern().expected("a pattern")?;
             self.default_binding = None;
 
@@ -519,8 +527,17 @@ impl<'i, R: io::Read> Parser<'i, R> {
         }
     }
 
+    fn parse_ref_to(&mut self) -> Parsed<Expr<'i>> {
+        let span = self.eat_punct(Punctuation::Et)?;
+        let expr = self.parse_expr().expected("an l-value")?;
+        Ok(Expr::RefTo(RefTo {
+            span: span.to(expr.span()),
+            rhs: Box::new(expr),
+        }))
+    }
+
     fn parse_expr(&mut self) -> Parsed<Expr<'i>> {
-        let expr = self
+        let mut expr = self
             .ident()
             .map(Expr::Variable)
             .or_else(|_| self.int_lit().map(Expr::Int))
@@ -530,8 +547,20 @@ impl<'i, R: io::Read> Parser<'i, R> {
             .invalid()?
             .or_else(|_| self.parse_variant_lit())
             .invalid()?
+            .or_else(|_| self.parse_ref_to())
+            .invalid()?
             .or_else(|_| self.parse_if())?;
 
-        self.parse_rhs(expr)
+        expr = self.parse_rhs(expr)?;
+
+        while self.eat_punct(Punctuation::Eq).is_ok() {
+            let rhs = self.parse_expr().expected("an expression")?;
+            expr = Expr::Assign(Assign {
+                lhs: Box::new(expr),
+                rhs: Box::new(rhs),
+            });
+        }
+
+        Ok(expr)
     }
 }

@@ -572,6 +572,12 @@ pub struct Not<'i> {
 }
 
 #[derive(Debug)]
+pub struct RefTo<'i> {
+    pub span: Span,
+    pub rhs: Box<Expr<'i>>,
+}
+
+#[derive(Debug)]
 pub struct Neg<'i> {
     pub span: Span,
     pub rhs: Box<Expr<'i>>,
@@ -643,6 +649,7 @@ spanned_enum! {
         Sub(Sub<'i>),
         Neg(Neg<'i>),
         Not(Not<'i>),
+        RefTo(RefTo<'i>),
         Vec(Vector<'i>),
         Variant(Variant<'i>),
         AddAssign(AddAssign<'i>),
@@ -775,6 +782,7 @@ spanned_impls! {
     NotEquals : lhs - rhs,
     Assign : lhs - rhs,
     Not,
+    RefTo,
     Neg,
     AddAssign : lhs - rhs,
     Spread,

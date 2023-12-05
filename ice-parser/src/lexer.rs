@@ -42,6 +42,7 @@ pub enum Punctuation {
     Eq,
     DoubleEq,
     Pipe,
+    Et,
 }
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
@@ -211,6 +212,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             ',' => Comma,
             '.' => Period,
             '|' => Pipe,
+            '&' => Et,
             '-' => Minus {
                 '>' => ThinArrow,
             },
