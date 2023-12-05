@@ -268,8 +268,10 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                         self.iiv.branch(cond, next_block, no_match_block.unwrap());
                         self.iiv.append_block(next_block);
                         self.iiv.select(next_block);
-                        let inner = self.iiv.get_prop(value, i as u8, elems[i].1);
-                        self.bind(&vairant.inner, inner, no_match_block);
+                        if let Some(inner_patter) = &vairant.inner {
+                            let inner = self.iiv.get_prop(value, i as u8, elems[i].1);
+                            self.bind(&inner_patter, inner, no_match_block);
+                        }
                     } else {
                         self.msg(err!(
                             &pattern.span(),

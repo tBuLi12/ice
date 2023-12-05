@@ -208,7 +208,7 @@ pub struct NamedPattern<'i> {
 #[derive(Debug)]
 pub struct VariantPattern<'i> {
     pub name: Ident<'i>,
-    pub inner: Box<Pattern<'i>>,
+    pub inner: Option<Box<Pattern<'i>>>,
 }
 
 #[derive(Debug)]
@@ -789,7 +789,7 @@ spanned_impls! {
     Vector,
     Variant,
     NamedPattern : name - inner,
-    VariantPattern : name - inner,
+    VariantPattern : name - ?inner name,
     NamedTyPattern,
     BindPattern : name - name,
     TuplePattern,

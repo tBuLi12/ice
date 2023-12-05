@@ -9,7 +9,6 @@ pub mod builder;
 pub mod diagnostics;
 pub mod fun;
 pub mod pool;
-mod ref_check;
 pub mod str;
 pub mod ty;
 
