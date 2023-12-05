@@ -1,14 +1,10 @@
 [package]
-name = "icy"
+name = "iiv-llvm"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-ice-parser = { path = "../ice-parser" }
-iiv-gen = { path = "../iiv-gen" }
-iiv-cl = { path = "../iiv-cl" }
-iiv-llvm = { path = "../iiv-llvm" }
 iiv = { path = "../iiv" }
-cc = "1.0.83"
+llvm = { path = "llvm" }

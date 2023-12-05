@@ -108,7 +108,7 @@ impl<'i> Backend<'i> {
             },
         }
     }
-    pub fn transform(&mut self, package: &iiv::Package<'i>, out: impl AsRef<Path>) {
+    pub fn transform(&mut self, package: &iiv::Package<'i>, out: &File) {
         self.layouts.storage.resize_with(self.ty_pool.len(), || {
             UnsafeCell::new(LayoutState::NotComputed)
         });
@@ -128,7 +128,7 @@ impl<'i> Backend<'i> {
 }
 
 impl<'i, 'b> PackageTransformer<'i, 'b> {
-    fn transform(mut self, package: &iiv::Package<'i>, out: impl AsRef<Path>) {
+    fn transform(mut self, package: &iiv::Package<'i>, out: &File) {
         // signatures
         package.funcs.iter().for_each(|fun_ref| {
             let fun = fun_ref.borrow();
@@ -200,8 +200,7 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
             self.module.clear_context(&mut ctx);
         });
 
-        let file = File::create(out).unwrap();
-        self.module.finish().object.write_stream(file).unwrap();
+        self.module.finish().object.write_stream(out).unwrap();
     }
 }
 

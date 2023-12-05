@@ -5,6 +5,8 @@ members = [
     "iiv",
     "iiv-gen",
     "iiv-cl",
+    "iiv-llvm",
+    "iiv-llvm/llvm",
     "icy",
     "ice-parser",
 ]

@@ -164,4 +164,5 @@ impl<'i> Ctx<'i> {
 
 pub struct Package<'i> {
     pub funcs: Vec<FuncRef<'i>>,
+    pub main: Option<FuncRef<'i>>,
 }

@@ -88,8 +88,16 @@ impl<'i> Generator<'i> {
             gen.emit_function_body(&mut *fun.borrow_mut(), fun_node);
         }
 
+        let main =
+            if let Some(Object::Fun(main)) = self.global_scope.get(&self.ty.str_pool.get("main")) {
+                Some(*main)
+            } else {
+                None
+            };
+
         Package {
             funcs: package_funs,
+            main,
         }
     }
 }

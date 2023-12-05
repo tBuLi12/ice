@@ -1,8 +1,8 @@
-use std::{env, fs::File, io::BufReader};
+use std::{env, fs::File, io::BufReader, process::Command};
 
 use ice_parser::Parser;
-use iiv_cl::Backend;
 use iiv_gen::Generator;
+use iiv_llvm::Backend;
 
 fn main() {
     let mut args = env::args();
@@ -36,4 +36,18 @@ fn main() {
     }
 
     backend.transform(&package, "out.o");
+
+    // if cfg!(windows) {
+    //      cc::windows_registry::find_tool(env!("TARGET"), "link.exe");
+    //     let out = Command::new("link.exe")
+    //         .arg("out.o")
+    //         .arg("-o out.exe")
+    //         .output()
+    //         .expect("linking failed");
+    //     if !out.status.success() {
+    //         eprintln!("linking failed");
+    //     }
+    // } else {
+    //     println!("no link");
+    // }
 }
