@@ -3,6 +3,8 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Analysis/CGSCCPassManager.h"
+#include "llvm/Analysis/LoopAnalysisManager.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Constant.h"
 #include "llvm/IR/Constants.h"
@@ -15,9 +17,13 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/LegacyPassManager.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Value.h"
 #include "llvm/IR/Verifier.h"
+#include "llvm/Passes/PassBuilder.h"
+#include "llvm/Transforms/Utils/Mem2Reg.h"
+#include "llvm/Transforms/Scalar/SROA.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -115,7 +121,7 @@ extern "C" llvm::Constant* ctxGetBool(llvm::LLVMContext* ctx, bool val) {
 }
 
 extern "C" llvm::Type* ctxGetTyInt(llvm::LLVMContext* ctx) {
-    return llvm::Type::getInt64Ty(*ctx);
+    return llvm::Type::getInt32Ty(*ctx);
 }
 
 extern "C" llvm::Type* ctxGetTyBool(llvm::LLVMContext* ctx) {
@@ -295,4 +301,35 @@ extern "C" uint64_t functionArgSize(llvm::Function* func) {
 
 extern "C" llvm::Value* functionArgAt(llvm::Function* func, uint32_t idx) {
     return func->getArg(idx);
+}
+
+struct FunctionOptManager {
+    llvm::FunctionAnalysisManager fam;
+    // llvm::CGSCCAnalysisManager cam;
+    // llvm::LoopAnalysisManager lam;
+    llvm::FunctionPassManager fpm;
+};
+
+extern "C" FunctionOptManager* getFunctionOptManager(llvm::TargetMachine* machine) {
+    auto fom = new FunctionOptManager {
+        llvm::FunctionAnalysisManager(),
+        // llvm::CGSCCAnalysisManager(),
+        // llvm::LoopAnalysisManager(),
+        llvm::FunctionPassManager(),
+    };
+    fom->fpm.addPass(llvm::PromotePass());
+    auto pm = llvm::PassBuilder(machine);
+    pm.registerFunctionAnalyses(fom->fam);
+    return fom;
+}
+
+extern "C" void destroyFunctionOptManager(FunctionOptManager* funOptManager) {
+    delete funOptManager;
+}
+
+extern "C" void functionOptManagerOptimize(
+    FunctionOptManager* funOptManager,
+    llvm::Function* func
+) {
+    funOptManager->fpm.run(*func, funOptManager->fam);
 }

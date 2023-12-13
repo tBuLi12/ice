@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, collections::HashMap, f32::consts::E, fs::File, path::Path};
+use std::{cell::UnsafeCell, collections::HashMap, fs::File};
 
 // use cranelift::prelude::InstBuilder;
 use cranelift::{
@@ -7,8 +7,8 @@ use cranelift::{
         isa, settings,
     },
     prelude::{
-        types, AbiParam, FunctionBuilder, FunctionBuilderContext, GlobalValueData, IntCC, MemFlags,
-        StackSlotData, StackSlotKind,
+        types, AbiParam, FunctionBuilder, FunctionBuilderContext, IntCC, MemFlags, StackSlotData,
+        StackSlotKind,
     },
 };
 use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, Module};
@@ -238,7 +238,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
     fn address_of(&mut self, location: Location<'i>) -> ClftValue<'i> {
         let ty = location.ptr.ty;
         let value = match location.ptr.value {
-            ClftValueRaw::Ssa(val) => panic!("address of an SSA value"),
+            ClftValueRaw::Ssa(_) => panic!("address of an SSA value"),
             ClftValueRaw::StackMemory(slot) => {
                 self.fb
                     .ins()
@@ -480,11 +480,11 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             ty,
                         })
                     }
-                    iiv::Instruction::Sub(lhs, rhs) => unimplemented!(),
-                    iiv::Instruction::Mul(lhs, rhs) => unimplemented!(),
-                    iiv::Instruction::Div(lhs, rhs) => unimplemented!(),
-                    iiv::Instruction::Not(Value) => unimplemented!(),
-                    iiv::Instruction::Neg(Value) => unimplemented!(),
+                    iiv::Instruction::Sub(_lhs, _rhs) => unimplemented!(),
+                    iiv::Instruction::Mul(_lhs, _rhs) => unimplemented!(),
+                    iiv::Instruction::Div(_lhs, _rhs) => unimplemented!(),
+                    iiv::Instruction::Not(_value) => unimplemented!(),
+                    iiv::Instruction::Neg(_value) => unimplemented!(),
                     iiv::Instruction::Eq(lhs, rhs) => {
                         let lhs = self.get(*lhs);
                         let rhs = self.get(*rhs);
@@ -493,11 +493,11 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             ty: self.ty_pool.get_ty_bool(),
                         })
                     }
-                    iiv::Instruction::Neq(lhs, rhs) => unimplemented!(),
-                    iiv::Instruction::Gt(lhs, rhs) => unimplemented!(),
-                    iiv::Instruction::Lt(lhs, rhs) => unimplemented!(),
-                    iiv::Instruction::GtEq(lhs, rhs) => unimplemented!(),
-                    iiv::Instruction::LtEq(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::Neq(_lhs, _rhs) => unimplemented!(),
+                    iiv::Instruction::Gt(_lhs, _rhs) => unimplemented!(),
+                    iiv::Instruction::Lt(_lhs, _rhs) => unimplemented!(),
+                    iiv::Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
+                    iiv::Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::Call(fun, args) => {
                         let ret_ty = fun.borrow().sig.ret_ty;
                         let return_via_pointer = !ret_ty.has_primitive_repr();
@@ -540,7 +540,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         let rhs = self.val(*rhs);
                         self.ptr_write(ptr, rhs.into());
                     }
-                    iiv::Instruction::RefAssign(lhs, rhs) => unimplemented!(),
+                    iiv::Instruction::RefAssign(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::Tuple(tpl, ty) => {
                         let tuple_value = self.alloc(*ty).0;
                         self.values.push(tuple_value);
@@ -553,7 +553,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             self.write(field_location, elem_loc);
                         }
                     }
-                    iiv::Instruction::Name(TypeId, Value) => unimplemented!(),
+                    iiv::Instruction::Name(_type_id, _value) => unimplemented!(),
                     iiv::Instruction::GetElem(lhs, path) => {
                         let value = self.val(*lhs);
                         let mut elem_loc = value.into();
@@ -630,7 +630,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             self.fb.ins().return_(&[val]);
                         }
                     }
-                    iiv::Instruction::Ty(TypeId) => unimplemented!(),
+                    iiv::Instruction::Ty(_type_id) => unimplemented!(),
                     iiv::Instruction::Variant(ty, idx, val) => {
                         let variant = self.alloc(*ty).0;
                         let idx_val = self.get_int(*idx);
@@ -706,6 +706,9 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         let discriminant = self.read(discriminant_loc);
                         self.values.push(discriminant);
                     }
+                    iiv::Instruction::Drop(_) => {
+                        unimplemented!()
+                    }
                 };
             }
         }
@@ -772,7 +775,7 @@ impl<'i> LayoutCache<'i> {
                 align: 8,
                 fields: vec![0, 8, 12],
             },
-            Type::Union(elems) => {
+            Type::Union(_) => {
                 // Layout { size: 8, align: 8 }
                 //     + elems
                 //         .iter()

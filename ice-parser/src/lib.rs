@@ -274,7 +274,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
         if self.eat_punct(Punctuation::Period).is_ok() {
             let name = self.ident().expected("a variant name")?;
 
-            let inner = if let Ok((pattern, span)) = self
+            let inner = if let Ok((pattern, _)) = self
                 .parens(|p| p.parse_pattern().expected("a pattern"))
                 .invalid()?
             {

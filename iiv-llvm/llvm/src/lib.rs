@@ -1,6 +1,6 @@
 pub mod inst;
 
-use std::{marker::PhantomData, os::windows::io::AsRawHandle, path::Path, ptr};
+use std::{marker::PhantomData, ptr};
 
 #[repr(C)]
 pub struct Opaque {
@@ -18,6 +18,9 @@ struct LLVMModuleData(Opaque);
 
 #[repr(C)]
 struct IRBuilderData(Opaque);
+
+#[repr(C)]
+struct FunctionOptManagerData(Opaque);
 
 #[repr(C)]
 struct ValueData(Opaque);
@@ -143,6 +146,13 @@ extern "C" {
     fn functionVerify(func: *mut FunctionData) -> bool;
     fn functionArgSize(func: *mut FunctionData) -> u64;
     fn functionArgAt(func: *mut FunctionData, idx: u32) -> *mut ValueData;
+
+    fn getFunctionOptManager(ctx: *mut TargetMachineData) -> *mut FunctionOptManagerData;
+    fn destroyFunctionOptManager(funOptManager: *mut FunctionOptManagerData);
+    fn functionOptManagerOptimize(
+        funOptManager: *mut FunctionOptManagerData,
+        func: *mut FunctionData,
+    );
 }
 
 pub struct LLVMCtx {
@@ -158,6 +168,11 @@ pub struct LLVMModule<'ll> {
 pub struct IRBuilder<'ll> {
     _marker: PhantomData<&'ll mut &'ll ()>,
     ptr: *mut IRBuilderData,
+}
+
+pub struct FunctionOptManager<'ll> {
+    _marker: PhantomData<&'ll mut &'ll ()>,
+    ptr: *mut FunctionOptManagerData,
 }
 
 impl LLVMCtx {
@@ -188,6 +203,14 @@ impl LLVMCtx {
         IRBuilder {
             _marker: PhantomData,
             ptr: builder,
+        }
+    }
+
+    pub fn create_function_opt_manager<'ll>(&'ll self) -> FunctionOptManager<'ll> {
+        let manager = unsafe { getFunctionOptManager(self.machine) };
+        FunctionOptManager {
+            _marker: PhantomData,
+            ptr: manager,
         }
     }
 
@@ -351,6 +374,12 @@ impl<'ll> Function<'ll> {
     }
 }
 
+impl<'ll> FunctionOptManager<'ll> {
+    pub fn optimize(&self, func: Function<'ll>) {
+        unsafe { functionOptManagerOptimize(self.ptr, func.ptr) }
+    }
+}
+
 #[derive(Clone, Copy)]
 pub struct Function<'ll> {
     _marker: PhantomData<&'ll mut &'ll ()>,
@@ -399,7 +428,7 @@ impl<'ll> LLVMModule<'ll> {
             unsafe { modGetOrCreateGlobal(self.ptr, name.as_ptr(), name.len() as u32, ty.ptr) };
 
         unsafe {
-            if globalHasInitializer(global) {
+            if !globalHasInitializer(global) {
                 globalSetInitializer(global, init().ptr);
             }
         }
@@ -519,5 +548,11 @@ impl<'ll> Drop for LLVMModule<'ll> {
 impl<'ll> Drop for IRBuilder<'ll> {
     fn drop(&mut self) {
         unsafe { destroyBuilder(self.ptr) }
+    }
+}
+
+impl<'ll> Drop for FunctionOptManager<'ll> {
+    fn drop(&mut self) {
+        unsafe { destroyFunctionOptManager(self.ptr) }
     }
 }

@@ -20,6 +20,7 @@ impl<'i> Backend<'i> {
         let mut ir_gen = IRGen {
             module,
             ir: ctx.create_builder(),
+            fun_opt_manager: ctx.create_function_opt_manager(),
             phis: vec![],
             ctx: self.ctx,
             funcs: HashMap::new(),
@@ -58,6 +59,7 @@ struct LLVMValue<'ll, 'i> {
 pub struct IRGen<'ll, 'i> {
     ir: llvm::IRBuilder<'ll>,
     module: llvm::LLVMModule<'ll>,
+    fun_opt_manager: llvm::FunctionOptManager<'ll>,
     phis: Vec<FuturePhi<'ll>>,
     values: Vec<LLVMValue<'ll, 'i>>,
     blocks: Vec<llvm::Block<'ll>>,
@@ -108,6 +110,8 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         if llvm_func.verify() {
             panic!("invalid function");
         }
+
+        self.fun_opt_manager.optimize(llvm_func);
     }
 
     pub fn emit_block(&mut self, block: &iiv::builder::Block<'i>, i: usize) {
@@ -145,7 +149,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
 
         // rest
         for instruction in &block.instructions {
-            match &instruction {
+            match instruction {
                 iiv::Instruction::Int(val) => {
                     let int = self.get_int(*val as u64);
                     self.values.push(int)
@@ -161,11 +165,11 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let value = self.on_the_stack(self.ir.add(lhs, rhs));
                     self.values.push(LLVMValue { value, ty })
                 }
-                iiv::Instruction::Sub(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Mul(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Div(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Not(Value) => unimplemented!(),
-                iiv::Instruction::Neg(Value) => unimplemented!(),
+                iiv::Instruction::Sub(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::Mul(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::Div(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::Not(_value) => unimplemented!(),
+                iiv::Instruction::Neg(_value) => unimplemented!(),
                 iiv::Instruction::Eq(lhs, rhs) => {
                     let lhs = self.get(*lhs);
                     let rhs = self.get(*rhs);
@@ -175,11 +179,11 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                         ty: self.ctx.type_pool.get_ty_bool(),
                     })
                 }
-                iiv::Instruction::Neq(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Gt(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::Lt(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::GtEq(lhs, rhs) => unimplemented!(),
-                iiv::Instruction::LtEq(lhs, rhs) => unimplemented!(),
+                iiv::Instruction::Neq(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::Gt(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::Lt(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::Call(fun, args) => {
                     let ret_ty = fun.borrow().sig.ret_ty;
                     let mut raw_args = Vec::new();
@@ -198,7 +202,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let rhs = self.val(*rhs);
                     self.write(lhs, rhs);
                 }
-                iiv::Instruction::RefAssign(lhs, rhs) => unimplemented!(),
+                iiv::Instruction::RefAssign(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::Tuple(tpl, ty) => {
                     let tuple_value = self.alloc(*ty);
                     self.values.push(tuple_value);
@@ -209,7 +213,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                         self.write(field, val);
                     }
                 }
-                iiv::Instruction::Name(TypeId, Value) => unimplemented!(),
+                iiv::Instruction::Name(_type_id, _value) => unimplemented!(),
                 iiv::Instruction::GetElem(lhs, path) => {
                     let mut value = self.val(*lhs);
 
@@ -259,7 +263,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let val = self.get(*val);
                     self.ir.ret(val);
                 }
-                iiv::Instruction::Ty(TypeId) => unimplemented!(),
+                iiv::Instruction::Ty(_type_id) => unimplemented!(),
                 iiv::Instruction::Variant(ty, idx, val) => {
                     let variant = self.alloc(*ty);
                     let idx_val = self.get_int(*idx);
@@ -313,6 +317,9 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let discriminant = self.read(discriminant_loc);
                     self.values.push(discriminant);
                 }
+                iiv::Instruction::Drop(value) => {
+                    unimplemented!()
+                }
             }
         }
     }
@@ -321,7 +328,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         let future_phi = &mut self.phis[block.0 as usize];
         let current_block = self.ir.current_block();
 
-        let phis = match future_phi {
+        match future_phi {
             FuturePhi::Future(vals) => {
                 vals.push((self.ir.current_block(), args.to_owned()));
             }
@@ -347,26 +354,26 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         match *val.ty {
             Type::Struct(props) => LLVMValue {
                 ty: props[elem].1,
-                value: self.ir.gep(
-                    ty,
-                    val.value,
-                    &[
-                        self.llvm_ctx.int(0).val(),
-                        self.llvm_ctx.int(elem as u64).val(),
-                    ],
-                ),
+                value: {
+                    self.ir.gep(
+                        ty,
+                        val.value,
+                        &[
+                            self.llvm_ctx.int(0).val(),
+                            self.llvm_ctx.int(elem as u64).val(),
+                        ],
+                    )
+                },
             },
             Type::Variant(elems) => LLVMValue {
                 ty: elems[elem].1,
-                value: self.ir.gep(
-                    ty,
-                    val.value,
-                    &[
-                        self.llvm_ctx.int(0).val(),
-                        self.llvm_ctx.int(1).val(),
-                        self.llvm_ctx.int(elem as u64).val(),
-                    ],
-                ),
+                value: {
+                    self.ir.gep(
+                        ty,
+                        val.value,
+                        &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(1).val()],
+                    )
+                },
             },
             _ => panic!("invalid elem_ptr"),
         }
@@ -375,15 +382,17 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
     fn discriminant_ptr(&mut self, val: LLVMValue<'ll, 'i>) -> LLVMValue<'ll, 'i> {
         use iiv::ty::Type;
         match *val.ty {
-            Type::Variant(elems) => LLVMValue {
+            Type::Variant(_) => LLVMValue {
                 ty: self.ctx.type_pool.get_int(),
-                value: self.ir.gep(
-                    self.llvm_ty(self.ctx.type_pool.get_int()),
-                    val.value,
-                    &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(0).val()],
-                ),
+                value: {
+                    self.ir.gep(
+                        self.llvm_ty(val.ty),
+                        val.value,
+                        &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(0).val()],
+                    )
+                },
             },
-            _ => panic!("invalid elem_ptr"),
+            _ => panic!("invalid discriminant_ptr"),
         }
     }
 
@@ -496,7 +505,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             Type::Vector(_) => {
                 unimplemented!()
             }
-            Type::Union(elems) => {
+            Type::Union(_elems) => {
                 unimplemented!()
             }
             Type::Variant(variants) => {

@@ -164,12 +164,7 @@ impl Diagnostics {
     pub fn print_all(&self, source: &Source) -> bool {
         let messages = unsafe { &mut *self.0.get() };
         let has_errors = messages.len() != 0;
-        for Diagnostic {
-            message,
-            span,
-            level,
-        } in messages
-        {
+        for Diagnostic { message, span, .. } in messages {
             println!("printing: {:?}", span);
             let margin = fmt::Margin(fmt::n_of_digits(span.last_line + 1));
             eprintln!("{}", message);

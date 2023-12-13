@@ -1,4 +1,4 @@
-use std::{cell::UnsafeCell, fmt::Display};
+use std::fmt::Display;
 
 use crate::{builder::Block, pool, str::Str, ty::TypeRef, Elem, Instruction};
 
@@ -43,20 +43,20 @@ impl<'i> Display for Function<'i> {
                         writeln!(f, "    %{} = %{} + %{}", i, lhs.0, rhs.0)?;
                         i += 1;
                     }
-                    Instruction::Sub(lhs, rhs) => unimplemented!(),
-                    Instruction::Mul(lhs, rhs) => unimplemented!(),
-                    Instruction::Div(lhs, rhs) => unimplemented!(),
-                    Instruction::Not(Value) => unimplemented!(),
-                    Instruction::Neg(Value) => unimplemented!(),
+                    Instruction::Sub(_lhs, _rhs) => unimplemented!(),
+                    Instruction::Mul(_lhs, _rhs) => unimplemented!(),
+                    Instruction::Div(_lhs, _rhs) => unimplemented!(),
+                    Instruction::Not(_value) => unimplemented!(),
+                    Instruction::Neg(_value) => unimplemented!(),
                     Instruction::Eq(lhs, rhs) => {
                         writeln!(f, "    %{} = %{} == %{}", i, lhs.0, rhs.0)?;
                         i += 1;
                     }
-                    Instruction::Neq(lhs, rhs) => unimplemented!(),
-                    Instruction::Gt(lhs, rhs) => unimplemented!(),
-                    Instruction::Lt(lhs, rhs) => unimplemented!(),
-                    Instruction::GtEq(lhs, rhs) => unimplemented!(),
-                    Instruction::LtEq(lhs, rhs) => unimplemented!(),
+                    Instruction::Neq(_lhs, _rhs) => unimplemented!(),
+                    Instruction::Gt(_lhs, _rhs) => unimplemented!(),
+                    Instruction::Lt(_lhs, _rhs) => unimplemented!(),
+                    Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
+                    Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
                     Instruction::Call(fun, args) => {
                         write!(f, "    %{} = call {}(", i, fun.borrow().sig.name)?;
                         for arg in args {
@@ -68,7 +68,7 @@ impl<'i> Display for Function<'i> {
                     Instruction::Assign(lhs, rhs) => {
                         writeln!(f, "    store {} <- {}", lhs.0, rhs.0)?;
                     }
-                    Instruction::RefAssign(lhs, rhs) => unimplemented!(),
+                    Instruction::RefAssign(_lhs, _rhs) => unimplemented!(),
                     Instruction::Tuple(tpl, _) => {
                         write!(f, "    %{} = (", i)?;
                         for arg in tpl {
@@ -77,7 +77,7 @@ impl<'i> Display for Function<'i> {
                         writeln!(f, ")")?;
                         i += 1;
                     }
-                    Instruction::Name(TypeId, Value) => unimplemented!(),
+                    Instruction::Name(_type_id, _value) => unimplemented!(),
                     Instruction::GetElem(lhs, path) => {
                         write!(f, "    %{} = elem %{} ", i, lhs.0)?;
                         for elem in path {
@@ -125,7 +125,7 @@ impl<'i> Display for Function<'i> {
                     Instruction::Return(val) => {
                         writeln!(f, "    return %{}", val.0)?;
                     }
-                    Instruction::Ty(TypeId) => unimplemented!(),
+                    Instruction::Ty(_type_id) => unimplemented!(),
                     Instruction::Variant(ty, discriminant, inner) => {
                         writeln!(
                             f,
@@ -141,6 +141,9 @@ impl<'i> Display for Function<'i> {
                     Instruction::Discriminant(value) => {
                         writeln!(f, "    %{} = discriminant %{}", i, value.0)?;
                         i += 1;
+                    }
+                    Instruction::Drop(value) => {
+                        writeln!(f, "    drop %{}", value.0)?;
                     }
                 };
             }

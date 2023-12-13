@@ -1,4 +1,4 @@
-use std::{env, fs::File, io::BufReader, process::Command};
+use std::{env, fs::File, io::BufReader};
 
 use ice_parser::Parser;
 use iiv_gen::Generator;

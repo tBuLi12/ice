@@ -1,7 +1,6 @@
 use std::{fmt::Display, fs::File};
 
 use diagnostics::Diagnostics;
-use fun::Function;
 use pool::FuncRef;
 use ty::TypeRef;
 
@@ -123,6 +122,7 @@ pub enum Instruction<'i> {
     Variant(TypeRef<'i>, u64, RawValue),
     VariantCast(TypeRef<'i>, RawValue),
     Discriminant(RawValue),
+    Drop(RawValue),
 }
 
 impl RawValue {

@@ -1,4 +1,4 @@
-use std::{env::consts::FAMILY, fmt, ops::Deref};
+use std::{fmt, ops::Deref};
 
 use crate::{
     pool::{self, List},
@@ -331,7 +331,7 @@ impl<'i> fmt::Display for TypeRef<'i> {
                 write!(f, "}}")
             }
             Type::Ref(pointee) => write!(f, "ref {}", pointee),
-            Type::Type(ty) => write!(f, "type"),
+            Type::Type(_ty) => write!(f, "type"),
             Type::Constant(val) => write!(f, "T{}", val.0),
             Type::Builtin(BuiltinType::Bool) => write!(f, "bool"),
             Type::Builtin(BuiltinType::Int) => write!(f, "int"),

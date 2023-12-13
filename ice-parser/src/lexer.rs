@@ -144,13 +144,6 @@ impl<'i, R: io::Read> Lexer<'i, R> {
         })
     }
 
-    fn get_punct(&mut self) -> Option<char> {
-        if !self.current?.is_ascii_punctuation() {
-            return None;
-        }
-        self.read_char()
-    }
-
     fn read_punctuation(&mut self) -> Option<Token<'i>> {
         if !self.current?.is_ascii_punctuation() {
             return None;
