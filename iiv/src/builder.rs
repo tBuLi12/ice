@@ -257,14 +257,53 @@ impl<'i> FunctionBuilder<'i> {
         self.push_instruction(Instruction::Return(val.raw));
     }
 
+    pub fn drop(&mut self, val: Value<'i>) {
+        self.push_instruction(Instruction::Drop(val.raw));
+    }
+
     pub fn get_current_block(&self) -> BlockRef {
         BlockRef {
             idx: self.current_block,
         }
     }
 
+    fn add_successors<'a>(
+        blocks: &'a [UnsealedBlock<'i>],
+        block: &'a UnsealedBlock<'i>,
+        add: &mut impl FnMut(usize),
+    ) {
+        match block.instructions.last() {
+            Some((Instruction::Jump(label, _args), _)) => {
+                let new_block = &blocks[label.0 as usize];
+                add(label.0 as usize);
+                Self::add_successors(blocks, new_block, add);
+            }
+            Some((Instruction::Branch(cond, yes_label, yes_args, no_label, no_args), _)) => {
+                let new_block = &blocks[yes_label.0 as usize];
+                add(yes_label.0 as usize);
+                Self::add_successors(blocks, new_block, add);
+                let new_block = &blocks[no_label.0 as usize];
+                add(no_label.0 as usize);
+                Self::add_successors(blocks, new_block, add);
+            }
+            Some((Instruction::Return(value), _)) => {}
+            _ => panic!("invalid terminator!"),
+        }
+    }
+
     pub fn build(mut self) -> Vec<Block<'i>> {
         let mut inst_indices = vec![0u16; self.next_free_id as usize];
+
+        let mut block_indices = vec![None; self.blocks.len()];
+
+        let mut new_block_order = vec![0];
+
+        Self::add_successors(&self.blocks, &self.blocks[0], &mut |idx| {
+            if block_indices[idx].is_none() {
+                block_indices[idx] = Some(new_block_order.len());
+                new_block_order.push(idx);
+            }
+        });
 
         let mut current = 0;
         for i in 0..self.arg_count {
@@ -272,7 +311,8 @@ impl<'i> FunctionBuilder<'i> {
             current += 1;
         }
 
-        for block in &self.blocks {
+        for &block_idx in &new_block_order {
+            let block = &self.blocks[block_idx];
             for (_, idx) in &block.params {
                 inst_indices[*idx as usize] = current;
                 current += 1;
@@ -316,7 +356,8 @@ impl<'i> FunctionBuilder<'i> {
             }
         }
 
-        for block in &mut self.blocks {
+        for &block_idx in &new_block_order {
+            let block = &mut self.blocks[block_idx];
             for (inst, _) in &mut block.instructions {
                 match inst {
                     Instruction::Int(_) | Instruction::Bool(_) => {}
@@ -348,14 +389,20 @@ impl<'i> FunctionBuilder<'i> {
                         val.0 = inst_indices[val.0 as usize];
                     }
 
-                    Instruction::Call(_, vals)
-                    | Instruction::Tuple(vals, _)
-                    | Instruction::Jump(_, vals) => {
+                    Instruction::Call(_, vals) | Instruction::Tuple(vals, _) => {
                         for val in vals {
                             val.0 = inst_indices[val.0 as usize];
                         }
                     }
-                    Instruction::Branch(lhs, _, yes_args, _, no_args) => {
+                    Instruction::Jump(label, vals) => {
+                        label.0 = block_indices[label.0 as usize].unwrap() as u16;
+                        for val in vals {
+                            val.0 = inst_indices[val.0 as usize];
+                        }
+                    }
+                    Instruction::Branch(lhs, yes_label, yes_args, no_label, no_args) => {
+                        yes_label.0 = block_indices[yes_label.0 as usize].unwrap() as u16;
+                        no_label.0 = block_indices[no_label.0 as usize].unwrap() as u16;
                         lhs.0 = inst_indices[lhs.0 as usize];
                         for val in yes_args {
                             val.0 = inst_indices[val.0 as usize];
@@ -369,15 +416,24 @@ impl<'i> FunctionBuilder<'i> {
             }
         }
 
-        self.blocks
+        new_block_order
             .into_iter()
-            .map(|block| Block {
-                params: block.params.into_iter().map(|(param, _)| param).collect(),
-                instructions: block
-                    .instructions
-                    .into_iter()
-                    .map(|(inst, _)| inst)
-                    .collect(),
+            .map(|block_idx| {
+                let block = std::mem::replace(
+                    &mut self.blocks[block_idx],
+                    UnsealedBlock {
+                        instructions: vec![],
+                        params: vec![],
+                    },
+                );
+                Block {
+                    params: block.params.into_iter().map(|(param, _)| param).collect(),
+                    instructions: block
+                        .instructions
+                        .into_iter()
+                        .map(|(inst, _)| inst)
+                        .collect(),
+                }
             })
             .collect()
     }

@@ -132,8 +132,10 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
         let body = self.check_val(&fun_node.body);
         let body = self.ensure_ty(&fun_node.body.span(), fun.sig.ret_ty, body);
-        self.iiv.ret(body);
-        fun.body = self.iiv.build();
+        if self.messages.ok() {
+            self.iiv.ret(body);
+            fun.body = self.iiv.build();
+        }
     }
 
     fn check_val(&mut self, expr: &Expr<'i>) -> Value<'i> {
@@ -247,10 +249,9 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         &mut self,
         pattern: &Pattern<'i>,
         value: Value<'i>,
-        no_match_block: Option<&mut BlockRef>,
+        no_match_block: Option<BlockRef>,
+        match_block: Option<BlockRef>,
     ) {
-        dbg!("BINDING");
-        dbg!(value);
         match &pattern.body {
             PatternBody::Bind(BindPattern { binding_type, name }) => match binding_type {
                 BindingType::Var => self.define(&name, Object::Place(value, vec![])),
@@ -260,7 +261,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             PatternBody::NarrowType(NarrowTypePattern { inner, ty }) => {
                 let target_ty = self.check_type(ty);
                 let narrowed = self.ensure_ty(&ty.span(), target_ty, value);
-                self.bind(&inner, narrowed, no_match_block);
+                self.bind(&inner, narrowed, no_match_block, match_block);
             }
             PatternBody::Variant(vairant) => {
                 if let Type::Variant(elems) = *value.ty {
@@ -276,18 +277,16 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                         let expected = self.iiv.int_lit(i as u32);
                         let cond = self.iiv.equals(discriminant, expected);
                         let next_block = self.iiv.create_block();
-                        let next_no_match = self.iiv.create_block();
                         let no_match = no_match_block.unwrap();
-                        self.iiv.branch(cond, next_block, next_no_match);
-                        self.iiv.select(next_no_match);
-                        *no_match = next_no_match;
-                        self.drop(value);
+                        self.iiv.branch(cond, next_block, no_match);
                         self.iiv.select(next_block);
                         let inner = self.iiv.get_prop(value, i as u8, elems[i].1);
                         if let Some(inner_patter) = &vairant.inner {
-                            self.bind(&inner_patter, inner, no_match_block);
+                            self.bind(&inner_patter, inner, no_match_block, match_block);
                         } else {
+                            self.iiv.select(match_block.unwrap());
                             self.drop(inner);
+                            self.iiv.select(next_block);
                         }
                     } else {
                         self.msg(err!(
@@ -311,8 +310,10 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                     for (name, prop_pattern) in &struct_pattern.inner {
                         let prop = self.get_prop(value.obj(), name);
                         let prop = self.get_val(&pattern.span(), prop);
-                        self.bind(prop_pattern, prop, no_match_block);
+                        self.bind(prop_pattern, prop, no_match_block, match_block);
                     }
+                    let current = self.iiv.get_current_block();
+                    self.iiv.select(match_block.unwrap());
                     for prop in props.iter().filter(|&&prop| {
                         struct_pattern.inner.iter().all(|(p, _)| p.value != prop.0)
                     }) {
@@ -326,6 +327,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                         let prop = self.get_val(&pattern.span(), prop);
                         self.drop(prop);
                     }
+                    self.iiv.select(current);
                 } else {
                     self.msg(err!(
                         &pattern.span(),
@@ -354,7 +356,12 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             },
             BlockItem::Bind(binding) => {
                 let initializer = self.check_val(&binding.value);
-                self.bind(&binding.binding, initializer, None);
+                self.bind(
+                    &binding.binding,
+                    initializer,
+                    None,
+                    Some(self.iiv.get_current_block()),
+                );
 
                 self.null()
             }
@@ -719,19 +726,27 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             }
             Expr::AddAssign(_add_assign) => unimplemented!(),
             Expr::Is(is_expr) => {
-                let lhs = dbg!(self.check_val(&is_expr.lhs));
+                let lhs = self.check_val(&is_expr.lhs);
                 self.begin_scope();
                 if let Some(false_block) = false_block {
-                    self.bind(&is_expr.rhs, lhs, Some(false_block));
+                    let match_block = self.iiv.create_block();
+                    self.bind(&is_expr.rhs, lhs, Some(false_block), Some(match_block));
+                    self.iiv.jump(match_block, &[]);
+                    self.iiv.select(false_block);
+                    self.drop(lhs);
+                    self.iiv.select(match_block);
                     Object::Condition(1)
                 } else {
                     let false_block = self.iiv.create_block();
-                    let mut current_false_block = false_block;
+                    let true_block = self.iiv.create_block();
                     let after_block = self.iiv.create_block();
-                    self.bind(&is_expr.rhs, lhs, Some(&mut current_false_block));
+                    self.bind(&is_expr.rhs, lhs, Some(false_block), Some(true_block));
+                    self.iiv.jump(true_block, &[]);
+                    self.iiv.select(true_block);
                     let true_val = self.iiv.bool_lit(true);
                     self.iiv.jump(after_block, &[true_val]);
                     self.iiv.select(false_block);
+                    self.drop(lhs);
                     let false_val = self.iiv.bool_lit(false);
                     self.iiv.jump(after_block, &[false_val]);
                     self.iiv.select(after_block);
@@ -753,7 +768,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     }
 
     fn drop(&mut self, val: Value<'i>) {
-        // unimplemented!()
+        self.iiv.drop(val);
     }
 }
 

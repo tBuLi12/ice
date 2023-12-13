@@ -161,6 +161,11 @@ impl Diagnostics {
         messages.push(message);
     }
 
+    pub fn ok(&self) -> bool {
+        let messages = unsafe { &*self.0.get() };
+        messages.is_empty()
+    }
+
     pub fn print_all(&self, source: &Source) -> bool {
         let messages = unsafe { &mut *self.0.get() };
         let has_errors = messages.len() != 0;

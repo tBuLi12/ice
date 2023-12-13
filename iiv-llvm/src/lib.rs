@@ -318,7 +318,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     self.values.push(discriminant);
                 }
                 iiv::Instruction::Drop(value) => {
-                    unimplemented!()
+                    // unimplemented!()
                 }
             }
         }
