@@ -72,7 +72,7 @@ use std::{
     ops::{Add, Sub},
 };
 
-use crate::{Instruction, Prop, RawValue, pool::Ref, Elem};
+use crate::{pool::Ref, Elem, Instruction, Prop, RawValue};
 
 #[derive(Clone, PartialEq, Eq)]
 struct Path(RawValue, Vec<Prop>);
@@ -87,7 +87,9 @@ impl Path {
         unimplemented!()
     }
 
-    fn append(&mut self, tail: Vec<Prop>) { unimplemented!() }
+    fn append(&mut self, tail: Vec<Prop>) {
+        unimplemented!()
+    }
 
     fn is_var(&self, val: RawValue) -> bool {
         self.1.is_empty() && self.0 == val
@@ -225,32 +227,38 @@ struct RefFinder {
 }
 
 impl RefFinder {
-    fn note_ref(&mut self, path: Path) { unimplemented!() }
+    fn note_ref(&mut self, path: Path) {
+        unimplemented!()
+    }
 
-    fn get_next_id(&mut self) -> RawValue { unimplemented!() }
+    fn get_next_id(&mut self) -> RawValue {
+        unimplemented!()
+    }
 
     fn process(&mut self, mut input: RefSet, block: &[Instruction]) -> RefSet {
         for inst in block {
             match inst {
-                Instruction::Add(_, _)|
-                Instruction::Sub(_, _)|
-                Instruction::Mul(_, _)|
-                Instruction::Div(_, _)|
-                Instruction::Not(_)|
-                Instruction::Neg(_)|
-                Instruction::Eq(_, _)|
-                Instruction::Neq(_, _)|
-                Instruction::Gt(_, _)|
-                Instruction::Lt(_, _)|
-                Instruction::GtEq(_, _)|
-                Instruction::Ty(_) |
-                Instruction::Int(_) |
-                Instruction::Discriminant(_) |
-                Instruction::Bool(_) => {},
-                Instruction::LtEq(_, _) => { self.get_next_id(); }
-                Instruction::Branch(_, _, _, _, _) |
-                Instruction::Jump(_, _) |
-                Instruction::Return(_) => {}
+                Instruction::Add(_, _)
+                | Instruction::Sub(_, _)
+                | Instruction::Mul(_, _)
+                | Instruction::Div(_, _)
+                | Instruction::Not(_)
+                | Instruction::Neg(_)
+                | Instruction::Eq(_, _)
+                | Instruction::Neq(_, _)
+                | Instruction::Gt(_, _)
+                | Instruction::Lt(_, _)
+                | Instruction::GtEq(_, _)
+                | Instruction::Ty(_)
+                | Instruction::Int(_)
+                | Instruction::Discriminant(_)
+                | Instruction::Bool(_) => {}
+                Instruction::LtEq(_, _) => {
+                    self.get_next_id();
+                }
+                Instruction::Branch(_, _, _, _, _)
+                | Instruction::Jump(_, _)
+                | Instruction::Return(_) => {}
                 // these matter
                 Instruction::Tuple(fields, tuple_ty) => {
                     let new_paths = vec![];
@@ -258,24 +266,29 @@ impl RefFinder {
                     for (idx, field) in fields.iter().enumerate() {
                         for path in &self.paths {
                             if path.0 == *field {
-                                new_paths.push(Path(result, { let mut props = vec![Prop(idx as u8)]; props.extend_from_slice(&path.1); props }));
+                                new_paths.push(Path(result, {
+                                    let mut props = vec![Prop(idx as u8)];
+                                    props.extend_from_slice(&path.1);
+                                    props
+                                }));
                             }
                         }
                     }
-                },
-                Instruction::Name(_, _) => {},
-                Instruction::GetElem(value, elems) => {
-                    let props = elems.iter().map(|e| match e {
-                        Elem::Index(_) => panic!("indexing not supported"),
-                        Elem::Prop(prop) => *prop,
-                    }).collect();
-                    let path = Path(*value, props);
-                },
-                Instruction::Variant(TypeRef<'i>, u64, RawValue) => {},
-                Instruction::VariantCast(TypeRef<'i>, RawValue) => {},
-                Instruction::GetElemRef(value, elems) => {
-    
                 }
+                Instruction::Name(_, _) => {}
+                Instruction::GetElem(value, elems) => {
+                    let props = elems
+                        .iter()
+                        .map(|e| match e {
+                            Elem::Index(_) => panic!("indexing not supported"),
+                            Elem::Prop(prop) => *prop,
+                        })
+                        .collect();
+                    let path = Path(*value, props);
+                }
+                Instruction::Variant(TypeRef, u64, RawValue) => {}
+                Instruction::VariantCast(TypeRef, RawValue) => {}
+                Instruction::GetElemRef(value, elems) => {}
                 Instruction::Call(func_id, args) => {}
                 Instruction::Assign(dst, src) => {
                     let dsts = input.get_underlying_paths(*dst);
@@ -292,4 +305,3 @@ impl RefFinder {
         input
     }
 }
-

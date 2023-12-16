@@ -33,6 +33,7 @@ fn main() {
 
     for fun in &package.funcs {
         println!("{}", fun.borrow());
+        iiv::move_check::check(&*fun.borrow());
     }
 
     backend.transform(&package, "out.o");

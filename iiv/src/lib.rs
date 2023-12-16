@@ -7,6 +7,7 @@ use ty::TypeRef;
 pub mod builder;
 pub mod diagnostics;
 pub mod fun;
+pub mod move_check;
 pub mod pool;
 pub mod str;
 pub mod ty;
@@ -107,11 +108,11 @@ pub enum Instruction<'i> {
     GtEq(RawValue, RawValue),
     LtEq(RawValue, RawValue),
     Call(FuncRef<'i>, Vec<RawValue>),
-    Assign(RawValue, RawValue),
-    RefAssign(RawValue, RawValue),
+    Assign(RawValue, TypeRef<'i>, Vec<Elem>, RawValue),
     Tuple(Vec<RawValue>, TypeRef<'i>),
     Name(TypeRef<'i>, RawValue),
-    GetElem(RawValue, Vec<Elem>),
+    MoveElem(RawValue, TypeRef<'i>, Vec<Elem>),
+    CopyElem(RawValue, Vec<Elem>),
     GetElemRef(RawValue, Vec<Elem>),
     Branch(RawValue, Label, Vec<RawValue>, Label, Vec<RawValue>),
     Jump(Label, Vec<RawValue>),
@@ -123,16 +124,19 @@ pub enum Instruction<'i> {
     VariantCast(TypeRef<'i>, RawValue),
     Discriminant(RawValue),
     Drop(RawValue),
-}
-
-impl RawValue {
-    pub const NULL: Self = Self(u16::MAX);
+    Null,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct Value<'i> {
     pub ty: TypeRef<'i>,
     pub raw: RawValue,
+}
+
+impl<'i> PartialEq for Value<'i> {
+    fn eq(&self, other: &Self) -> bool {
+        self.raw == other.raw
+    }
 }
 
 pub struct Source {

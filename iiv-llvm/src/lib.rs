@@ -197,12 +197,13 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let value = self.on_the_stack(call);
                     self.values.push(LLVMValue { value, ty: ret_ty });
                 }
-                iiv::Instruction::Assign(lhs, rhs) => {
+                iiv::Instruction::Assign(lhs, _, path, rhs) => {
                     let lhs = self.val(*lhs);
                     let rhs = self.val(*rhs);
                     self.write(lhs, rhs);
+                    let null = self.null_val();
+                    self.values.push(null);
                 }
-                iiv::Instruction::RefAssign(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::Tuple(tpl, ty) => {
                     let tuple_value = self.alloc(*ty);
                     self.values.push(tuple_value);
@@ -214,12 +215,25 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     }
                 }
                 iiv::Instruction::Name(_type_id, _value) => unimplemented!(),
-                iiv::Instruction::GetElem(lhs, path) => {
+                iiv::Instruction::CopyElem(lhs, path) => {
                     let mut value = self.val(*lhs);
 
                     for elem in path {
                         let iiv::Elem::Prop(iiv::Prop(idx)) = elem else {
                             panic!("invalid get_elem");
+                        };
+                        value = self.elem_ptr(value, *idx as usize);
+                    }
+
+                    let elem_value = self.read(value);
+                    self.values.push(elem_value);
+                }
+                iiv::Instruction::MoveElem(lhs, _, path) => {
+                    let mut value = self.val(*lhs);
+
+                    for elem in path {
+                        let iiv::Elem::Prop(iiv::Prop(idx)) = elem else {
+                            panic!("invalid move_elem");
                         };
                         value = self.elem_ptr(value, *idx as usize);
                     }
@@ -317,10 +331,23 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let discriminant = self.read(discriminant_loc);
                     self.values.push(discriminant);
                 }
+                iiv::Instruction::Null => {
+                    let null = self.null_val();
+                    self.values.push(null);
+                }
                 iiv::Instruction::Drop(value) => {
                     // unimplemented!()
                 }
             }
+        }
+    }
+
+    fn null_val(&mut self) -> LLVMValue<'ll, 'i> {
+        let null_ty = self.llvm_ctx.struct_ty(&[]);
+        let null = self.ir.create_alloca(null_ty);
+        LLVMValue {
+            ty: self.ctx.type_pool.get_null(),
+            value: null,
         }
     }
 

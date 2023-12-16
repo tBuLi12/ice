@@ -8,10 +8,11 @@ use iiv::{
     builder::BlockRef,
     diagnostics, err,
     fun::{Function, Signature},
+    move_check,
     pool::FuncRef,
     str::Str,
     ty::{PropRef, Type, TypeOverlap, TypeRef},
-    Ctx, Package, Span, Value,
+    Ctx, Package, Prop, Span, Value,
 };
 
 mod ty;
@@ -23,9 +24,14 @@ pub struct Generator<'i> {
     messages: &'i iiv::diagnostics::Diagnostics,
 }
 
+struct Scope<'i> {
+    index: HashMap<Str<'i>, Object<'i>>,
+    values: Vec<Value<'i>>,
+}
+
 pub struct FunctionGenerator<'i, 'g> {
     global_scope: &'g HashMap<Str<'i>, Object<'i>>,
-    scopes: Vec<HashMap<Str<'i>, Object<'i>>>,
+    scopes: Vec<Scope<'i>>,
     ty: &'i iiv::ty::Pool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
     constant_depth: usize,
@@ -74,6 +80,7 @@ impl<'i> Generator<'i> {
                         .unwrap_or_else(|| self.ty.get_null()),
                 },
                 body: vec![],
+                value_count: 0,
             });
 
             let name = fun_node.signature.name.value;
@@ -119,22 +126,26 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         fun: &mut iiv::fun::Function<'i>,
         fun_node: &ast::Function<'i>,
     ) {
-        self.scopes.push(HashMap::new());
+        self.begin_scope();
 
         for (&ty, param) in fun.sig.params.iter().zip(&fun_node.signature.params) {
-            self.scopes
-                .last_mut()
-                .unwrap()
-                .insert(param.name.value, Object::Value(self.iiv.param(ty)));
+            let param_value = self.iiv.param(ty);
+            self.define(param.name.value, Object::Place(param_value, ty, vec![]));
         }
 
         self.ret_type = Some(fun.sig.ret_ty);
 
         let body = self.check_val(&fun_node.body);
         let body = self.ensure_ty(&fun_node.body.span(), fun.sig.ret_ty, body);
+        let body = self.move_val(body);
+        println!("exiting func {}", &*fun.sig.name);
+        self.end_scope();
+        self.iiv.ret(body);
+
         if self.messages.ok() {
-            self.iiv.ret(body);
-            fun.body = self.iiv.build();
+            let (blocks, inst_count) = self.iiv.build();
+            fun.body = blocks;
+            fun.value_count = inst_count;
         }
     }
 
@@ -224,23 +235,20 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     //     }
     // }
 
-    fn null(&self) -> Value<'i> {
-        Value {
-            raw: iiv::RawValue::NULL,
-            ty: self.ty.get_null(),
-        }
+    fn null(&mut self) -> Value<'i> {
+        self.iiv.null()
     }
 
-    fn never(&self) -> Value<'i> {
+    fn never(&mut self) -> Value<'i> {
         Value {
-            raw: iiv::RawValue::NULL,
+            raw: self.iiv.null().raw,
             ty: self.ty.get_ty_never(),
         }
     }
 
-    fn invalid(&self) -> Value<'i> {
+    fn invalid(&mut self) -> Value<'i> {
         Value {
-            raw: iiv::RawValue::NULL,
+            raw: self.iiv.null().raw,
             ty: self.ty.get_ty_invalid(),
         }
     }
@@ -254,8 +262,8 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     ) {
         match &pattern.body {
             PatternBody::Bind(BindPattern { binding_type, name }) => match binding_type {
-                BindingType::Var => self.define(&name, Object::Place(value, vec![])),
-                BindingType::Let => self.define(&name, Object::Place(value, vec![])),
+                BindingType::Var => self.define(name.value, Object::Place(value, value.ty, vec![])),
+                BindingType::Let => self.define(name.value, Object::Place(value, value.ty, vec![])),
                 _ => unimplemented!(),
             },
             PatternBody::NarrowType(NarrowTypePattern { inner, ty }) => {
@@ -280,7 +288,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                         let no_match = no_match_block.unwrap();
                         self.iiv.branch(cond, next_block, no_match);
                         self.iiv.select(next_block);
-                        let inner = self.iiv.get_prop(value, i as u8, elems[i].1);
+                        let inner = self.iiv.move_prop(value, i as u8, value.ty, elems[i].1);
                         if let Some(inner_patter) = &vairant.inner {
                             self.bind(&inner_patter, inner, no_match_block, match_block);
                         } else {
@@ -308,26 +316,19 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             PatternBody::Struct(struct_pattern) => {
                 if let Type::Struct(props) = *value.ty {
                     for (name, prop_pattern) in &struct_pattern.inner {
-                        let prop = self.get_prop(value.obj(), name);
-                        let prop = self.get_val(&pattern.span(), prop);
+                        let prop = if let Some((i, prop_ty)) = value.ty.prop(name.value) {
+                            self.iiv.move_prop(value, i, value.ty, prop_ty)
+                        } else {
+                            self.msg(err!(
+                                &name.span(),
+                                "property {} does not exist on type {}",
+                                name.value,
+                                value.ty
+                            ));
+                            self.invalid()
+                        };
                         self.bind(prop_pattern, prop, no_match_block, match_block);
                     }
-                    let current = self.iiv.get_current_block();
-                    self.iiv.select(match_block.unwrap());
-                    for prop in props.iter().filter(|&&prop| {
-                        struct_pattern.inner.iter().all(|(p, _)| p.value != prop.0)
-                    }) {
-                        let prop = self.get_prop(
-                            value.obj(),
-                            &ast::Ident {
-                                span: pattern.span(),
-                                value: prop.0,
-                            },
-                        );
-                        let prop = self.get_val(&pattern.span(), prop);
-                        self.drop(prop);
-                    }
-                    self.iiv.select(current);
                 } else {
                     self.msg(err!(
                         &pattern.span(),
@@ -343,7 +344,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     fn check_statement(&mut self, item: &BlockItem<'i>) -> Value<'i> {
         match item {
             BlockItem::Expr(expr) => match self.check(expr, None) {
-                Object::Place(val, offsets) => {
+                Object::Place(val, _, offsets) => {
                     if offsets.is_empty() {
                         val
                     } else {
@@ -397,12 +398,13 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             //     self.invalid()
             // }
             Object::Value(val) => val,
-            Object::Place(val, offsets) => {
-                if offsets.is_empty() {
+            Object::Place(val, _, offsets) => {
+                let result = if offsets.is_empty() {
                     val
                 } else {
                     self.iiv.get_deep_prop(val, offsets, val.ty)
-                }
+                };
+                self.copy(result)
             }
             Object::Type(ty) => self.iiv.ty_expr(ty),
             Object::Condition(_raw) => panic!("unexpected condition returned"),
@@ -423,7 +425,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             //     err!(span, "expected a type, found module");
             //     self.ty.get_ty_invalid()
             // }
-            Object::Value(val) | Object::Place(val, _) => {
+            Object::Value(val) | Object::Place(val, _, _) => {
                 if val.ty == self.ty.get_ty_type() {
                     self.ty.get_ty_constant(val.raw)
                 } else {
@@ -456,11 +458,11 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
     fn get_prop(&mut self, value: Object<'i>, prop: &Ident<'i>) -> Object<'i> {
         match value {
-            Object::Place(mut place, mut offsets) => {
+            Object::Place(mut place, raw_ty, mut offsets) => {
                 if let Some((i, prop_ty)) = place.ty.prop(prop.value) {
                     offsets.push(i);
                     place.ty = prop_ty;
-                    Object::Place(place, offsets)
+                    Object::Place(place, raw_ty, offsets)
                 } else {
                     self.msg(err!(
                         &prop.span(),
@@ -468,7 +470,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                         prop.value,
                         place.ty
                     ));
-                    Object::Place(self.invalid(), vec![])
+                    Object::Place(self.invalid(), self.ty.get_ty_invalid(), vec![])
                 }
             }
             Object::Value(value) => {
@@ -488,7 +490,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             }
             _ => {
                 self.msg(err!(&prop.span(), "no such property"));
-                Object::Place(self.invalid(), vec![])
+                Object::Place(self.invalid(), self.ty.get_ty_invalid(), vec![])
             }
         }
     }
@@ -520,12 +522,16 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 let result = if let (Some(value), true) =
                     (block.items.last(), block.has_trailing_expression)
                 {
-                    self.check_statement(value).obj()
+                    self.check_statement(value)
                 } else {
-                    self.null().obj()
+                    // let last = self.check_statement(value);
+                    // self.drop(last);
+
+                    self.null()
                 };
+                let result = self.move_val(result);
                 self.end_scope();
-                result
+                result.obj()
             }
             Expr::Int(int) => self.iiv.int_lit(int.value).obj(),
             Expr::Bool(boolean) => self.iiv.bool_lit(boolean.value).obj(),
@@ -578,6 +584,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
                 let yes_block = self.iiv.get_current_block();
                 let yes = self.check_val(&if_expr.yes);
+                let yes = self.move_val(yes);
 
                 for _ in 0..scopes {
                     self.end_scope();
@@ -655,7 +662,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             Expr::RefTo(ref_to) => {
                 let checked = self.check(&ref_to.rhs, false_block);
                 match checked {
-                    Object::Place(place, offsets) => {
+                    Object::Place(place, _, offsets) => {
                         let r = self.iiv.get_prop_ref(place, offsets, place.ty);
                         r.obj()
                     }
@@ -685,26 +692,31 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             Expr::Gt(_greater) => unimplemented!(),
             Expr::Assign(assign) => {
                 let rhs = self.check_val(&assign.rhs);
-                let lhs = self.check(&assign.lhs, false_block);
+                let lhs = self.check(&assign.lhs, None);
                 match lhs {
-                    Object::Place(place, offsets) => {
+                    Object::Place(place, raw_ty, offsets) => {
                         let rhs = self.ensure_ty(&assign.rhs.span(), place.ty, rhs);
-                        let prop_ref = self.iiv.get_prop_ref(place, offsets, place.ty);
-                        self.iiv.assign(prop_ref, rhs).obj()
+                        let elems = offsets
+                            .into_iter()
+                            .map(|offset| iiv::Elem::Prop(Prop(offset)))
+                            .collect();
+                        self.iiv.assign(place, raw_ty, elems, rhs).obj()
                     }
                     other => {
-                        let lhs = self.get_val(&assign.lhs.span(), other);
-                        if let Type::Ref(inner) = *lhs.ty {
-                            let rhs = self.ensure_ty(&assign.rhs.span(), inner, rhs);
-                            self.iiv.assign(lhs, rhs).obj()
-                        } else {
-                            self.msg(err!(
-                                &assign.lhs.span(),
-                                "expected an assignable l-value, got {}",
-                                lhs.ty
-                            ));
-                            self.invalid().obj()
-                        }
+                        self.msg(err!(&assign.lhs.span(), "expected an assignable l-value"));
+                        self.invalid().obj()
+                        // let lhs = self.get_val(&assign.lhs.span(), other);
+                        // if let Type::Ref(inner) = *lhs.ty {
+                        //     let rhs = self.ensure_ty(&assign.rhs.span(), inner, rhs);
+                        //     self.iiv.assign(lhs, rhs).obj()
+                        // } else {
+                        //     self.msg(err!(
+                        //         &assign.lhs.span(),
+                        //         "expected an assignable l-value, got {}",
+                        //         lhs.ty
+                        //     ));
+                        //
+                        // }
                     }
                 }
             }
@@ -770,24 +782,42 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     fn drop(&mut self, val: Value<'i>) {
         self.iiv.drop(val);
     }
+
+    fn copy(&mut self, val: Value<'i>) -> Value<'i> {
+        self.iiv.copy(val)
+    }
+
+    fn move_val(&mut self, val: Value<'i>) -> Value<'i> {
+        self.iiv.move_prop_deep(val, vec![], val.ty, val.ty)
+    }
 }
 
 impl<'i, 'g> FunctionGenerator<'i, 'g> {
     fn begin_scope(&mut self) {
-        self.scopes.push(HashMap::new());
+        self.scopes.push(Scope {
+            index: HashMap::new(),
+            values: vec![],
+        });
     }
 
     fn end_scope(&mut self) {
-        self.scopes.pop();
+        let Scope { values, .. } = self.scopes.pop().unwrap();
+        for val in values {
+            self.drop(val);
+        }
     }
 
-    fn define(&mut self, name: &Ident<'i>, object: Object<'i>) {
-        self.scopes.last_mut().unwrap().insert(name.value, object);
+    fn define(&mut self, name: Str<'i>, object: Object<'i>) {
+        let scope = self.scopes.last_mut().unwrap();
+        if let Object::Place(val, _, _) = &object {
+            scope.values.push(*val);
+        }
+        scope.index.insert(name, object);
     }
 
     fn resolve(&mut self, name: &Ident) -> Object<'i> {
         for scope in &self.scopes {
-            if let Some(obj) = scope.get(&name.value) {
+            if let Some(obj) = scope.index.get(&name.value) {
                 return obj.clone();
             }
         }
@@ -832,7 +862,7 @@ enum Object<'i> {
     // Trait,
     // Module,
     Value(Value<'i>),
-    Place(Value<'i>, Vec<u8>),
+    Place(Value<'i>, TypeRef<'i>, Vec<u8>),
     Type(TypeRef<'i>),
     Fun(FuncRef<'i>),
     Condition(usize),

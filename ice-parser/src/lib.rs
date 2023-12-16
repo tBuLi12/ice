@@ -242,6 +242,8 @@ impl<'i, R: io::Read> Parser<'i, R> {
             self.braces(|p| p.list(Punctuation::Semicolon, |p| p.parse_block_item()))?;
 
         let len = exprs.len();
+        dbg!(len);
+        dbg!(trailing_separator);
         Ok(Expr::Block(Block {
             span,
             items: exprs,
@@ -423,19 +425,20 @@ impl<'i, R: io::Read> Parser<'i, R> {
                 } else {
                     let first_expr = p.parse_rhs(Expr::Variable(ident))?;
                     let semi = p.eat_punct(Punctuation::Semicolon).is_ok();
-                    let (mut exprs, trailing_expression) =
+                    let (mut exprs, trailing_semi) =
                         p.list(Punctuation::Semicolon, |p| p.parse_block_item())?;
                     exprs.insert(0, BlockItem::Expr(first_expr));
-                    let just_one = exprs.len() == 1;
+                    let len = exprs.len();
                     Ok(StrucOrBlock::Block(
                         exprs,
-                        trailing_expression || (just_one && !semi),
+                        !trailing_semi || (len == 1 && !semi),
                     ))
                 }
             } else {
-                let (exprs, trailing_expression) =
+                let (exprs, trailing_semi) =
                     p.list(Punctuation::Semicolon, |p| p.parse_block_item())?;
-                Ok(StrucOrBlock::Block(exprs, trailing_expression))
+                let len = exprs.len();
+                Ok(StrucOrBlock::Block(exprs, !trailing_semi && len > 0))
             }
         })?;
 

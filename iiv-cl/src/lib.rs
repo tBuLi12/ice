@@ -406,14 +406,15 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
     }
 
     fn val(&mut self, val: RawValue) -> ClftValue<'i> {
-        if val.0 == RawValue::NULL.0 {
-            return ClftValue {
-                ty: self.ty_pool.get_null(),
-                value: ClftValueRaw::Ssa(self.fb.ins().iconst(types::I8, 0 as i64)),
-            };
-        }
+        // if val.0 == RawValue::NULL.0 {
+        //     // return ClftValue {
+        //     //     ty: self.ty_pool.get_null(),
+        //     //     value: ClftValueRaw::Ssa(self.fb.ins().iconst(types::I8, 0 as i64)),
+        //     // };
+        // }
 
-        self.values[val.0 as usize]
+        self.values[val.0 as usize];
+        unimplemented!();
     }
 
     fn gen(&mut self, sig: &iiv::fun::Signature<'i>, blocks: &[iiv::builder::Block<'i>]) {
@@ -529,7 +530,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             }
                         })
                     }
-                    iiv::Instruction::Assign(lhs, rhs) => {
+                    iiv::Instruction::Assign(lhs, _, _, rhs) => {
                         let ClftValue {
                             value: ClftValueRaw::Ssa(ptr),
                             ..
@@ -539,8 +540,8 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         };
                         let rhs = self.val(*rhs);
                         self.ptr_write(ptr, rhs.into());
+                        unimplemented!()
                     }
-                    iiv::Instruction::RefAssign(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::Tuple(tpl, ty) => {
                         let tuple_value = self.alloc(*ty).0;
                         self.values.push(tuple_value);
@@ -554,7 +555,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         }
                     }
                     iiv::Instruction::Name(_type_id, _value) => unimplemented!(),
-                    iiv::Instruction::GetElem(lhs, path) => {
+                    iiv::Instruction::CopyElem(lhs, path) => {
                         let value = self.val(*lhs);
                         let mut elem_loc = value.into();
 
@@ -707,6 +708,12 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         self.values.push(discriminant);
                     }
                     iiv::Instruction::Drop(_) => {
+                        unimplemented!()
+                    }
+                    iiv::Instruction::MoveElem(_, _, _) => {
+                        unimplemented!()
+                    }
+                    iiv::Instruction::Null => {
                         unimplemented!()
                     }
                 };

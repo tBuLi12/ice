@@ -13,6 +13,7 @@ pub struct Signature<'i> {
 pub struct Function<'i> {
     pub sig: Signature<'i>,
     pub body: Vec<Block<'i>>,
+    pub value_count: usize,
 }
 
 impl<'i> Display for Function<'i> {
@@ -65,10 +66,21 @@ impl<'i> Display for Function<'i> {
                         writeln!(f, ")")?;
                         i += 1;
                     }
-                    Instruction::Assign(lhs, rhs) => {
-                        writeln!(f, "    store {} <- {}", lhs.0, rhs.0)?;
+                    Instruction::Assign(lhs, _, path, rhs) => {
+                        write!(f, "    store %{} ", lhs.0)?;
+                        for elem in path {
+                            match elem {
+                                Elem::Index(idx) => {
+                                    write!(f, "%{} ", idx.0)?;
+                                }
+                                Elem::Prop(prop) => {
+                                    write!(f, "{} ", prop.0)?;
+                                }
+                            }
+                        }
+                        writeln!(f, "<- {}", rhs.0)?;
+                        i += 1;
                     }
-                    Instruction::RefAssign(_lhs, _rhs) => unimplemented!(),
                     Instruction::Tuple(tpl, _) => {
                         write!(f, "    %{} = (", i)?;
                         for arg in tpl {
@@ -78,8 +90,23 @@ impl<'i> Display for Function<'i> {
                         i += 1;
                     }
                     Instruction::Name(_type_id, _value) => unimplemented!(),
-                    Instruction::GetElem(lhs, path) => {
-                        write!(f, "    %{} = elem %{} ", i, lhs.0)?;
+                    Instruction::CopyElem(lhs, path) => {
+                        write!(f, "    %{} = copy elem %{} ", i, lhs.0)?;
+                        for elem in path {
+                            match elem {
+                                Elem::Index(idx) => {
+                                    write!(f, "%{} ", idx.0)?;
+                                }
+                                Elem::Prop(prop) => {
+                                    write!(f, "{} ", prop.0)?;
+                                }
+                            }
+                        }
+                        writeln!(f, "")?;
+                        i += 1;
+                    }
+                    Instruction::MoveElem(lhs, _, path) => {
+                        write!(f, "    %{} = move elem %{} ", i, lhs.0)?;
                         for elem in path {
                             match elem {
                                 Elem::Index(idx) => {
@@ -144,6 +171,10 @@ impl<'i> Display for Function<'i> {
                     }
                     Instruction::Drop(value) => {
                         writeln!(f, "    drop %{}", value.0)?;
+                    }
+                    Instruction::Null => {
+                        writeln!(f, "    %{} = null", i)?;
+                        i += 1;
                     }
                 };
             }
