@@ -246,6 +246,10 @@ impl VarState {
                     self.unset(*val);
                 }
             }
+
+            Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
+                panic!("invalid instruction")
+            }
         }
         if inst.creates_value() {
             println!("set_next by {:?}", inst);
@@ -440,6 +444,9 @@ fn verify(block: &Block<'_>, mut state: VarState, states: &[Option<VarState>]) -
                 }
                 valid
             }
+            Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
+                panic!("invalid instruction")
+            }
         };
         if !valid {
             if inst.creates_value() {
@@ -478,4 +485,86 @@ fn verify(block: &Block<'_>, mut state: VarState, states: &[Option<VarState>]) -
     }
 
     state
+}
+
+fn resolve_drops(block: &mut Block<'_>, mut state: VarState) {
+    let mut new_instructions = vec![];
+    for inst in &block.instructions {
+        let valid = match inst {
+            Instruction::Int(_) | Instruction::Bool(_) => {}
+            Instruction::Add(lhs, rhs)
+            | Instruction::Sub(lhs, rhs)
+            | Instruction::Mul(lhs, rhs)
+            | Instruction::Div(lhs, rhs)
+            | Instruction::Eq(lhs, rhs)
+            | Instruction::Neq(lhs, rhs)
+            | Instruction::Gt(lhs, rhs)
+            | Instruction::Lt(lhs, rhs)
+            | Instruction::GtEq(lhs, rhs)
+            | Instruction::LtEq(lhs, rhs) => {
+                new_instructions.push(Instruction::Invalidate(*lhs, vec![]));
+                new_instructions.push(Instruction::Invalidate(*rhs, vec![]));
+            }
+
+            // not sure
+            Instruction::Assign(lhs, _, path, rhs) => {
+                new_instructions.push(Instruction::Invalidate(*rhs, vec![]));
+            }
+
+            Instruction::GetElemRef(val, path) | Instruction::CopyElem(val, path) => {}
+
+            Instruction::MoveElem(val, ty, path) => {
+                let mut offset = 0;
+                for (i, elem) in path.iter().enumerate() {
+                    match *ty {
+                        Type::Struct(props) => {}
+                        Type::Variant(elems) => {}
+                    }
+                }
+
+                unimplemented!();
+                new_instructions.push(Instruction::Invalidate(*val, path.clone()));
+            }
+
+            // don't
+            Instruction::Discriminant(val) => {}
+            Instruction::Ty(_) => {}
+            Instruction::Null => {}
+
+            // do
+            Instruction::Name(_, val)
+            | Instruction::Return(val)
+            | Instruction::Neg(val)
+            | Instruction::Variant(_, _, val)
+            | Instruction::VariantCast(_, val)
+            | Instruction::Not(val) => {
+                new_instructions.push(Instruction::Invalidate(*val, vec![]));
+            }
+
+            // do
+            Instruction::Jump(_, vals)
+            | Instruction::Call(_, vals)
+            | Instruction::Tuple(vals, _) => {
+                for val in vals {
+                    new_instructions.push(Instruction::Invalidate(*val, vec![]));
+                }
+            }
+            Instruction::Branch(lhs, _, yes_args, _, no_args) => {
+                for val in yes_args {
+                    new_instructions.push(Instruction::Invalidate(*val, vec![]));
+                }
+                for val in no_args {
+                    new_instructions.push(Instruction::Invalidate(*val, vec![]));
+                }
+            }
+            Instruction::Drop(val) => {
+                new_instructions.push(Instruction::Invalidate(*val, vec![]));
+            }
+            Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
+                panic!("invalid instruction")
+            }
+        };
+
+        new_instructions.push(inst.clone());
+    }
 }

@@ -108,14 +108,7 @@ impl<'i> Display for Function<'i> {
                     Instruction::MoveElem(lhs, _, path) => {
                         write!(f, "    %{} = move elem %{} ", i, lhs.0)?;
                         for elem in path {
-                            match elem {
-                                Elem::Index(idx) => {
-                                    write!(f, "%{} ", idx.0)?;
-                                }
-                                Elem::Prop(prop) => {
-                                    write!(f, "{} ", prop.0)?;
-                                }
-                            }
+                            write!(f, "{} ", elem)?;
                         }
                         writeln!(f, "")?;
                         i += 1;
@@ -171,6 +164,27 @@ impl<'i> Display for Function<'i> {
                     }
                     Instruction::Drop(value) => {
                         writeln!(f, "    drop %{}", value.0)?;
+                    }
+                    Instruction::CallDrop(lhs, path) => {
+                        write!(f, "    call drop %{} ", lhs.0)?;
+                        for elem in path {
+                            match elem {
+                                Elem::Index(idx) => {
+                                    write!(f, "%{} ", idx.0)?;
+                                }
+                                Elem::Prop(prop) => {
+                                    write!(f, "{} ", prop.0)?;
+                                }
+                            }
+                        }
+                        writeln!(f, "")?;
+                    }
+                    Instruction::Invalidate(lhs, path) => {
+                        write!(f, "    invalidate %{} ", lhs.0)?;
+                        for elem in path {
+                            write!(f, "{} ", elem)?;
+                        }
+                        writeln!(f, "")?;
                     }
                     Instruction::Null => {
                         writeln!(f, "    %{} = null", i)?;

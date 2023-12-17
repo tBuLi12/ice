@@ -111,7 +111,7 @@ pub enum Instruction<'i> {
     Assign(RawValue, TypeRef<'i>, Vec<Elem>, RawValue),
     Tuple(Vec<RawValue>, TypeRef<'i>),
     Name(TypeRef<'i>, RawValue),
-    MoveElem(RawValue, TypeRef<'i>, Vec<Elem>),
+    MoveElem(RawValue, TypeRef<'i>, Vec<u8>),
     CopyElem(RawValue, Vec<Elem>),
     GetElemRef(RawValue, Vec<Elem>),
     Branch(RawValue, Label, Vec<RawValue>, Label, Vec<RawValue>),
@@ -124,6 +124,8 @@ pub enum Instruction<'i> {
     VariantCast(TypeRef<'i>, RawValue),
     Discriminant(RawValue),
     Drop(RawValue),
+    CallDrop(RawValue, Vec<Elem>),
+    Invalidate(RawValue, Vec<u8>),
     Null,
 }
 

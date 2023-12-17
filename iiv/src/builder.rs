@@ -167,11 +167,7 @@ impl<'i> FunctionBuilder<'i> {
     ) -> Value<'i> {
         Value {
             ty: prop_ty,
-            raw: self.push_value_instruction(Instruction::MoveElem(
-                value.raw,
-                ty,
-                vec![Elem::Prop(Prop(prop))],
-            )),
+            raw: self.push_value_instruction(Instruction::MoveElem(value.raw, ty, vec![prop])),
         }
     }
 
@@ -184,14 +180,7 @@ impl<'i> FunctionBuilder<'i> {
     ) -> Value<'i> {
         Value {
             ty: prop_ty,
-            raw: self.push_value_instruction(Instruction::MoveElem(
-                value.raw,
-                ty,
-                props
-                    .into_iter()
-                    .map(|prop| Elem::Prop(Prop(prop)))
-                    .collect(),
-            )),
+            raw: self.push_value_instruction(Instruction::MoveElem(value.raw, ty, props)),
         }
     }
 
@@ -441,6 +430,9 @@ impl<'i> FunctionBuilder<'i> {
                     }
                     Instruction::Ty(_) => {}
                     Instruction::Null => {}
+                    Instruction::CallDrop(_, _) | Instruction::Invalidate(_, _) => {
+                        panic!("invalid instruction")
+                    }
                 }
             }
         }
@@ -503,6 +495,8 @@ impl<'i> Instruction<'i> {
             Instruction::Jump(_, _)
             | Instruction::Branch(_, _, _, _, _)
             | Instruction::Return(_)
+            | Instruction::Invalidate(_, _)
+            | Instruction::CallDrop(_, _)
             | Instruction::Drop(_) => false,
         }
     }
