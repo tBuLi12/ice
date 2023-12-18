@@ -464,6 +464,12 @@ pub struct Prop<'i> {
 }
 
 #[derive(Debug)]
+pub struct Deref<'i> {
+    pub span: Span,
+    pub lhs: Box<Expr<'i>>,
+}
+
+#[derive(Debug)]
 pub struct Field<'i> {
     pub lhs: Box<Expr<'i>>,
     pub prop: Int,
@@ -650,6 +656,7 @@ spanned_enum! {
         Neg(Neg<'i>),
         Not(Not<'i>),
         RefTo(RefTo<'i>),
+        Deref(Deref<'i>),
         Vec(Vector<'i>),
         Variant(Variant<'i>),
         AddAssign(AddAssign<'i>),
@@ -681,6 +688,15 @@ impl<T: Spanned> Spanned for Box<T> {
     }
     fn right_span(&self) -> RightSpan {
         T::right_span(&self)
+    }
+}
+
+impl Spanned for Span {
+    fn left_span(&self) -> LeftSpan {
+        self.left()
+    }
+    fn right_span(&self) -> RightSpan {
+        self.right()
     }
 }
 
@@ -783,6 +799,7 @@ spanned_impls! {
     Assign : lhs - rhs,
     Not,
     RefTo,
+    Deref : lhs - span,
     Neg,
     AddAssign : lhs - rhs,
     Spread,

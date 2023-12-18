@@ -112,7 +112,11 @@ extern "C" void phiAddIncomming(llvm::PHINode* phi, llvm::BasicBlock* block, llv
     phi->addIncoming(val, block);
 }
 
-extern "C" llvm::Constant* ctxGetInt(llvm::LLVMContext* ctx, uint64_t val) {
+extern "C" llvm::Constant* tyNullVal(llvm::Type* ty) {
+    return  llvm::Constant::getNullValue(ty);
+}
+
+extern "C" llvm::Constant* ctxGetInt(llvm::LLVMContext* ctx, uint32_t val) {
     return llvm::ConstantInt::get(*ctx, llvm::APInt(32, val));
 }
 
@@ -130,6 +134,10 @@ extern "C" llvm::Type* ctxGetTyBool(llvm::LLVMContext* ctx) {
 
 extern "C" llvm::Type* ctxGetTyPtr(llvm::LLVMContext* ctx) {
     return llvm::PointerType::get(*ctx, 0);
+}
+
+extern "C" llvm::Type* ctxGetTyVoid(llvm::LLVMContext* ctx) {
+    return llvm::PointerType::getVoidTy(*ctx);
 }
 
 extern "C" llvm::Type* ctxCreateStructTy(
@@ -318,6 +326,8 @@ extern "C" FunctionOptManager* getFunctionOptManager(llvm::TargetMachine* machin
         llvm::FunctionPassManager(),
     };
     fom->fpm.addPass(llvm::PromotePass());
+    fom->fpm.addPass(llvm::SROAPass(llvm::SROAOptions::ModifyCFG));
+    // fom->fpm.addPass(llvm::);
     auto pm = llvm::PassBuilder(machine);
     pm.registerFunctionAnalyses(fom->fam);
     return fom;

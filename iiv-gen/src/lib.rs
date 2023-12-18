@@ -80,6 +80,7 @@ impl<'i> Generator<'i> {
                         .unwrap_or_else(|| self.ty.get_null()),
                 },
                 body: vec![],
+                ty_cache: vec![],
                 value_count: 0,
             });
 
@@ -143,9 +144,10 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
         self.iiv.ret(body);
 
         if self.messages.ok() {
-            let (blocks, inst_count) = self.iiv.build();
+            let (blocks, types, inst_count) = self.iiv.build();
             fun.body = blocks;
             fun.value_count = inst_count;
+            fun.ty_cache = types;
         }
     }
 
@@ -288,7 +290,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                         let no_match = no_match_block.unwrap();
                         self.iiv.branch(cond, next_block, no_match);
                         self.iiv.select(next_block);
-                        let inner = self.iiv.move_prop(value, i as u8, value.ty, elems[i].1);
+                        let inner = self.iiv.move_prop(value, i as u8, elems[i].1);
                         if let Some(inner_patter) = &vairant.inner {
                             self.bind(&inner_patter, inner, no_match_block, match_block);
                         } else {
@@ -317,7 +319,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 if let Type::Struct(props) = *value.ty {
                     for (name, prop_pattern) in &struct_pattern.inner {
                         let prop = if let Some((i, prop_ty)) = value.ty.prop(name.value) {
-                            self.iiv.move_prop(value, i, value.ty, prop_ty)
+                            self.iiv.move_prop(value, i, prop_ty)
                         } else {
                             self.msg(err!(
                                 &name.span(),
@@ -672,6 +674,31 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                     }
                 }
             }
+            Expr::Deref(deref) => {
+                let checked = self.check(&deref.lhs, None);
+                if let Object::Place(val, base_ty, mut offsets) = checked {
+                    if let Type::Ref(inner) = &*val.ty {
+                        offsets.push(0);
+                        Object::Place(
+                            Value {
+                                ty: *inner,
+                                raw: val.raw,
+                            },
+                            base_ty,
+                            offsets,
+                        )
+                    } else {
+                        self.msg(err!(
+                            &deref.lhs.span(),
+                            "only references can be derefernced"
+                        ));
+                        self.invalid().obj()
+                    }
+                } else {
+                    self.msg(err!(&deref.lhs.span(), "only l-values can be derefernced"));
+                    self.invalid().obj()
+                }
+            }
             Expr::Add(add) => {
                 let lhs = self.check_val(&add.lhs);
                 let rhs = self.check_val(&add.rhs);
@@ -700,7 +727,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                             .into_iter()
                             .map(|offset| iiv::Elem::Prop(Prop(offset)))
                             .collect();
-                        self.iiv.assign(place, raw_ty, elems, rhs).obj()
+                        self.iiv.assign(place, elems, rhs).obj()
                     }
                     other => {
                         self.msg(err!(&assign.lhs.span(), "expected an assignable l-value"));
@@ -788,7 +815,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     }
 
     fn move_val(&mut self, val: Value<'i>) -> Value<'i> {
-        self.iiv.move_prop_deep(val, vec![], val.ty, val.ty)
+        self.iiv.move_prop_deep(val, vec![], val.ty)
     }
 }
 

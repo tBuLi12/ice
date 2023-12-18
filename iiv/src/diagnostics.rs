@@ -76,11 +76,11 @@ pub mod fmt {
         }
     }
 
-    pub struct List<'a, T>(pub &'a [T]);
+    pub struct List<'a, T>(pub &'a mut dyn Iterator<Item = T>);
     impl<'a, T: Display> Display for List<'a, T> {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
             write!(f, "[")?;
-            for item in self.0 {
+            for item in self.0.into_iter() {
                 write!(f, "{}, ", item)?;
             }
             write!(f, "]")

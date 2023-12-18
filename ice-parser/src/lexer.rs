@@ -29,6 +29,7 @@ pub enum Keyword {
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Punctuation {
     Plus,
+    Asterisk,
     LParen,
     RParen,
     LBrace,
@@ -196,6 +197,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
 
         let punct = puncts! {
             '+' => Plus,
+            '*' => Asterisk,
             '(' => LParen,
             ')' => RParen,
             '{' => LBrace,

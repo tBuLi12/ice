@@ -1,8 +1,9 @@
-use crate::{pool::FuncRef, ty::TypeRef, Elem, Instruction, Label, Prop, RawValue, Value};
+use crate::{fun, pool::FuncRef, ty::TypeRef, Elem, Instruction, Label, Prop, RawValue, Value};
 
 pub struct FunctionBuilder<'i> {
     ty_pool: &'i crate::ty::Pool<'i>,
     blocks: Vec<UnsealedBlock<'i>>,
+    types: Vec<TypeRef<'i>>,
     current_block: usize,
     arg_count: usize,
     next_free_id: u16,
@@ -36,25 +37,22 @@ impl<'i> FunctionBuilder<'i> {
             arg_count: 0,
             current_block: 0,
             next_free_id: 0,
+            types: vec![],
         }
     }
 
     fn next_id(&mut self) -> RawValue {
         let id = self.next_free_id;
-
-        if id == 5 {
-            // panic!("EEEEEE");
-        }
-
         self.next_free_id += 1;
         RawValue(id)
     }
 
-    fn push_value_instruction(&mut self, inst: Instruction<'i>) -> RawValue {
+    fn push_value_instruction(&mut self, inst: Instruction<'i>, ty: TypeRef<'i>) -> RawValue {
         let id = self.next_id();
         self.blocks[self.current_block]
             .instructions
             .push((inst, id.0));
+        self.types.push(ty);
         id
     }
 
@@ -65,28 +63,29 @@ impl<'i> FunctionBuilder<'i> {
     pub fn add(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
         Value {
             ty: lhs.ty,
-            raw: self.push_value_instruction(Instruction::Add(lhs.raw, rhs.raw)),
+            raw: self.push_value_instruction(Instruction::Add(lhs.raw, rhs.raw), lhs.ty),
         }
     }
 
     pub fn variant(&mut self, ty: TypeRef<'i>, idx: u64, value: Value<'i>) -> Value<'i> {
         Value {
             ty,
-            raw: self.push_value_instruction(Instruction::Variant(ty, idx, value.raw)),
+            raw: self.push_value_instruction(Instruction::Variant(ty, idx, value.raw), ty),
         }
     }
 
     pub fn discriminant(&mut self, value: Value<'i>) -> Value<'i> {
+        let int = self.ty_pool.get_int();
         Value {
-            ty: self.ty_pool.get_int(),
-            raw: self.push_value_instruction(Instruction::Discriminant(value.raw)),
+            ty: int,
+            raw: self.push_value_instruction(Instruction::Discriminant(value.raw), int),
         }
     }
 
     pub fn variant_cast(&mut self, ty: TypeRef<'i>, value: Value<'i>) -> Value<'i> {
         Value {
             ty,
-            raw: self.push_value_instruction(Instruction::VariantCast(ty, value.raw)),
+            raw: self.push_value_instruction(Instruction::VariantCast(ty, value.raw), ty),
         }
     }
     // pub fn sub(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
@@ -95,9 +94,10 @@ impl<'i> FunctionBuilder<'i> {
     // pub fn not(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
     // pub fn neg(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
     pub fn equals(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
+        let bool = self.ty_pool.get_ty_bool();
         Value {
-            ty: self.ty_pool.get_ty_bool(),
-            raw: self.push_value_instruction(Instruction::Eq(lhs.raw, rhs.raw)),
+            ty: bool,
+            raw: self.push_value_instruction(Instruction::Eq(lhs.raw, rhs.raw), bool),
         }
     }
     // pub fn neq(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
@@ -110,11 +110,13 @@ impl<'i> FunctionBuilder<'i> {
     pub fn block_param(&mut self, ty: TypeRef<'i>) -> Value<'i> {
         let raw = self.next_id();
         self.blocks[self.current_block].params.push((ty, raw.0));
+        self.types.push(ty);
         Value { ty, raw }
     }
 
     pub fn param(&mut self, ty: TypeRef<'i>) -> Value<'i> {
         self.arg_count += 1;
+        self.types.push(ty);
         Value {
             ty,
             raw: self.next_id(),
@@ -122,12 +124,13 @@ impl<'i> FunctionBuilder<'i> {
     }
 
     pub fn call(&mut self, func: FuncRef<'i>, args: &[Value<'i>]) -> Value<'i> {
+        let ret_ty = func.borrow().sig.ret_ty;
         Value {
-            ty: func.borrow().sig.ret_ty,
-            raw: self.push_value_instruction(Instruction::Call(
-                func,
-                args.iter().map(|arg| arg.raw).collect(),
-            )),
+            ty: ret_ty,
+            raw: self.push_value_instruction(
+                Instruction::Call(func, args.iter().map(|arg| arg.raw).collect()),
+                ret_ty,
+            ),
         }
     }
 
@@ -140,10 +143,10 @@ impl<'i> FunctionBuilder<'i> {
     pub fn make_struct(&mut self, props: &[Value<'i>], ty: TypeRef<'i>) -> Value<'i> {
         Value {
             ty,
-            raw: self.push_value_instruction(Instruction::Tuple(
-                props.iter().map(|prop| prop.raw).collect(),
+            raw: self.push_value_instruction(
+                Instruction::Tuple(props.iter().map(|prop| prop.raw).collect(), ty),
                 ty,
-            )),
+            ),
         }
     }
     // pub fn name(&mut self, value: Value<'i>, ty: TypeId) -> Value<'i> {}
@@ -151,23 +154,17 @@ impl<'i> FunctionBuilder<'i> {
     pub fn get_prop(&mut self, value: Value<'i>, prop: u8, ty: TypeRef<'i>) -> Value<'i> {
         Value {
             ty,
-            raw: self.push_value_instruction(Instruction::CopyElem(
-                value.raw,
-                vec![Elem::Prop(Prop(prop))],
-            )),
+            raw: self.push_value_instruction(
+                Instruction::CopyElem(value.raw, vec![Elem::Prop(Prop(prop))]),
+                ty,
+            ),
         }
     }
 
-    pub fn move_prop(
-        &mut self,
-        value: Value<'i>,
-        prop: u8,
-        ty: TypeRef<'i>,
-        prop_ty: TypeRef<'i>,
-    ) -> Value<'i> {
+    pub fn move_prop(&mut self, value: Value<'i>, prop: u8, prop_ty: TypeRef<'i>) -> Value<'i> {
         Value {
             ty: prop_ty,
-            raw: self.push_value_instruction(Instruction::MoveElem(value.raw, ty, vec![prop])),
+            raw: self.push_value_instruction(Instruction::MoveElem(value.raw, vec![prop]), prop_ty),
         }
     }
 
@@ -175,12 +172,11 @@ impl<'i> FunctionBuilder<'i> {
         &mut self,
         value: Value<'i>,
         props: Vec<u8>,
-        ty: TypeRef<'i>,
         prop_ty: TypeRef<'i>,
     ) -> Value<'i> {
         Value {
             ty: prop_ty,
-            raw: self.push_value_instruction(Instruction::MoveElem(value.raw, ty, props)),
+            raw: self.push_value_instruction(Instruction::MoveElem(value.raw, props), prop_ty),
         }
     }
 
@@ -192,48 +188,50 @@ impl<'i> FunctionBuilder<'i> {
     ) -> Value<'i> {
         Value {
             ty,
-            raw: self.push_value_instruction(Instruction::CopyElem(
-                value.raw,
-                props
-                    .into_iter()
-                    .map(|prop| Elem::Prop(Prop(prop)))
-                    .collect(),
-            )),
+            raw: self.push_value_instruction(
+                Instruction::CopyElem(
+                    value.raw,
+                    props
+                        .into_iter()
+                        .map(|prop| Elem::Prop(Prop(prop)))
+                        .collect(),
+                ),
+                ty,
+            ),
         }
     }
 
     pub fn get_prop_ref(&mut self, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
+        let ref_ty = self.ty_pool.get_ref(ty);
         Value {
-            ty: self.ty_pool.get_ref(ty),
-            raw: self.push_value_instruction(Instruction::GetElemRef(
-                value.raw,
-                props
-                    .into_iter()
-                    .map(|prop| Elem::Prop(Prop(prop)))
-                    .collect(),
-            )),
+            ty: ref_ty,
+            raw: self.push_value_instruction(
+                Instruction::GetElemRef(
+                    value.raw,
+                    props
+                        .into_iter()
+                        .map(|prop| Elem::Prop(Prop(prop)))
+                        .collect(),
+                ),
+                ref_ty,
+            ),
         }
     }
 
     pub fn ref_to(&mut self, value: Value<'i>) -> Value<'i> {
+        let ref_ty = self.ty_pool.get_ref(value.ty);
         Value {
-            ty: self.ty_pool.get_ref(value.ty),
-            raw: self.push_value_instruction(Instruction::GetElemRef(value.raw, vec![])),
+            ty: ref_ty,
+            raw: self.push_value_instruction(Instruction::GetElemRef(value.raw, vec![]), ref_ty),
         }
     }
 
-    pub fn assign(
-        &mut self,
-        place: Value<'i>,
-        raw_lhs_ty: TypeRef<'i>,
-        elems: Vec<Elem>,
-        value: Value<'i>,
-    ) -> Value<'i> {
+    pub fn assign(&mut self, place: Value<'i>, elems: Vec<Elem>, value: Value<'i>) -> Value<'i> {
+        let ty_null = self.ty_pool.get_null();
         Value {
-            ty: self.ty_pool.get_null(),
-            raw: self.push_value_instruction(Instruction::Assign(
-                place.raw, raw_lhs_ty, elems, value.raw,
-            )),
+            ty: ty_null,
+            raw: self
+                .push_value_instruction(Instruction::Assign(place.raw, elems, value.raw), ty_null),
         }
     }
 
@@ -261,16 +259,18 @@ impl<'i> FunctionBuilder<'i> {
     }
 
     pub fn int_lit(&mut self, value: u32) -> Value<'i> {
+        let int = self.ty_pool.get_int();
         Value {
-            ty: self.ty_pool.get_int(),
-            raw: self.push_value_instruction(Instruction::Int(value)),
+            ty: int,
+            raw: self.push_value_instruction(Instruction::Int(value), int),
         }
     }
 
     pub fn bool_lit(&mut self, value: bool) -> Value<'i> {
+        let bool = self.ty_pool.get_ty_bool();
         Value {
-            ty: self.ty_pool.get_ty_bool(),
-            raw: self.push_value_instruction(Instruction::Bool(value)),
+            ty: bool,
+            raw: self.push_value_instruction(Instruction::Bool(value), bool),
         }
     }
 
@@ -298,14 +298,15 @@ impl<'i> FunctionBuilder<'i> {
     pub fn copy(&mut self, val: Value<'i>) -> Value<'i> {
         Value {
             ty: val.ty,
-            raw: self.push_value_instruction(Instruction::CopyElem(val.raw, vec![])),
+            raw: self.push_value_instruction(Instruction::CopyElem(val.raw, vec![]), val.ty),
         }
     }
 
     pub fn null(&mut self) -> Value<'i> {
+        let ty_null = self.ty_pool.get_null();
         Value {
-            ty: self.ty_pool.get_null(),
-            raw: self.push_value_instruction(Instruction::Null),
+            ty: ty_null,
+            raw: self.push_value_instruction(Instruction::Null, ty_null),
         }
     }
 
@@ -334,12 +335,19 @@ impl<'i> FunctionBuilder<'i> {
                 add(no_label.0 as usize);
                 Self::add_successors(blocks, new_block, add);
             }
+            Some((Instruction::Switch(idx, tagets), _)) => {
+                for (label, _) in tagets {
+                    let new_block = &blocks[label.0 as usize];
+                    add(label.0 as usize);
+                    Self::add_successors(blocks, new_block, add);
+                }
+            }
             Some((Instruction::Return(value), _)) => {}
             _ => panic!("invalid terminator!"),
         }
     }
 
-    pub fn build(mut self) -> (Vec<Block<'i>>, usize) {
+    pub fn build(mut self) -> (Vec<Block<'i>>, Vec<TypeRef<'i>>, usize) {
         let mut inst_indices = vec![0u16; self.next_free_id as usize];
 
         let mut block_indices = vec![None; self.blocks.len()];
@@ -359,16 +367,20 @@ impl<'i> FunctionBuilder<'i> {
             current += 1;
         }
 
+        let mut new_types = vec![];
+
         for &block_idx in &new_block_order {
             let block = &self.blocks[block_idx];
             for (_, idx) in &block.params {
                 inst_indices[*idx as usize] = current;
                 current += 1;
+                new_types.push(self.types[*idx as usize]);
             }
             for (inst, idx) in &block.instructions {
                 if inst.creates_value() {
                     inst_indices[*idx as usize] = current;
                     current += 1;
+                    new_types.push(self.types[*idx as usize]);
                 }
             }
         }
@@ -387,14 +399,14 @@ impl<'i> FunctionBuilder<'i> {
                     | Instruction::Gt(lhs, rhs)
                     | Instruction::Lt(lhs, rhs)
                     | Instruction::GtEq(lhs, rhs)
-                    | Instruction::Assign(lhs, _, _, rhs)
+                    | Instruction::Assign(lhs, _, rhs)
                     | Instruction::LtEq(lhs, rhs) => {
                         rhs.0 = inst_indices[rhs.0 as usize];
                         lhs.0 = inst_indices[lhs.0 as usize];
                     }
                     Instruction::GetElemRef(val, _)
                     | Instruction::CopyElem(val, _)
-                    | Instruction::MoveElem(val, _, _)
+                    | Instruction::MoveElem(val, _)
                     | Instruction::Name(_, val)
                     | Instruction::Return(val)
                     | Instruction::Neg(val)
@@ -428,6 +440,15 @@ impl<'i> FunctionBuilder<'i> {
                             val.0 = inst_indices[val.0 as usize];
                         }
                     }
+                    Instruction::Switch(lhs, targets) => {
+                        lhs.0 = inst_indices[lhs.0 as usize];
+                        for (label, args) in targets {
+                            label.0 = block_indices[label.0 as usize].unwrap() as u16;
+                            for val in args {
+                                val.0 = inst_indices[val.0 as usize];
+                            }
+                        }
+                    }
                     Instruction::Ty(_) => {}
                     Instruction::Null => {}
                     Instruction::CallDrop(_, _) | Instruction::Invalidate(_, _) => {
@@ -458,7 +479,7 @@ impl<'i> FunctionBuilder<'i> {
             })
             .collect();
 
-        (final_blocks, inst_indices.len())
+        (final_blocks, new_types, inst_indices.len())
     }
 }
 
@@ -476,10 +497,10 @@ impl<'i> Instruction<'i> {
             | Instruction::Gt(_, _)
             | Instruction::Lt(_, _)
             | Instruction::GtEq(_, _)
-            | Instruction::Assign(_, _, _, _)
+            | Instruction::Assign(_, _, _)
             | Instruction::GetElemRef(_, _)
             | Instruction::CopyElem(_, _)
-            | Instruction::MoveElem(_, _, _)
+            | Instruction::MoveElem(_, _)
             | Instruction::Name(_, _)
             | Instruction::Neg(_)
             | Instruction::Variant(_, _, _)
@@ -494,6 +515,7 @@ impl<'i> Instruction<'i> {
 
             Instruction::Jump(_, _)
             | Instruction::Branch(_, _, _, _, _)
+            | Instruction::Switch(_, _)
             | Instruction::Return(_)
             | Instruction::Invalidate(_, _)
             | Instruction::CallDrop(_, _)
@@ -502,16 +524,27 @@ impl<'i> Instruction<'i> {
     }
 }
 
-impl<'i> Block<'i> {
+impl<'i> UnsealedBlock<'i> {
     pub fn successors(&self) -> impl Iterator<Item = usize> {
         match self.instructions.last() {
-            Some(Instruction::Jump(label, _args)) => vec![*label].into_iter(),
-            Some(Instruction::Branch(_, yes_label, _, no_label, _)) => {
+            Some((Instruction::Jump(label, _args), _)) => vec![*label].into_iter(),
+            Some((Instruction::Branch(_, yes_label, _, no_label, _), _)) => {
                 vec![*no_label, *yes_label].into_iter()
             }
-            Some(Instruction::Return(_)) => vec![].into_iter(),
+            Some((Instruction::Switch(_, targets), _)) => targets
+                .iter()
+                .rev()
+                .map(|(label, _)| *label)
+                .collect::<Vec<_>>()
+                .into_iter(),
+            Some((Instruction::Return(_), _)) => vec![].into_iter(),
             _ => panic!("invalid terminator!"),
         }
         .map(|label| label.0 as usize)
     }
+}
+
+struct Cursor<'i, 'f> {
+    sig: &'f fun::Signature<'i>,
+    body: &'f mut Vec<UnsealedBlock<'i>>,
 }

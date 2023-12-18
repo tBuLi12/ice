@@ -457,7 +457,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
     }
 
     fn parse_rhs(&mut self, mut lhs: Expr<'i>) -> Parsed<Expr<'i>> {
-        loop {
+        let mut lhs = loop {
             if self.eat_punct(Punctuation::Plus).is_ok() {
                 let rhs = self.parse_expr().expected("an expression")?;
                 lhs = Expr::Add(Add {
@@ -481,12 +481,19 @@ impl<'i, R: io::Read> Parser<'i, R> {
                     args,
                 });
             } else if self.eat_punct(Punctuation::Period).is_ok() {
-                let prop = self.ident().expected("property name")?;
-                lhs = Expr::Prop(Prop {
-                    lhs: Box::new(lhs),
-                    prop,
-                    tr: None,
-                });
+                if let Ok(span) = self.eat_punct(Punctuation::Asterisk) {
+                    lhs = Expr::Deref(Deref {
+                        lhs: Box::new(lhs),
+                        span,
+                    });
+                } else {
+                    let prop = self.ident().expected("property name")?;
+                    lhs = Expr::Prop(Prop {
+                        lhs: Box::new(lhs),
+                        prop,
+                        tr: None,
+                    });
+                }
             } else if self.eat_kw(Keyword::Is).is_ok() {
                 let pattern = self.parse_pattern().expected("a pattern")?;
                 lhs = Expr::Is(Is {
@@ -494,9 +501,19 @@ impl<'i, R: io::Read> Parser<'i, R> {
                     rhs: Box::new(pattern),
                 })
             } else {
-                return Ok(lhs);
+                break lhs;
             }
+        };
+
+        while self.eat_punct(Punctuation::Eq).is_ok() {
+            let rhs = self.parse_expr().expected("an expression")?;
+            lhs = Expr::Assign(Assign {
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
         }
+
+        Ok(lhs)
     }
 
     fn parse_if(&mut self) -> Parsed<Expr<'i>> {
@@ -562,14 +579,6 @@ impl<'i, R: io::Read> Parser<'i, R> {
             .or_else(|_| self.parse_if())?;
 
         expr = self.parse_rhs(expr)?;
-
-        while self.eat_punct(Punctuation::Eq).is_ok() {
-            let rhs = self.parse_expr().expected("an expression")?;
-            expr = Expr::Assign(Assign {
-                lhs: Box::new(expr),
-                rhs: Box::new(rhs),
-            });
-        }
 
         Ok(expr)
     }

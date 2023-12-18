@@ -1,5 +1,5 @@
 use crate::{
-    builder::Block,
+    builder::{Block, UnsealedBlock},
     fun::{self, Function},
     ty::{Type, TypeRef},
     Elem, Instruction, Prop, RawValue,
@@ -77,14 +77,14 @@ impl VarState {
         }
     }
 
-    fn is_partially_valid(&self, val: RawValue, path: &[Elem]) -> bool {
+    fn is_partially_valid(&self, val: RawValue, path: &[u8]) -> bool {
         let mut state = &self.flags[val.0 as usize];
         for elem in path {
             match (elem, state) {
                 (_, State::Live) => return true,
                 (_, State::Dead) => return false,
-                (Elem::Prop(prop), State::Kindof(states)) => {
-                    state = &states[prop.0 as usize];
+                (prop, State::Kindof(states)) => {
+                    state = &states[*prop as usize];
                 }
                 _ => panic!("OOF"),
             }
@@ -95,13 +95,13 @@ impl VarState {
         }
     }
 
-    fn partial_unset(&mut self, val: RawValue, mut ty: TypeRef<'_>, path: &[Elem]) {
+    fn partial_unset(&mut self, val: RawValue, mut ty: TypeRef<'_>, path: &[u8]) {
         println!("PARTIAL UNSETTING {:?} {:?}", ty, path);
 
         let mut state = &mut self.flags[val.0 as usize];
-        for elem in path {
-            match (elem, &*ty) {
-                (Elem::Prop(prop), Type::Struct(fields)) => {
+        for &elem in path {
+            match &*ty {
+                Type::Struct(fields) => {
                     let break_up = match state {
                         State::Live => true,
                         State::Kindof(_) => false,
@@ -110,13 +110,13 @@ impl VarState {
                     if break_up {
                         *state = State::Kindof(vec![State::Live; fields.len()]);
                     }
-                    ty = fields[prop.0 as usize].1;
+                    ty = fields[elem as usize].1;
                     let State::Kindof(fields) = state else {
                         unreachable!()
                     };
-                    state = &mut fields[prop.0 as usize];
+                    state = &mut fields[elem as usize];
                 }
-                (Elem::Prop(prop), Type::Variant(fields)) => {
+                Type::Variant(fields) => {
                     let break_up = match state {
                         State::Live => true,
                         State::Kindof(_) => false,
@@ -125,13 +125,13 @@ impl VarState {
                     if break_up {
                         *state = State::Kindof(vec![State::Live]);
                     }
-                    ty = fields[prop.0 as usize].1;
+                    ty = fields[elem as usize].1;
                     let State::Kindof(fields) = state else {
                         unreachable!()
                     };
                     state = &mut fields[0];
                 }
-                (_, _) => {
+                _ => {
                     panic!("OOF {}", ty);
                 }
             }
@@ -176,6 +176,7 @@ impl VarState {
                     };
                     state = &mut fields[0];
                 }
+                (_, Type::Ref(_)) => return,
                 (_, _) => {
                     panic!("OOF {}", ty);
                 }
@@ -185,7 +186,7 @@ impl VarState {
         self.flags[val.0 as usize].collapse();
     }
 
-    fn process_inst(&mut self, inst: &Instruction<'_>) {
+    fn process_inst(&mut self, inst: &Instruction<'_>, ty_idx: &[TypeRef<'_>]) {
         match inst {
             Instruction::Int(_) | Instruction::Bool(_) => {}
             Instruction::Add(lhs, rhs)
@@ -203,14 +204,16 @@ impl VarState {
             }
 
             // not sure
-            Instruction::Assign(lhs, ty, elems, rhs) => {
+            Instruction::Assign(lhs, elems, rhs) => {
+                let ty = ty_idx[lhs.0 as usize];
                 self.unset(*rhs);
-                self.partial_set(*lhs, *ty, &elems);
+                self.partial_set(*lhs, ty, &elems);
             }
             Instruction::GetElemRef(_val, _) | Instruction::CopyElem(_val, _) => {}
 
-            Instruction::MoveElem(val, ty, elems) => {
-                self.partial_unset(*val, *ty, &elems);
+            Instruction::MoveElem(val, elems) => {
+                let ty = ty_idx[val.0 as usize];
+                self.partial_unset(*val, ty, &elems);
             }
 
             // don't
@@ -246,6 +249,14 @@ impl VarState {
                     self.unset(*val);
                 }
             }
+            Instruction::Switch(idx, targets) => {
+                self.unset(*idx);
+                for (_, args) in targets {
+                    for val in args {
+                        self.unset(*val);
+                    }
+                }
+            }
 
             Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
                 panic!("invalid instruction")
@@ -266,12 +277,16 @@ impl VarState {
     }
 }
 
-pub fn check(func: &Function) {
-    // return;
-    let mut states = vec![None; func.body.len()];
+pub fn check(func: &mut Function) {
+    let body = match &mut func.body {
+        fun::Body::Sealed(_) => panic!("move check on sealed body"),
+        fun::Body::Unsealed(unsealed) => unsealed,
+    };
 
-    let starting_idx: Vec<usize> = func
-        .body
+    // return;
+    let mut states = vec![None; body.len()];
+
+    let starting_idx: Vec<usize> = body
         .iter()
         .scan(func.sig.params.len(), |state, block| {
             let current: usize = *state;
@@ -280,7 +295,7 @@ pub fn check(func: &Function) {
                 + block
                     .instructions
                     .iter()
-                    .filter(|inst| inst.creates_value())
+                    .filter(|(inst, _)| inst.creates_value())
                     .count();
 
             Some(current)
@@ -303,8 +318,8 @@ pub fn check(func: &Function) {
     while let Some(next) = stack.pop() {
         println!("processing block b{}", next);
         let old_state = states[next].clone().unwrap();
-        let mut new_state = process(&func.body[next], old_state);
-        for successor in func.body[next].successors() {
+        let mut new_state = process(&body[next], old_state, &func.ty_cache);
+        for successor in body[next].successors() {
             new_state.next_inst_idx = starting_idx[successor];
 
             if let Some(state) = &mut states[successor] {
@@ -331,14 +346,19 @@ pub fn check(func: &Function) {
         println!("");
     }
     let mut block_idx = 0;
-    for (block, state) in func.body.iter().zip(states.iter()) {
+    for (block, state) in body.iter().zip(states.iter()) {
         println!(
             "verifying block {block_idx}, at {}",
             state.as_ref().unwrap().next_inst_idx
         );
-        let after = verify(block, state.as_ref().unwrap().clone(), &states);
+        let after = verify(
+            block,
+            state.as_ref().unwrap().clone(),
+            &states,
+            &func.ty_cache,
+        );
 
-        if let Some(Instruction::Return(_)) = block.instructions.last() {
+        if let Some((Instruction::Return(_), _)) = block.instructions.last() {
             for (i, flag) in after.flags.iter().enumerate() {
                 if flag != &State::Dead {
                     eprintln!("undropped value {}", i);
@@ -348,6 +368,14 @@ pub fn check(func: &Function) {
         }
 
         block_idx += 1;
+    }
+
+    for (block, state) in body.iter_mut().zip(states.iter()) {
+        DropResolver {
+            state: state.as_ref().unwrap().clone(),
+            instructions: vec![],
+        }
+        .resolve(block, &func.ty_cache);
     }
 }
 
@@ -371,24 +399,29 @@ fn print_state(state: &State, i: usize, depth: usize) {
     }
 }
 
-fn process(block: &Block<'_>, mut state: VarState) -> VarState {
+fn process(block: &UnsealedBlock<'_>, mut state: VarState, ty_idx: &[TypeRef<'_>]) -> VarState {
     for _ in &block.params {
         println!("set_next by block_param");
         state.set_next();
     }
-    for inst in &block.instructions {
-        state.process_inst(inst);
+    for (inst, _) in &block.instructions {
+        state.process_inst(inst, ty_idx);
     }
     state
 }
 
-fn verify(block: &Block<'_>, mut state: VarState, states: &[Option<VarState>]) -> VarState {
+fn verify(
+    block: &UnsealedBlock<'_>,
+    mut state: VarState,
+    states: &[Option<VarState>],
+    ty_idx: &[TypeRef<'_>],
+) -> VarState {
     for _ in &block.params {
         println!("set_next by block_param2");
         state.set_next();
     }
 
-    for inst in &block.instructions {
+    for (inst, _) in &block.instructions {
         let valid = match inst {
             Instruction::Int(_) | Instruction::Bool(_) => true,
             Instruction::Add(lhs, rhs)
@@ -403,11 +436,21 @@ fn verify(block: &Block<'_>, mut state: VarState, states: &[Option<VarState>]) -
             | Instruction::LtEq(lhs, rhs) => state.is_valid(*lhs) && state.is_valid(*rhs),
 
             // not sure
-            Instruction::Assign(_, _, _, rhs) => state.is_valid(*rhs),
+            Instruction::Assign(_, _, rhs) => state.is_valid(*rhs),
 
-            Instruction::GetElemRef(val, path)
-            | Instruction::CopyElem(val, path)
-            | Instruction::MoveElem(val, _, path) => state.is_partially_valid(*val, path),
+            Instruction::GetElemRef(val, path) | Instruction::CopyElem(val, path) => state
+                .is_partially_valid(
+                    *val,
+                    &path
+                        .iter()
+                        .map(|elem| match elem {
+                            Elem::Prop(prop) => prop.0,
+                            _ => panic!("OOF"),
+                        })
+                        .collect::<Vec<_>>(),
+                ),
+
+            Instruction::MoveElem(val, path) => state.is_partially_valid(*val, path),
 
             // don't
             Instruction::Discriminant(val) => state.is_valid(*val),
@@ -444,6 +487,15 @@ fn verify(block: &Block<'_>, mut state: VarState, states: &[Option<VarState>]) -
                 }
                 valid
             }
+            Instruction::Switch(idx, targets) => {
+                let mut valid = state.is_valid(*idx);
+                for (_, args) in targets {
+                    for val in args {
+                        valid = valid && state.is_valid(*val);
+                    }
+                }
+                valid
+            }
             Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
                 panic!("invalid instruction")
             }
@@ -463,7 +515,7 @@ fn verify(block: &Block<'_>, mut state: VarState, states: &[Option<VarState>]) -
             );
             panic!("invalid reinit");
         }
-        state.process_inst(inst);
+        state.process_inst(inst, ty_idx);
     }
 
     for successor in block.successors() {
@@ -487,84 +539,163 @@ fn verify(block: &Block<'_>, mut state: VarState, states: &[Option<VarState>]) -
     state
 }
 
-fn resolve_drops(block: &mut Block<'_>, mut state: VarState) {
-    let mut new_instructions = vec![];
-    for inst in &block.instructions {
-        let valid = match inst {
-            Instruction::Int(_) | Instruction::Bool(_) => {}
-            Instruction::Add(lhs, rhs)
-            | Instruction::Sub(lhs, rhs)
-            | Instruction::Mul(lhs, rhs)
-            | Instruction::Div(lhs, rhs)
-            | Instruction::Eq(lhs, rhs)
-            | Instruction::Neq(lhs, rhs)
-            | Instruction::Gt(lhs, rhs)
-            | Instruction::Lt(lhs, rhs)
-            | Instruction::GtEq(lhs, rhs)
-            | Instruction::LtEq(lhs, rhs) => {
-                new_instructions.push(Instruction::Invalidate(*lhs, vec![]));
-                new_instructions.push(Instruction::Invalidate(*rhs, vec![]));
-            }
+struct DropResolver<'i> {
+    state: VarState,
+    instructions: Vec<Instruction<'i>>,
+}
 
-            // not sure
-            Instruction::Assign(lhs, _, path, rhs) => {
-                new_instructions.push(Instruction::Invalidate(*rhs, vec![]));
-            }
+impl<'i> DropResolver<'i> {
+    fn invalidate(&mut self, val: RawValue, path: Option<Vec<u8>>, ty_idx: &[TypeRef<'_>]) {
+        self.instructions
+            .push(Instruction::Invalidate(val, path.clone()));
 
-            Instruction::GetElemRef(val, path) | Instruction::CopyElem(val, path) => {}
-
-            Instruction::MoveElem(val, ty, path) => {
-                let mut offset = 0;
-                for (i, elem) in path.iter().enumerate() {
-                    match *ty {
-                        Type::Struct(props) => {}
-                        Type::Variant(elems) => {}
-                    }
-                }
-
-                unimplemented!();
-                new_instructions.push(Instruction::Invalidate(*val, path.clone()));
+        let mut base_ty = ty_idx[val.0 as usize];
+        let (mut path, mut ty) = if let Some(path) = path {
+            let mut ty = base_ty;
+            for elem in &path {
+                ty = ty.elem(*elem).unwrap();
             }
-
-            // don't
-            Instruction::Discriminant(val) => {}
-            Instruction::Ty(_) => {}
-            Instruction::Null => {}
-
-            // do
-            Instruction::Name(_, val)
-            | Instruction::Return(val)
-            | Instruction::Neg(val)
-            | Instruction::Variant(_, _, val)
-            | Instruction::VariantCast(_, val)
-            | Instruction::Not(val) => {
-                new_instructions.push(Instruction::Invalidate(*val, vec![]));
+            (path, ty)
+        } else {
+            if let Type::Variant(_) = &*base_ty {
+                self.instructions
+                    .push(Instruction::Invalidate(val, Some(vec![])));
             }
-
-            // do
-            Instruction::Jump(_, vals)
-            | Instruction::Call(_, vals)
-            | Instruction::Tuple(vals, _) => {
-                for val in vals {
-                    new_instructions.push(Instruction::Invalidate(*val, vec![]));
-                }
-            }
-            Instruction::Branch(lhs, _, yes_args, _, no_args) => {
-                for val in yes_args {
-                    new_instructions.push(Instruction::Invalidate(*val, vec![]));
-                }
-                for val in no_args {
-                    new_instructions.push(Instruction::Invalidate(*val, vec![]));
-                }
-            }
-            Instruction::Drop(val) => {
-                new_instructions.push(Instruction::Invalidate(*val, vec![]));
-            }
-            Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
-                panic!("invalid instruction")
-            }
+            (vec![], base_ty)
         };
 
-        new_instructions.push(inst.clone());
+        match &*ty {
+            Type::Struct(fields) => {}
+            Type::Variant(elems) => {}
+            _ => {}
+        }
+    }
+
+    fn invalidate_if_needed(&mut self, val: RawValue, path: Vec<u8>, ty: TypeRef<'i>) {
+        match &*ty {
+            Type::Struct(fields) => {
+                for (i, field) in fields.iter().enumerate() {
+                    let i = i as u8;
+                    let mut path = path.clone();
+                    path.push(i);
+                    self.invalidate_if_needed(val, path, ty.elem(i).unwrap());
+                }
+            }
+            Type::Variant(elems) => {
+                self.instructions
+                    .push(Instruction::Invalidate(val, Some(path.clone())));
+
+                let discriminant = RawValue(unimplemented!());
+                for (i, field) in elems.iter().enumerate() {
+                    let i = i as u8;
+                    let mut path = path.clone();
+                    path.push(i);
+                    self.invalidate_if_needed(val, path, ty.elem(i).unwrap());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn resolve(&mut self, block: &mut UnsealedBlock, ty_idx: &[TypeRef<'i>]) {
+        let mut new_instructions = vec![];
+        for (inst, _) in &block.instructions {
+            match inst {
+                Instruction::Int(_) | Instruction::Bool(_) => {}
+                Instruction::Add(lhs, rhs)
+                | Instruction::Sub(lhs, rhs)
+                | Instruction::Mul(lhs, rhs)
+                | Instruction::Div(lhs, rhs)
+                | Instruction::Eq(lhs, rhs)
+                | Instruction::Neq(lhs, rhs)
+                | Instruction::Gt(lhs, rhs)
+                | Instruction::Lt(lhs, rhs)
+                | Instruction::GtEq(lhs, rhs)
+                | Instruction::LtEq(lhs, rhs) => {
+                    self.invalidate(*lhs, None, ty_idx);
+                    self.invalidate(*rhs, None, ty_idx);
+                }
+
+                // not sure
+                Instruction::Assign(lhs, path, rhs) => {
+                    self.invalidate(*rhs, None, ty_idx);
+                }
+
+                Instruction::GetElemRef(val, path) | Instruction::CopyElem(val, path) => {}
+
+                Instruction::MoveElem(val, path) => {
+                    let ty = ty_idx[val.0 as usize];
+                    let mut invalidation_path = None;
+                    let mut offset = 0;
+                    for (i, elem) in path.iter().enumerate() {
+                        match &*ty {
+                            Type::Struct(props) => {
+                                offset += 1;
+                            }
+                            Type::Variant(elems) => {
+                                invalidation_path = Some(&path[..offset]);
+                                offset += 1;
+                            }
+                            _ => {
+                                panic!("oof");
+                            }
+                        }
+                    }
+
+                    self.invalidate(*val, invalidation_path.map(|path| path.to_vec()), ty_idx);
+                }
+
+                // don't
+                Instruction::Discriminant(val) => {}
+                Instruction::Ty(_) => {}
+                Instruction::Null => {}
+
+                // do
+                Instruction::Name(_, val)
+                | Instruction::Return(val)
+                | Instruction::Neg(val)
+                | Instruction::Variant(_, _, val)
+                | Instruction::VariantCast(_, val)
+                | Instruction::Not(val) => {
+                    self.invalidate(*val, None, ty_idx);
+                }
+
+                // do
+                Instruction::Jump(_, vals)
+                | Instruction::Call(_, vals)
+                | Instruction::Tuple(vals, _) => {
+                    for val in vals {
+                        self.invalidate(*val, None, ty_idx);
+                    }
+                }
+                Instruction::Branch(lhs, _, yes_args, _, no_args) => {
+                    self.invalidate(*lhs, None, ty_idx);
+                    for val in yes_args {
+                        self.invalidate(*val, None, ty_idx);
+                    }
+                    for val in no_args {
+                        self.invalidate(*val, None, ty_idx);
+                    }
+                }
+                Instruction::Switch(idx, targets) => {
+                    self.invalidate(*idx, None, ty_idx);
+                    for (_, args) in targets {
+                        for val in args {
+                            self.invalidate(*val, None, ty_idx);
+                        }
+                    }
+                }
+                Instruction::Drop(val) => {
+                    self.invalidate(*val, None, ty_idx);
+                }
+                Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
+                    panic!("invalid instruction")
+                }
+            };
+
+            new_instructions.push((inst.clone(), 0));
+        }
+
+        block.instructions = new_instructions;
     }
 }

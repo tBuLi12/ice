@@ -530,7 +530,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             }
                         })
                     }
-                    iiv::Instruction::Assign(lhs, _, _, rhs) => {
+                    iiv::Instruction::Assign(lhs, _, rhs) => {
                         let ClftValue {
                             value: ClftValueRaw::Ssa(ptr),
                             ..
@@ -595,6 +595,9 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             self.blocks[no.0 as usize],
                             &no_args,
                         );
+                    }
+                    iiv::Instruction::Switch(_, _) => {
+                        unimplemented!()
                     }
                     iiv::Instruction::Jump(label, args) => {
                         let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
@@ -710,7 +713,13 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                     iiv::Instruction::Drop(_) => {
                         unimplemented!()
                     }
-                    iiv::Instruction::MoveElem(_, _, _) => {
+                    iiv::Instruction::MoveElem(_, _) => {
+                        unimplemented!()
+                    }
+                    iiv::Instruction::CallDrop(_, _) => {
+                        unimplemented!()
+                    }
+                    iiv::Instruction::Invalidate(_, _) => {
                         unimplemented!()
                     }
                     iiv::Instruction::Null => {

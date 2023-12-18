@@ -17,6 +17,8 @@ impl<'i> Backend<'i> {
         let ctx = llvm::LLVMCtx::new();
         let module = ctx.create_module();
 
+        let builtins = Builtints::get(&ctx, &module);
+
         let mut ir_gen = IRGen {
             module,
             ir: ctx.create_builder(),
@@ -29,6 +31,7 @@ impl<'i> Backend<'i> {
             llvm_ctx: &ctx,
             blocks: vec![],
             llvm_ty_cache: vec![],
+            builtins,
         };
 
         ir_gen
@@ -54,6 +57,49 @@ enum FuturePhi<'ll> {
 struct LLVMValue<'ll, 'i> {
     ty: TypeRef<'i>,
     value: llvm::Value<'ll>,
+    gen_ptr: llvm::Value<'ll>,
+}
+
+#[derive(Clone, Copy)]
+struct LLVMStackValue<'ll, 'i> {
+    ty: TypeRef<'i>,
+    alloca: llvm::Value<'ll>,
+    gen_ptr: llvm::Value<'ll>,
+    value: llvm::Value<'ll>,
+}
+
+impl<'ll, 'i> LLVMStackValue<'ll, 'i> {
+    fn value(self) -> LLVMValue<'ll, 'i> {
+        LLVMValue {
+            ty: self.ty,
+            value: self.value,
+            gen_ptr: self.gen_ptr,
+        }
+    }
+}
+
+struct Builtints<'ll> {
+    rt_invalidate: llvm::Function<'ll>,
+    rt_validate: llvm::Function<'ll>,
+    rt_init: llvm::Function<'ll>,
+    rt_gen_alloc: llvm::Function<'ll>,
+}
+
+impl<'ll> Builtints<'ll> {
+    fn get(ctx: &'ll llvm::LLVMCtx, module: &llvm::LLVMModule<'ll>) -> Builtints<'ll> {
+        let rt_invalidate = module.create_func("rt_invalidate", &[ctx.ty_ptr()], ctx.ty_void());
+        let rt_validate =
+            module.create_func("rt_validate", &[ctx.ty_ptr(), ctx.ty_int()], ctx.ty_void());
+        let rt_init = module.create_func("rt_init", &[], ctx.ty_void());
+        let rt_gen_alloc = module.create_func("rt_gen_alloc", &[ctx.ty_ptr()], ctx.ty_void());
+
+        Builtints {
+            rt_invalidate,
+            rt_validate,
+            rt_init,
+            rt_gen_alloc,
+        }
+    }
 }
 
 pub struct IRGen<'ll, 'i> {
@@ -61,13 +107,14 @@ pub struct IRGen<'ll, 'i> {
     module: llvm::LLVMModule<'ll>,
     fun_opt_manager: llvm::FunctionOptManager<'ll>,
     phis: Vec<FuturePhi<'ll>>,
-    values: Vec<LLVMValue<'ll, 'i>>,
+    values: Vec<LLVMStackValue<'ll, 'i>>,
     blocks: Vec<llvm::Block<'ll>>,
     funcs: HashMap<FuncRef<'i>, llvm::Function<'ll>>,
     work_stack: Vec<FuncRef<'i>>,
     ctx: &'i iiv::Ctx<'i>,
     llvm_ctx: &'ll llvm::LLVMCtx,
     llvm_ty_cache: Vec<UnsafeCell<CachedType<'ll>>>,
+    builtins: Builtints<'ll>,
 }
 
 impl<'ll, 'i> IRGen<'ll, 'i> {
@@ -95,10 +142,10 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         }
 
         self.ir.set_insert_point(self.blocks[0]);
+        self.ir.call(self.builtins.rt_init, &[]);
 
         for (arg, &ty) in llvm_func.args().zip(func.sig.params.iter()) {
-            let value = self.on_the_stack(arg);
-            self.values.push(LLVMValue { ty, value });
+            self.on_the_stack(arg, ty);
         }
 
         for (i, block) in func.body.iter().enumerate() {
@@ -111,7 +158,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             panic!("invalid function");
         }
 
-        self.fun_opt_manager.optimize(llvm_func);
+        // self.fun_opt_manager.optimize(llvm_func);
     }
 
     pub fn emit_block(&mut self, block: &iiv::builder::Block<'i>, i: usize) {
@@ -141,8 +188,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 }
             };
             for (&phi, &ty) in phis.iter().zip(block.params.iter()) {
-                let value = self.on_the_stack(phi.val());
-                self.values.push(LLVMValue { ty, value })
+                self.on_the_stack(phi.val(), ty);
             }
             self.phis[i] = FuturePhi::Existing(phis);
         }
@@ -151,19 +197,19 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         for instruction in &block.instructions {
             match instruction {
                 iiv::Instruction::Int(val) => {
-                    let int = self.get_int(*val as u64);
-                    self.values.push(int)
+                    self.on_the_stack(self.llvm_ctx.int(*val).val(), self.ctx.type_pool.get_int());
                 }
                 iiv::Instruction::Bool(val) => {
-                    let boolean = self.get_bool(*val);
-                    self.values.push(boolean)
+                    self.on_the_stack(
+                        self.llvm_ctx.boolean(*val).val(),
+                        self.ctx.type_pool.get_ty_bool(),
+                    );
                 }
                 iiv::Instruction::Add(lhs, rhs) => {
                     let ty = self.val(*lhs).ty;
                     let lhs = self.get(*lhs);
                     let rhs = self.get(*rhs);
-                    let value = self.on_the_stack(self.ir.add(lhs, rhs));
-                    self.values.push(LLVMValue { value, ty })
+                    self.on_the_stack(self.ir.add(lhs, rhs), ty);
                 }
                 iiv::Instruction::Sub(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::Mul(_lhs, _rhs) => unimplemented!(),
@@ -173,11 +219,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 iiv::Instruction::Eq(lhs, rhs) => {
                     let lhs = self.get(*lhs);
                     let rhs = self.get(*rhs);
-                    let stack_value = self.on_the_stack(self.ir.eq(lhs, rhs));
-                    self.values.push(LLVMValue {
-                        value: stack_value,
-                        ty: self.ctx.type_pool.get_ty_bool(),
-                    })
+                    self.on_the_stack(self.ir.eq(lhs, rhs), self.ctx.type_pool.get_ty_bool());
                 }
                 iiv::Instruction::Neq(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::Gt(_lhs, _rhs) => unimplemented!(),
@@ -194,19 +236,22 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
 
                     let call = self.ir.call(func, &raw_args);
 
-                    let value = self.on_the_stack(call);
-                    self.values.push(LLVMValue { value, ty: ret_ty });
+                    self.on_the_stack(call, ret_ty);
                 }
-                iiv::Instruction::Assign(lhs, _, path, rhs) => {
-                    let lhs = self.val(*lhs);
+                iiv::Instruction::Assign(lhs, path, rhs) => {
+                    let mut lhs = self.val(*lhs);
+                    for elem in path {
+                        let iiv::Elem::Prop(iiv::Prop(idx)) = elem else {
+                            panic!("invalid get_elem");
+                        };
+                        lhs = self.elem_ptr(lhs, *idx as usize);
+                    }
                     let rhs = self.val(*rhs);
                     self.write(lhs, rhs);
-                    let null = self.null_val();
-                    self.values.push(null);
+                    self.null_val();
                 }
                 iiv::Instruction::Tuple(tpl, ty) => {
-                    let tuple_value = self.alloc(*ty);
-                    self.values.push(tuple_value);
+                    let tuple_value = self.alloc(*ty).value();
 
                     for (i, val) in tpl.iter().enumerate() {
                         let field = self.elem_ptr(tuple_value, i);
@@ -225,21 +270,16 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                         value = self.elem_ptr(value, *idx as usize);
                     }
 
-                    let elem_value = self.read(value);
-                    self.values.push(elem_value);
+                    self.read(value);
                 }
-                iiv::Instruction::MoveElem(lhs, _, path) => {
+                iiv::Instruction::MoveElem(lhs, path) => {
                     let mut value = self.val(*lhs);
 
                     for elem in path {
-                        let iiv::Elem::Prop(iiv::Prop(idx)) = elem else {
-                            panic!("invalid move_elem");
-                        };
-                        value = self.elem_ptr(value, *idx as usize);
+                        value = self.elem_ptr(value, *elem as usize);
                     }
 
-                    let elem_value = self.read(value);
-                    self.values.push(elem_value);
+                    self.read(value);
                 }
                 iiv::Instruction::GetElemRef(lhs, path) => {
                     let mut value = self.val(*lhs);
@@ -251,8 +291,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                         value = self.elem_ptr(value, *idx as usize);
                     }
 
-                    let elem_ptr = self.make_ref(value);
-                    self.values.push(elem_ptr);
+                    self.make_ref(value);
                 }
                 iiv::Instruction::Branch(lhs, yes, yes_args, no, no_args) => {
                     let yes_args: Vec<_> = yes_args.iter().map(|arg| self.get(*arg)).collect();
@@ -279,17 +318,22 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 }
                 iiv::Instruction::Ty(_type_id) => unimplemented!(),
                 iiv::Instruction::Variant(ty, idx, val) => {
-                    let variant = self.alloc(*ty);
-                    let idx_val = self.get_int(*idx);
+                    let variant = self.alloc(*ty).value();
+                    let idx_val = self.llvm_ctx.int(*idx as u32).val();
                     let discriminant = self.discriminant_ptr(variant);
-                    self.write(discriminant, idx_val);
+                    self.ir.store(discriminant.value, idx_val);
+                    let zero = self.llvm_ctx.int(0).val();
+                    let gen_ptr_ptr =
+                        self.ir
+                            .gep(self.llvm_ty(variant.ty), variant.value, &[zero, zero]);
+                    self.ir
+                        .store(gen_ptr_ptr, self.llvm_ctx.ty_ptr().null().val());
                     let body = self.elem_ptr(variant, *idx as usize);
                     let val = self.val(*val);
                     self.write(body, val);
-                    self.values.push(variant);
                 }
                 iiv::Instruction::VariantCast(ty, val) => {
-                    let target = self.alloc(*ty);
+                    let target = self.alloc(*ty).value();
                     let discriminant = self.discriminant_ptr(target);
                     let src_variant = self.val(*val);
                     let iiv::ty::Type::Variant(src_elems) = &*src_variant.ty else {
@@ -307,7 +351,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                                         .iter()
                                         .map(|elem| {
                                             dst_elems.iter().position(|e| *e == *elem).unwrap()
-                                                as u64
+                                                as u32
                                         })
                                         .map(|idx| self.llvm_ctx.int(idx))
                                         .collect(),
@@ -323,32 +367,51 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     );
 
                     self.ir.store(discriminant.value, new_discriminant);
-                    self.values.push(target);
+                    let zero = self.llvm_ctx.int(0).val();
+                    let gen_ptr_ptr =
+                        self.ir
+                            .gep(self.llvm_ty(target.ty), target.value, &[zero, zero]);
+                    self.ir
+                        .store(gen_ptr_ptr, self.llvm_ctx.ty_ptr().null().val());
                 }
                 iiv::Instruction::Discriminant(value) => {
                     let value = self.val(*value);
                     let discriminant_loc = self.discriminant_ptr(value);
-                    let discriminant = self.read(discriminant_loc);
-                    self.values.push(discriminant);
+                    self.read(discriminant_loc);
                 }
                 iiv::Instruction::Null => {
-                    let null = self.null_val();
-                    self.values.push(null);
+                    self.null_val();
                 }
                 iiv::Instruction::Drop(value) => {
                     // unimplemented!()
+                }
+                iiv::Instruction::Invalidate(val, path) => {
+                    let stack_value = self.values[val.0 as usize];
+                    if let Some(path) = path {
+                        let mut value = stack_value.value();
+                        for elem in path {
+                            value = self.elem_ptr(value, *elem as usize);
+                        }
+                        let zero = self.llvm_ctx.int(0).val();
+                        let gen_ptr =
+                            self.ir
+                                .gep(self.llvm_ty(value.ty), value.value, &[zero, zero]);
+                        self.ir.call(self.builtins.rt_invalidate, &[gen_ptr]);
+                    } else {
+                        self.ir
+                            .call(self.builtins.rt_invalidate, &[stack_value.gen_ptr]);
+                    }
+                }
+                iiv::Instruction::CallDrop(val, prop) => {
+                    unimplemented!();
                 }
             }
         }
     }
 
-    fn null_val(&mut self) -> LLVMValue<'ll, 'i> {
-        let null_ty = self.llvm_ctx.struct_ty(&[]);
-        let null = self.ir.create_alloca(null_ty);
-        LLVMValue {
-            ty: self.ctx.type_pool.get_null(),
-            value: null,
-        }
+    fn null_val(&mut self) {
+        let null = self.llvm_ctx.struct_ty(&[]).null().val();
+        self.on_the_stack(null, self.ctx.type_pool.get_null());
     }
 
     fn apply_block_args(&mut self, block: &iiv::Label, args: &[llvm::Value<'ll>]) {
@@ -367,10 +430,24 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         };
     }
 
-    fn on_the_stack(&mut self, val: llvm::Value<'ll>) -> llvm::Value<'ll> {
-        let alloca = self.ir.create_alloca(val.ty());
-        self.ir.store(alloca, val);
-        alloca
+    fn on_the_stack(&mut self, val: llvm::Value<'ll>, ty: TypeRef<'i>) -> LLVMStackValue<'ll, 'i> {
+        let gen_ptr_ty = self.llvm_ctx.ty_ptr();
+        let storage_ty = self.llvm_ctx.struct_ty(&[gen_ptr_ty, val.ty()]);
+        let alloca = self.ir.create_alloca(storage_ty);
+        let zero = self.llvm_ctx.int(0).val();
+        let one = self.llvm_ctx.int(1).val();
+        let gen_ptr_ptr = self.ir.gep(storage_ty, alloca, &[zero, zero]);
+        let val_ptr = self.ir.gep(storage_ty, alloca, &[zero, one]);
+        self.ir.store(gen_ptr_ptr, gen_ptr_ty.null().val());
+        self.ir.store(val_ptr, val);
+        let value = LLVMStackValue {
+            ty,
+            value: val_ptr,
+            gen_ptr: gen_ptr_ptr,
+            alloca,
+        };
+        self.values.push(value);
+        value
     }
 
     fn elem_ptr(&mut self, val: LLVMValue<'ll, 'i>, elem: usize) -> LLVMValue<'ll, 'i> {
@@ -387,21 +464,67 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                         val.value,
                         &[
                             self.llvm_ctx.int(0).val(),
-                            self.llvm_ctx.int(elem as u64).val(),
+                            self.llvm_ctx.int(elem as u32).val(),
                         ],
                     )
                 },
+                gen_ptr: val.gen_ptr,
             },
             Type::Variant(elems) => LLVMValue {
                 ty: elems[elem].1,
-                value: {
-                    self.ir.gep(
+                value: self.ir.gep(
+                    ty,
+                    val.value,
+                    &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(2).val()],
+                ),
+                gen_ptr: self.ir.gep(
+                    ty,
+                    val.value,
+                    &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(0).val()],
+                ),
+            },
+            Type::Ref(inner) => {
+                assert!(elem == 0);
+
+                self.ir.call(
+                    self.builtins.rt_validate,
+                    &[
+                        self.ir.load(
+                            self.ir.gep(
+                                ty,
+                                val.value,
+                                &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(1).val()],
+                            ),
+                            self.llvm_ctx.ty_ptr(),
+                        ),
+                        self.ir.load(
+                            self.ir.gep(
+                                ty,
+                                val.value,
+                                &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(0).val()],
+                            ),
+                            self.llvm_ctx.ty_int(),
+                        ),
+                    ],
+                );
+
+                LLVMValue {
+                    ty: inner,
+                    value: self.ir.load(
+                        self.ir.gep(
+                            ty,
+                            val.value,
+                            &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(2).val()],
+                        ),
+                        self.llvm_ctx.ty_ptr(),
+                    ),
+                    gen_ptr: self.ir.gep(
                         ty,
                         val.value,
                         &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(1).val()],
-                    )
-                },
-            },
+                    ),
+                }
+            }
             _ => panic!("invalid elem_ptr"),
         }
     }
@@ -415,25 +538,60 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     self.ir.gep(
                         self.llvm_ty(val.ty),
                         val.value,
-                        &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(0).val()],
+                        &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(1).val()],
                     )
                 },
+                gen_ptr: val.gen_ptr,
             },
             _ => panic!("invalid discriminant_ptr"),
         }
     }
 
-    fn make_ref(&mut self, val: LLVMValue<'ll, 'i>) -> LLVMValue<'ll, 'i> {
-        let ptr = self.on_the_stack(val.value);
-        LLVMValue {
-            ty: self.ctx.type_pool.get_ref(val.ty),
-            value: ptr,
-        }
+    fn make_ref(&mut self, val: LLVMValue<'ll, 'i>) -> LLVMStackValue<'ll, 'i> {
+        let raw_ptr = val.value;
+        let raw_gen_ptr_ptr = val.gen_ptr;
+        self.ir.call(self.builtins.rt_gen_alloc, &[raw_gen_ptr_ptr]);
+        let raw_gen_ptr = self.ir.load(raw_gen_ptr_ptr, self.llvm_ctx.ty_ptr());
+        let raw_gen_value = self.ir.load(raw_gen_ptr, self.llvm_ctx.ty_int());
+        let ref_ty = self.ctx.type_pool.get_ref(val.ty);
+        let llvm_ref_ty = self.llvm_ty(ref_ty);
+        let stack_val = self.alloc(ref_ty);
+        let val = stack_val.value();
+
+        let zero = self.llvm_ctx.int(0).val();
+        let one = self.llvm_ctx.int(1).val();
+        let two = self.llvm_ctx.int(2).val();
+
+        let gen = self.ir.gep(llvm_ref_ty, val.value, &[zero, zero]);
+        let gen_ptr = self.ir.gep(llvm_ref_ty, val.value, &[zero, one]);
+        let val_ptr = self.ir.gep(llvm_ref_ty, val.value, &[zero, two]);
+
+        self.ir.store(gen, raw_gen_value);
+        self.ir.store(gen_ptr, raw_gen_ptr);
+        self.ir.store(val_ptr, raw_ptr);
+
+        stack_val
     }
 
-    fn alloc(&mut self, ty: TypeRef<'i>) -> LLVMValue<'ll, 'i> {
-        let storage = self.ir.create_alloca(self.llvm_ty(ty));
-        LLVMValue { ty, value: storage }
+    fn alloc(&mut self, ty: TypeRef<'i>) -> LLVMStackValue<'ll, 'i> {
+        let val_ty = self.llvm_ty(ty);
+        let gen_ptr_ty = self.llvm_ctx.ty_ptr();
+        let storage_ty = self.llvm_ctx.struct_ty(&[gen_ptr_ty, val_ty]);
+        let storage = self.ir.create_alloca(storage_ty);
+        let zero = self.llvm_ctx.int(0).val();
+        let one = self.llvm_ctx.int(1).val();
+        let gen_ptr_ptr = self.ir.gep(storage_ty, storage, &[zero, zero]);
+        let val_ptr = self.ir.gep(storage_ty, storage, &[zero, one]);
+        self.ir
+            .store(gen_ptr_ptr, self.llvm_ctx.ty_ptr().null().val());
+        let value = LLVMStackValue {
+            ty,
+            value: val_ptr,
+            gen_ptr: gen_ptr_ptr,
+            alloca: storage,
+        };
+        self.values.push(value);
+        value
     }
 
     fn create_signature(&mut self, func: &iiv::fun::Function<'i>) -> llvm::Function<'ll> {
@@ -460,26 +618,12 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
     }
 
     fn val(&mut self, val: iiv::RawValue) -> LLVMValue<'ll, 'i> {
-        self.values[val.0 as usize]
+        self.values[val.0 as usize].value()
     }
 
     fn get(&mut self, val: iiv::RawValue) -> llvm::Value<'ll> {
         let var = self.val(val);
         self.load(var)
-    }
-
-    fn get_int(&mut self, val: u64) -> LLVMValue<'ll, 'i> {
-        LLVMValue {
-            value: self.on_the_stack(self.llvm_ctx.int(val).val()),
-            ty: self.ctx.type_pool.get_int(),
-        }
-    }
-
-    fn get_bool(&mut self, val: bool) -> LLVMValue<'ll, 'i> {
-        LLVMValue {
-            value: self.on_the_stack(self.llvm_ctx.boolean(val).val()),
-            ty: self.ctx.type_pool.get_int(),
-        }
     }
 
     fn load(&mut self, val: LLVMValue<'ll, 'i>) -> llvm::Value<'ll> {
@@ -491,12 +635,9 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         self.ir.store(ptr.value, val);
     }
 
-    fn read(&mut self, val: LLVMValue<'ll, 'i>) -> LLVMValue<'ll, 'i> {
+    fn read(&mut self, val: LLVMValue<'ll, 'i>) {
         let raw_val = self.load(val);
-        LLVMValue {
-            ty: val.ty,
-            value: self.on_the_stack(raw_val),
-        }
+        self.on_the_stack(raw_val, val.ty);
     }
 
     fn llvm_ty(&self, ty: TypeRef<'i>) -> llvm::Type<'ll> {
@@ -520,7 +661,11 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             Type::Builtin(BuiltinType::Int) => self.llvm_ctx.ty_int(),
             Type::Builtin(BuiltinType::Null) => self.llvm_ctx.create_named_ty("null", &[]),
             Type::Builtin(BuiltinType::Bool) => self.llvm_ctx.ty_bool(),
-            Type::Ref(_) => self.llvm_ctx.ty_ptr(),
+            Type::Ref(_) => {
+                let int_ty = self.llvm_ctx.ty_int();
+                let ptr_ty = self.llvm_ctx.ty_ptr();
+                self.llvm_ctx.struct_ty(&[int_ty, ptr_ty, ptr_ty])
+            }
             Type::Struct(props) => {
                 let prop_types: Vec<_> = props.iter().map(|prop| self.llvm_ty(prop.1)).collect();
                 self.llvm_ctx.struct_ty(&prop_types)
@@ -543,7 +688,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
 
                 if let Some(largest) = largest {
                     let llvm_int = self.llvm_ctx.ty_int();
-                    self.llvm_ctx.struct_ty(&[llvm_int, largest])
+                    self.llvm_ctx.struct_ty(&[llvm_int, llvm_int, largest])
                 } else {
                     self.llvm_ty(self.ctx.type_pool.get_null())
                 }

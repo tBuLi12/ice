@@ -54,11 +54,12 @@ extern "C" {
         name_len: u32,
     ) -> i32;
 
-    fn ctxGetInt(ctx: *mut LLVMCtxData, val: u64) -> *mut ConstantData;
+    fn ctxGetInt(ctx: *mut LLVMCtxData, val: u32) -> *mut ConstantData;
     fn ctxGetBool(ctx: *mut LLVMCtxData, val: bool) -> *mut ConstantData;
     fn ctxGetTyInt(ctx: *mut LLVMCtxData) -> *mut TypeData;
     fn ctxGetTyBool(ctx: *mut LLVMCtxData) -> *mut TypeData;
     fn ctxGetTyPtr(ctx: *mut LLVMCtxData) -> *mut TypeData;
+    fn ctxGetTyVoid(ctx: *mut LLVMCtxData) -> *mut TypeData;
     fn ctxCreateStructTy(
         ctx: *mut LLVMCtxData,
         name: *const u8,
@@ -153,6 +154,8 @@ extern "C" {
         funOptManager: *mut FunctionOptManagerData,
         func: *mut FunctionData,
     );
+
+    fn tyNullVal(ty: *mut TypeData) -> *mut ConstantData;
 }
 
 pub struct LLVMCtx {
@@ -221,7 +224,7 @@ impl LLVMCtx {
         }
     }
 
-    pub fn int<'ll>(&'ll self, value: u64) -> Constant<'ll> {
+    pub fn int<'ll>(&'ll self, value: u32) -> Constant<'ll> {
         Constant {
             ptr: unsafe { ctxGetInt(self.ptr, value) },
             _marker: PhantomData,
@@ -252,6 +255,13 @@ impl LLVMCtx {
     pub fn ty_ptr<'ll>(&'ll self) -> Type<'ll> {
         Type {
             ptr: unsafe { ctxGetTyPtr(self.ptr) },
+            _marker: PhantomData,
+        }
+    }
+
+    pub fn ty_void<'ll>(&'ll self) -> Type<'ll> {
+        Type {
+            ptr: unsafe { ctxGetTyVoid(self.ptr) },
             _marker: PhantomData,
         }
     }
@@ -352,6 +362,15 @@ impl<'ll> Constant<'ll> {
         Value {
             _marker: PhantomData,
             ptr: self.ptr as *mut ValueData,
+        }
+    }
+}
+
+impl<'ll> Type<'ll> {
+    pub fn null(self) -> Constant<'ll> {
+        Constant {
+            _marker: PhantomData,
+            ptr: unsafe { tyNullVal(self.ptr) },
         }
     }
 }
