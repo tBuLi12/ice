@@ -44,12 +44,7 @@ impl<'i> Display for Function<'i> {
         match &self.body {
             Body::Sealed(blocks) => {
                 for (block_index, block) in blocks.iter().enumerate() {
-                    writeln!(
-                        f,
-                        "b{} {}:",
-                        block_index,
-                        fmt::List(&mut block.params.iter())
-                    )?;
+                    writeln!(f, "b{} {}:", block_index, fmt::List(block.params.iter()))?;
                     i += block.params.len();
                     for inst in &block.instructions {
                         print_inst(f, &mut i, inst);
@@ -62,7 +57,7 @@ impl<'i> Display for Function<'i> {
                         f,
                         "b{} {}:",
                         block_index,
-                        fmt::List(&mut block.params.iter().map(|(ty, _)| ty))
+                        fmt::List(block.params.iter().map(|(ty, _)| ty))
                     )?;
                     i += block.params.len();
                     for (inst, _) in &block.instructions {
@@ -185,20 +180,20 @@ fn print_inst(
                 "    br %{} ? b{} {} : b{} {}",
                 lhs.0,
                 yes.0,
-                fmt::List(&mut yes_args.iter()),
+                fmt::List(yes_args.iter()),
                 no.0,
-                fmt::List(&mut no_args.iter()),
+                fmt::List(no_args.iter()),
             )?;
         }
         Instruction::Switch(lhs, targets) => {
             write!(f, "    switch %{} [", lhs.0,)?;
             for (label, args) in targets {
-                write!(f, "b{} {}, ", label.0, fmt::List(&mut args.iter()))?;
+                write!(f, "b{} {}, ", label.0, fmt::List(args.iter()))?;
             }
             writeln!(f, "]")?;
         }
         Instruction::Jump(label, args) => {
-            writeln!(f, "    jmp b{} {}", label.0, fmt::List(&mut args.iter()))?;
+            writeln!(f, "    jmp b{} {}", label.0, fmt::List(args.iter()))?;
         }
         Instruction::Return(val) => {
             writeln!(f, "    return %{}", val.0)?;

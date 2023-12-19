@@ -1,13 +1,9 @@
-use crate::{fun, pool::FuncRef, ty::TypeRef, Elem, Instruction, Label, Prop, RawValue, Value};
-
-pub struct FunctionBuilder<'i> {
-    ty_pool: &'i crate::ty::Pool<'i>,
-    blocks: Vec<UnsealedBlock<'i>>,
-    types: Vec<TypeRef<'i>>,
-    current_block: usize,
-    arg_count: usize,
-    next_free_id: u16,
-}
+use crate::{
+    fun::{self, Body, Function},
+    pool::FuncRef,
+    ty::TypeRef,
+    Elem, Instruction, Label, Prop, RawValue, Value,
+};
 
 #[derive(Clone, Debug)]
 pub struct UnsealedBlock<'i> {
@@ -26,38 +22,43 @@ pub struct BlockRef {
     idx: usize,
 }
 
-impl<'i> FunctionBuilder<'i> {
-    pub fn new(pool: &'i crate::ty::Pool<'i>) -> Self {
-        FunctionBuilder {
+impl<'f, 'i: 'f> Cursor<'f, 'i> {
+    pub fn new(pool: &'i crate::ty::Pool<'i>, func: &'f mut Function<'i>) -> Self {
+        let blocks = match &mut func.body {
+            Body::Sealed(_) => panic!("cannot create a cursor to a sealed function"),
+            Body::Unsealed(blocks) => blocks,
+        };
+
+        Cursor {
+            sig: &func.sig,
             ty_pool: pool,
-            blocks: vec![UnsealedBlock {
-                params: vec![],
-                instructions: vec![],
-            }],
-            arg_count: 0,
+            body: blocks,
             current_block: 0,
-            next_free_id: 0,
-            types: vec![],
+            current_inst: 0,
+            types: &mut func.ty_cache,
         }
     }
 
     fn next_id(&mut self) -> RawValue {
-        let id = self.next_free_id;
-        self.next_free_id += 1;
-        RawValue(id)
+        let id = self.types.len();
+        RawValue(id as u16)
     }
 
     fn push_value_instruction(&mut self, inst: Instruction<'i>, ty: TypeRef<'i>) -> RawValue {
         let id = self.next_id();
-        self.blocks[self.current_block]
+        self.body[self.current_block]
             .instructions
-            .push((inst, id.0));
+            .insert(self.current_inst, (inst, id.0));
+        self.current_inst += 1;
         self.types.push(ty);
         id
     }
 
     fn push_instruction(&mut self, inst: Instruction<'i>) {
-        self.blocks[self.current_block].instructions.push((inst, 0));
+        self.body[self.current_block]
+            .instructions
+            .insert(self.current_inst, (inst, 0));
+        self.current_inst += 1;
     }
 
     pub fn add(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
@@ -109,18 +110,9 @@ impl<'i> FunctionBuilder<'i> {
 
     pub fn block_param(&mut self, ty: TypeRef<'i>) -> Value<'i> {
         let raw = self.next_id();
-        self.blocks[self.current_block].params.push((ty, raw.0));
+        self.body[self.current_block].params.push((ty, raw.0));
         self.types.push(ty);
         Value { ty, raw }
-    }
-
-    pub fn param(&mut self, ty: TypeRef<'i>) -> Value<'i> {
-        self.arg_count += 1;
-        self.types.push(ty);
-        Value {
-            ty,
-            raw: self.next_id(),
-        }
     }
 
     pub fn call(&mut self, func: FuncRef<'i>, args: &[Value<'i>]) -> Value<'i> {
@@ -275,8 +267,8 @@ impl<'i> FunctionBuilder<'i> {
     }
 
     pub fn create_block(&mut self) -> BlockRef {
-        let idx = self.blocks.len();
-        self.blocks.push(UnsealedBlock {
+        let idx = self.body.len();
+        self.body.push(UnsealedBlock {
             instructions: vec![],
             params: vec![],
         });
@@ -347,14 +339,14 @@ impl<'i> FunctionBuilder<'i> {
         }
     }
 
-    pub fn build(mut self) -> (Vec<Block<'i>>, Vec<TypeRef<'i>>, usize) {
-        let mut inst_indices = vec![0u16; self.next_free_id as usize];
+    pub fn build(self) -> (Vec<Block<'i>>, Vec<TypeRef<'i>>, usize) {
+        let mut inst_indices = vec![0u16; self.types.len()];
 
-        let mut block_indices = vec![None; self.blocks.len()];
+        let mut block_indices = vec![None; self.body.len()];
 
         let mut new_block_order = vec![0];
 
-        Self::add_successors(&self.blocks, &self.blocks[0], &mut |idx| {
+        Self::add_successors(&self.body, &self.body[0], &mut |idx| {
             if block_indices[idx].is_none() {
                 block_indices[idx] = Some(new_block_order.len());
                 new_block_order.push(idx);
@@ -362,7 +354,7 @@ impl<'i> FunctionBuilder<'i> {
         });
 
         let mut current = 0;
-        for i in 0..self.arg_count {
+        for i in 0..self.sig.params.len() {
             inst_indices[current as usize] = i as u16;
             current += 1;
         }
@@ -370,7 +362,7 @@ impl<'i> FunctionBuilder<'i> {
         let mut new_types = vec![];
 
         for &block_idx in &new_block_order {
-            let block = &self.blocks[block_idx];
+            let block = &self.body[block_idx];
             for (_, idx) in &block.params {
                 inst_indices[*idx as usize] = current;
                 current += 1;
@@ -386,7 +378,7 @@ impl<'i> FunctionBuilder<'i> {
         }
 
         for &block_idx in &new_block_order {
-            let block = &mut self.blocks[block_idx];
+            let block = &mut self.body[block_idx];
             for (inst, _) in &mut block.instructions {
                 match inst {
                     Instruction::Int(_) | Instruction::Bool(_) => {}
@@ -462,7 +454,7 @@ impl<'i> FunctionBuilder<'i> {
             .into_iter()
             .map(|block_idx| {
                 let block = std::mem::replace(
-                    &mut self.blocks[block_idx],
+                    &mut self.body[block_idx],
                     UnsealedBlock {
                         instructions: vec![],
                         params: vec![],
@@ -544,7 +536,11 @@ impl<'i> UnsealedBlock<'i> {
     }
 }
 
-struct Cursor<'i, 'f> {
+struct Cursor<'f, 'i: 'f> {
     sig: &'f fun::Signature<'i>,
     body: &'f mut Vec<UnsealedBlock<'i>>,
+    ty_pool: &'i crate::ty::Pool<'i>,
+    types: &'f mut Vec<TypeRef<'i>>,
+    current_block: usize,
+    current_inst: usize,
 }
