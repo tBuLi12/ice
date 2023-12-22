@@ -2,18 +2,20 @@ use std::{collections::HashMap, ops::Deref};
 
 use ast::{
     BindPattern, BindingType, BlockItem, Expr, Ident, Module, NarrowTypePattern, Pattern,
-    PatternBody, PropsTy, Spanned,
+    PatternBody, PropsTy, Spanned, TypeDecl,
 };
 use iiv::{
     builder::BlockRef,
     diagnostics, err,
-    fun::{Function, Signature},
-    move_check,
-    pool::FuncRef,
+    fun::Function,
+    pool::{self, FuncRef, TyDeclRef},
     str::Str,
-    ty::{PropRef, Type, TypeOverlap, TypeRef},
-    Ctx, Package, Prop, Span, Value,
+    ty::{PropRef, Type, TypeRef},
+    ty_decl, Ctx, Package, Prop, Span, Value,
 };
+use ty::InferenceCtx;
+
+use crate::ty::TypeOverlap;
 
 mod ty;
 
@@ -21,22 +23,43 @@ pub struct Generator<'i> {
     global_scope: HashMap<Str<'i>, Object<'i>>,
     ty: &'i iiv::ty::Pool<'i>,
     fun_pool: &'i iiv::pool::FunPool<'i>,
+    ty_decl_pool: &'i iiv::pool::TyDeclPool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
 }
 
 struct Scope<'i> {
     index: HashMap<Str<'i>, Object<'i>>,
     values: Vec<Value<'i>>,
+    next_free_ty_param_idx: usize,
 }
 
-pub struct FunctionGenerator<'i, 'g> {
+impl<'i> Scopes<'i> {
+    pub fn define(&mut self, name: &Ident<'i>, object: Object<'i>) {
+        let scope = self.inner.last_mut().unwrap();
+        if let Object::Place(val, _, _) = &object {
+            scope.values.push(*val);
+        }
+        if scope.index.insert(name.value, object).is_some() {
+            self.messages
+                .add(err!(&name.span, "{} is defined multiple times", name.value))
+        }
+    }
+}
+
+struct Scopes<'i> {
+    inner: Vec<Scope<'i>>,
+    messages: &'i iiv::diagnostics::Diagnostics,
+}
+
+pub struct FunctionGenerator<'f, 'i, 'g> {
     global_scope: &'g HashMap<Str<'i>, Object<'i>>,
-    scopes: Vec<Scope<'i>>,
+    scopes: Scopes<'i>,
     ty: &'i iiv::ty::Pool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
     constant_depth: usize,
     ret_type: Option<TypeRef<'i>>,
-    iiv: iiv::builder::FunctionBuilder<'i>,
+    iiv: iiv::builder::Cursor<'f, 'i>,
+    inf_ctx: InferenceCtx<'i>,
 }
 
 impl<'i> Generator<'i> {
@@ -45,6 +68,7 @@ impl<'i> Generator<'i> {
             global_scope: HashMap::new(),
             ty: &ctx.type_pool,
             fun_pool: &ctx.fun_pool,
+            ty_decl_pool: &ctx.ty_decl_pool,
             messages: &ctx.diagnostcs,
         }
     }
@@ -55,52 +79,68 @@ impl<'i> Generator<'i> {
         self.global_scope
             .insert(self.ty.str_pool.get("bool"), self.ty.get_ty_bool().obj());
 
+        let types = &modules[0].types;
+        let mut package_types = vec![];
+
+        for ty_node in types {
+            let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""));
+            let mut fun_gen = FunctionGenerator::new(&self, &mut fun);
+
+            fun_gen.begin_scope();
+            for param in &ty_node.type_params {
+                fun_gen.new_ty_param(&param.name);
+            }
+
+            let ty = ty_decl::TypeDecl {
+                proto: fun_gen.check_type(&ty_node.proto),
+                ty_params: vec![()],
+                name: ty_node.name.value,
+            };
+            fun_gen.end_scope();
+
+            let ty = self.ty_decl_pool.insert(ty);
+
+            self.global_scope
+                .insert(ty_node.name.value, Object::TypeDecl(ty));
+            package_types.push(ty);
+        }
+
         let funcs = &modules[0].functions;
 
         let mut package_funs = vec![];
         for fun_node in funcs {
-            let mut fun_gen = FunctionGenerator::new(&self);
+            let mut fun = Function::empty(self.ty, fun_node.signature.name.value);
 
-            let fun = self.fun_pool.insert(Function {
-                sig: Signature {
-                    name: fun_node.signature.name.value,
-                    params: self.ty.get_ty_list(
-                        fun_node
-                            .signature
-                            .params
-                            .iter()
-                            .map(|param| fun_gen.check_type(&param.ty))
-                            .collect(),
-                    ),
-                    ret_ty: fun_node
-                        .signature
-                        .return_ty
-                        .as_ref()
-                        .map(|expr| fun_gen.check_type(&expr))
-                        .unwrap_or_else(|| self.ty.get_null()),
-                },
-                body: vec![],
-                ty_cache: vec![],
-                value_count: 0,
-            });
+            let mut fun_gen = FunctionGenerator::new(&self, &mut fun);
+
+            fun_gen.begin_scope();
+            for param in &fun_node.signature.type_params {
+                fun_gen.new_ty_param(&param.name);
+            }
+            fun_gen.set_signature(&fun_node.signature);
+            fun_gen.end_scope();
 
             let name = fun_node.signature.name.value;
 
-            self.global_scope.insert(name, Object::Fun(fun));
+            let fun = self.fun_pool.insert(fun);
+
+            self.global_scope.insert(name, Object::FunDecl(fun));
             package_funs.push(fun);
         }
 
         for (&fun, fun_node) in package_funs.iter().zip(funcs) {
-            let gen = FunctionGenerator::new(&self);
-            gen.emit_function_body(&mut *fun.borrow_mut(), fun_node);
+            let mut fun = fun.borrow_mut();
+            let gen = FunctionGenerator::new(&self, &mut *fun);
+            gen.emit_function_body(fun_node);
         }
 
-        let main =
-            if let Some(Object::Fun(main)) = self.global_scope.get(&self.ty.str_pool.get("main")) {
-                Some(*main)
-            } else {
-                None
-            };
+        let main = if let Some(Object::FunDecl(main)) =
+            self.global_scope.get(&self.ty.str_pool.get("main"))
+        {
+            Some(*main)
+        } else {
+            None
+        };
 
         Package {
             funcs: package_funs,
@@ -109,46 +149,64 @@ impl<'i> Generator<'i> {
     }
 }
 
-impl<'i, 'g> FunctionGenerator<'i, 'g> {
-    pub fn new(parent: &'g Generator<'i>) -> Self {
+impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
+    pub fn new(parent: &'g Generator<'i>, func: &'f mut Function<'i>) -> Self {
         Self {
             global_scope: &parent.global_scope,
-            scopes: Vec::new(),
+            scopes: Scopes {
+                inner: Vec::new(),
+                messages: parent.messages,
+            },
             ty: &parent.ty,
             messages: &parent.messages,
             constant_depth: 0,
             ret_type: None,
-            iiv: iiv::builder::FunctionBuilder::new(parent.ty),
+            iiv: iiv::builder::Cursor::new(parent.ty, func),
+            inf_ctx: InferenceCtx::new(parent.ty, parent.messages),
         }
     }
 
-    fn emit_function_body(
-        mut self,
-        fun: &mut iiv::fun::Function<'i>,
-        fun_node: &ast::Function<'i>,
-    ) {
+    fn set_signature(&mut self, sig_node: &ast::Signature<'i>) {
+        let params = self.ty.get_ty_list(
+            sig_node
+                .params
+                .iter()
+                .map(|param| self.check_type(&param.ty))
+                .collect(),
+        );
+        self.iiv.set_params(params);
+        let ret_ty = sig_node
+            .return_ty
+            .as_ref()
+            .map(|expr| self.check_type(&expr))
+            .unwrap_or_else(|| self.ty.get_null());
+        self.iiv.set_ret_ty(ret_ty);
+    }
+
+    fn emit_function_body(mut self, fun_node: &ast::Function<'i>) {
+        let sig = self.iiv.current_signature();
+        let ret_ty = sig.ret_ty;
+        let name = sig.name;
         self.begin_scope();
 
-        for (&ty, param) in fun.sig.params.iter().zip(&fun_node.signature.params) {
-            let param_value = self.iiv.param(ty);
-            self.define(param.name.value, Object::Place(param_value, ty, vec![]));
+        for param in &fun_node.signature.type_params {
+            self.new_ty_param(&param.name);
+        }
+        for (param, ast_param) in self.iiv.params().zip(&fun_node.signature.params) {
+            self.scopes
+                .define(&ast_param.name, Object::Place(param, param.ty, vec![]));
         }
 
-        self.ret_type = Some(fun.sig.ret_ty);
+        self.ret_type = Some(ret_ty);
 
+        self.iiv.create_block();
         let body = self.check_val(&fun_node.body);
-        let body = self.ensure_ty(&fun_node.body.span(), fun.sig.ret_ty, body);
+        let body = self.ensure_ty(&fun_node.body.span(), ret_ty, body);
+        println!("exiting func {} {}", &*name, body.raw.0);
         let body = self.move_val(body);
-        println!("exiting func {}", &*fun.sig.name);
+        println!("exiting func {} {}", &*name, body.raw.0);
         self.end_scope();
         self.iiv.ret(body);
-
-        if self.messages.ok() {
-            let (blocks, types, inst_count) = self.iiv.build();
-            fun.body = blocks;
-            fun.value_count = inst_count;
-            fun.ty_cache = types;
-        }
     }
 
     fn check_val(&mut self, expr: &Expr<'i>) -> Value<'i> {
@@ -176,13 +234,17 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     }
 
     fn ensure_ty(&mut self, span: &Span, ty: TypeRef<'i>, value: Value<'i>) -> Value<'i> {
-        if value.ty != ty {
+        if !self.inf_ctx.eq(span, ty, value.ty) {
             match (&*value.ty, &*ty) {
                 (Type::Variant(props1), Type::Variant(props2)) => {
-                    if props1
-                        .iter()
-                        .all(|prop| props2.iter().find(|prop2| prop == *prop2).is_some())
-                    {
+                    let mut eq = self.inf_ctx.try_eq();
+                    if props1.iter().all(|prop| {
+                        props2
+                            .iter()
+                            .find(|prop2| prop.0 == prop2.0 && eq.eq(prop.1, prop2.1))
+                            .is_some()
+                    }) {
+                        eq.commit(span);
                         return self.iiv.variant_cast(ty, value);
                     };
                 }
@@ -199,7 +261,7 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
         'outer: for &ty in types {
             for &member in unqiue.iter() {
-                match dbg!(ty.intersects(member)) {
+                match self.inf_ctx.get_intersection(ty, member) {
                     TypeOverlap::Complete => continue 'outer,
                     TypeOverlap::Partial => {
                         self.msg(err!(
@@ -264,8 +326,12 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     ) {
         match &pattern.body {
             PatternBody::Bind(BindPattern { binding_type, name }) => match binding_type {
-                BindingType::Var => self.define(name.value, Object::Place(value, value.ty, vec![])),
-                BindingType::Let => self.define(name.value, Object::Place(value, value.ty, vec![])),
+                BindingType::Var => self
+                    .scopes
+                    .define(name, Object::Place(value, value.ty, vec![])),
+                BindingType::Let => self
+                    .scopes
+                    .define(name, Object::Place(value, value.ty, vec![])),
                 _ => unimplemented!(),
             },
             PatternBody::NarrowType(NarrowTypePattern { inner, ty }) => {
@@ -408,10 +474,14 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
                 };
                 self.copy(result)
             }
+            Object::TypeDecl(ty_decl) => {
+                self.msg(err!(span, "expected a value, found type {}", ty_decl.name));
+                self.invalid()
+            }
             Object::Type(ty) => self.iiv.ty_expr(ty),
             Object::Condition(_raw) => panic!("unexpected condition returned"),
-            Object::Fun(_) => {
-                err!(span, "expected a value, found function");
+            Object::Fun(_, _) | Object::FunDecl(_) => {
+                self.msg(err!(span, "expected a value, found function"));
                 self.invalid()
             }
         }
@@ -428,19 +498,54 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             //     self.ty.get_ty_invalid()
             // }
             Object::Value(val) | Object::Place(val, _, _) => {
-                if val.ty == self.ty.get_ty_type() {
-                    self.ty.get_ty_constant(val.raw)
-                } else {
-                    err!(span, "expected a type, found constant of type {}", val.ty);
-                    self.ty.get_ty_invalid()
-                }
-            }
-            Object::Type(ty) => ty,
-            Object::Condition(_) => panic!("unexpedted condition"),
-            Object::Fun(_) => {
-                err!(span, "expected a type, found function");
+                // if val.ty == self.ty.get_ty_type() {
+                //     self.ty.get_ty_constant(val.raw)
+                // } else {
+                // }
+                self.msg(err!(
+                    span,
+                    "expected a type, found value of type {}",
+                    val.ty
+                ));
                 self.ty.get_ty_invalid()
             }
+            Object::TypeDecl(ty_decl) => self.ty.get_ty_named(
+                ty_decl,
+                ty_decl
+                    .ty_params
+                    .iter()
+                    .map(|_| self.inf_ctx.new_var())
+                    .collect(),
+            ),
+            Object::Type(ty) => ty,
+            Object::Condition(_) => panic!("unexpedted condition"),
+            Object::Fun(_, _) | Object::FunDecl(_) => {
+                self.msg(err!(span, "expected a type, found function"));
+                self.ty.get_ty_invalid()
+            }
+        }
+    }
+
+    fn get_callable(
+        &mut self,
+        span: &Span,
+        obj: Object<'i>,
+    ) -> Option<(FuncRef<'i>, pool::List<'i, TypeRef<'i>>)> {
+        match obj {
+            Object::Condition(_) => panic!("unexpedted condition"),
+            Object::Fun(func, ty_args) => Some((func, ty_args)),
+            Object::FunDecl(func) => Some((
+                func,
+                self.ty.get_ty_list(
+                    func.borrow()
+                        .sig
+                        .ty_params
+                        .iter()
+                        .map(|_| self.inf_ctx.new_var())
+                        .collect(),
+                ),
+            )),
+            _ => None,
         }
     }
 
@@ -630,7 +735,8 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
             }
             Expr::Match(_match) => unimplemented!(),
             Expr::Call(call) => {
-                if let Object::Fun(fun_ref) = self.check(&call.lhs, None) {
+                let obj = self.check(&call.lhs, None);
+                if let Some((fun_ref, ty_args)) = self.get_callable(&call.lhs.span(), obj) {
                     let fun = fun_ref.borrow();
 
                     if fun.sig.params.len() != call.args.len() {
@@ -645,10 +751,14 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
 
                     for (i, (arg, &param)) in args.iter_mut().zip(fun.sig.params.iter()).enumerate()
                     {
-                        *arg = self.ensure_ty(&call.args[i].span(), param, *arg);
+                        *arg = self.ensure_ty(
+                            &call.args[i].span(),
+                            self.ty.resolve_ty_args(param, &ty_args),
+                            *arg,
+                        );
                     }
 
-                    self.iiv.call(fun_ref, &args).obj()
+                    self.iiv.call(fun_ref, &args, ty_args).obj()
                 } else {
                     self.msg(err!(&call.lhs.span(), "expected a callable"));
                     self.invalid().obj()
@@ -819,31 +929,31 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     }
 }
 
-impl<'i, 'g> FunctionGenerator<'i, 'g> {
+impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     fn begin_scope(&mut self) {
-        self.scopes.push(Scope {
+        let next_free_ty_param_idx = self
+            .scopes
+            .inner
+            .last()
+            .map(|scope| scope.next_free_ty_param_idx)
+            .unwrap_or(0);
+
+        self.scopes.inner.push(Scope {
             index: HashMap::new(),
             values: vec![],
+            next_free_ty_param_idx,
         });
     }
 
     fn end_scope(&mut self) {
-        let Scope { values, .. } = self.scopes.pop().unwrap();
+        let Scope { values, .. } = self.scopes.inner.pop().unwrap();
         for val in values {
             self.drop(val);
         }
     }
 
-    fn define(&mut self, name: Str<'i>, object: Object<'i>) {
-        let scope = self.scopes.last_mut().unwrap();
-        if let Object::Place(val, _, _) = &object {
-            scope.values.push(*val);
-        }
-        scope.index.insert(name, object);
-    }
-
     fn resolve(&mut self, name: &Ident) -> Object<'i> {
-        for scope in &self.scopes {
+        for scope in &self.scopes.inner {
             if let Some(obj) = scope.index.get(&name.value) {
                 return obj.clone();
             }
@@ -865,6 +975,16 @@ impl<'i, 'g> FunctionGenerator<'i, 'g> {
     fn resolve_val(&mut self, name: &Ident) -> Value<'i> {
         let obj = self.resolve(name);
         self.get_val(&name.span, obj)
+    }
+
+    fn new_ty_param(&mut self, name: &Ident<'i>) -> TypeRef<'i> {
+        let scope = &mut self.scopes.inner.last_mut().unwrap();
+        let ty_param = self.ty.get_ty_constant(scope.next_free_ty_param_idx);
+        scope.next_free_ty_param_idx += 1;
+
+        self.scopes.define(name, Object::Type(ty_param));
+
+        ty_param
     }
 }
 
@@ -891,6 +1011,8 @@ enum Object<'i> {
     Value(Value<'i>),
     Place(Value<'i>, TypeRef<'i>, Vec<u8>),
     Type(TypeRef<'i>),
-    Fun(FuncRef<'i>),
+    TypeDecl(TyDeclRef<'i>),
+    Fun(FuncRef<'i>, pool::List<'i, TypeRef<'i>>),
+    FunDecl(FuncRef<'i>),
     Condition(usize),
 }

@@ -15,6 +15,8 @@ pub struct Lexer<'i, R> {
 
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 pub enum Keyword {
+    Type,
+    Data,
     Fun,
     If,
     Else,
@@ -34,6 +36,8 @@ pub enum Punctuation {
     RParen,
     LBrace,
     RBrace,
+    LBracket,
+    RBracket,
     Comma,
     Colon,
     Period,
@@ -129,6 +133,8 @@ impl<'i, R: io::Read> Lexer<'i, R> {
         let span = self.current_span().extend_back(ident.len() as u32);
 
         Some(match &ident[..] {
+            "data" => Token::Keyword(Keyword::Data, span),
+            "type" => Token::Keyword(Keyword::Type, span),
             "fun" => Token::Keyword(Keyword::Fun, span),
             "if" => Token::Keyword(Keyword::If, span),
             "else" => Token::Keyword(Keyword::Else, span),
@@ -202,6 +208,8 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             ')' => RParen,
             '{' => LBrace,
             '}' => RBrace,
+            '[' => LBracket,
+            ']' => RBracket,
             ':' => Colon,
             ';' => Semicolon,
             ',' => Comma,

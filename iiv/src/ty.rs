@@ -1,7 +1,7 @@
 use std::{fmt, ops::Deref};
 
 use crate::{
-    pool::{self, List},
+    pool::{self, List, TyDeclRef},
     str::{Str, StrPool},
     RawValue,
 };
@@ -69,9 +69,10 @@ pub enum Type<'i> {
     Union(List<'i, TypeRef<'i>>),
     Variant(List<'i, PropRef<'i>>),
     Ref(TypeRef<'i>),
-    // Named(Named<'i>),
+    Named(TyDeclRef<'i>, List<'i, TypeRef<'i>>, TypeRef<'i>),
     Type(ShapeRef<'i>),
-    Constant(RawValue),
+    Constant(usize),
+    InferenceVar(usize),
     Builtin(BuiltinType), // Named(Named<'i>),
     Invalid,
 }
@@ -184,8 +185,62 @@ impl<'i> Pool<'i> {
         )
     }
 
-    pub fn get_ty_constant(&'i self, val: RawValue) -> TypeRef<'i> {
-        TypeRef(self.ty_pool.get(Type::Constant(val)))
+    pub fn get_ty_named(&'i self, decl: TyDeclRef<'i>, args: Vec<TypeRef<'i>>) -> TypeRef<'i> {
+        let proto = self.resolve_ty_args(decl.proto, &args);
+        TypeRef(
+            self.ty_pool
+                .get(Type::Named(decl, self.ty_list_pool.get(args), proto)),
+        )
+    }
+
+    pub fn get_ty_constant(&'i self, idx: usize) -> TypeRef<'i> {
+        TypeRef(self.ty_pool.get(Type::Constant(idx)))
+    }
+
+    pub fn get_ty_inference_var(&'i self, idx: usize) -> TypeRef<'i> {
+        TypeRef(self.ty_pool.get(Type::InferenceVar(idx)))
+    }
+
+    pub fn resolve_ty_args(&'i self, ty: TypeRef<'i>, args: &[TypeRef<'i>]) -> TypeRef<'i> {
+        match &*ty {
+            Type::Invalid | Type::Builtin(_) => ty,
+            Type::Tuple(fields) => self.get_tuple(
+                fields
+                    .iter()
+                    .map(|&ty| self.resolve_ty_args(ty, args))
+                    .collect(),
+            ),
+            Type::Struct(props) => self.get_struct(
+                props
+                    .iter()
+                    .map(|&prop| self.get_prop(prop.0 .0, self.resolve_ty_args(prop.1, args)))
+                    .collect(),
+            ),
+            Type::Vector(elem) => unimplemented!(),
+            Type::Union(fields) => self.get_union(
+                fields
+                    .iter()
+                    .map(|&ty| self.resolve_ty_args(ty, args))
+                    .collect(),
+            ),
+            Type::Variant(props) => self.get_variant(
+                props
+                    .iter()
+                    .map(|&prop| self.get_prop(prop.0 .0, self.resolve_ty_args(prop.1, args)))
+                    .collect(),
+            ),
+            Type::Ref(pointee) => self.get_ref(self.resolve_ty_args(*pointee, args)),
+            Type::Named(decl, ty_args, proto) => self.get_ty_named(
+                *decl,
+                ty_args
+                    .iter()
+                    .map(|&ty| self.resolve_ty_args(ty, args))
+                    .collect(),
+            ),
+            Type::Type(_ty) => unimplemented!(),
+            Type::Constant(idx) => args[*idx],
+            Type::InferenceVar(val) => panic!("type variable out of context"),
+        }
     }
 }
 
@@ -214,87 +269,12 @@ impl<'i> TypeRef<'i> {
         }
     }
 
-    pub fn intersects(self, other: TypeRef<'i>) -> TypeOverlap {
-        match (&*self.0, &*other.0) {
-            (Type::Builtin(types), Type::Builtin(types2)) => {
-                if types == types2 {
-                    TypeOverlap::Complete
-                } else {
-                    TypeOverlap::None
-                }
-            }
-            (Type::Tuple(types), Type::Tuple(types2)) => overlap_list(*types, *types2),
-            (Type::Struct(props), Type::Struct(props2)) => overlap_props(*props, *props2),
-            (Type::Vector(ty), Type::Vector(ty2)) => ty.intersects(*ty2),
-            (Type::Union(ty), Type::Union(ty2)) => overlap_list(*ty, *ty2),
-            (Type::Variant(props), Type::Variant(props2)) => overlap_props(*props, *props2),
-            (Type::Ref(ty), Type::Ref(ty2)) => ty.intersects(*ty2),
-            (Type::Type(s1), Type::Type(s2)) => {
-                if s1 == s2 {
-                    TypeOverlap::Complete
-                } else {
-                    TypeOverlap::None
-                }
-            }
-            (Type::Constant(val), Type::Constant(val2)) => {
-                if val == val2 {
-                    TypeOverlap::Complete
-                } else {
-                    TypeOverlap::Partial
-                }
-            }
-            // the rest is listed explicitly to cause errors when more kinds are added, instead of silently returning None
-            (Type::Invalid, _)
-            | (Type::Tuple(_), _)
-            | (Type::Struct(_), _)
-            | (Type::Vector(_), _)
-            | (Type::Union(_), _)
-            | (Type::Variant(_), _)
-            | (Type::Ref(_), _)
-            | (Type::Type(_), _)
-            | (Type::Constant(_), _)
-            | (Type::Builtin(_), _) => TypeOverlap::None,
-        }
-    }
-
     pub fn has_primitive_repr(self) -> bool {
         match *self {
             Type::Ref(_) | Type::Constant(_) | Type::Builtin(_) => true,
             _ => false,
         }
     }
-}
-
-fn overlap_props(p1: List<'_, PropRef<'_>>, p2: List<'_, PropRef<'_>>) -> TypeOverlap {
-    if p1.len() != p2.len() {
-        return TypeOverlap::None;
-    }
-    p1.iter()
-        .zip(p2.iter())
-        .map(|(&p1, &p2)| {
-            if p1.0 .0 != p2.0 .0 {
-                return TypeOverlap::None;
-            }
-            p1.0 .1.intersects(p2.0 .1)
-        })
-        .fold(TypeOverlap::Complete, std::cmp::min)
-}
-
-fn overlap_list(t1: List<'_, TypeRef<'_>>, t2: List<'_, TypeRef<'_>>) -> TypeOverlap {
-    if t1.len() != t2.len() {
-        return TypeOverlap::None;
-    }
-    t1.iter()
-        .zip(t2.iter())
-        .map(|(&p1, &p2)| p1.intersects(p2))
-        .fold(TypeOverlap::Complete, std::cmp::min)
-}
-
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum TypeOverlap {
-    None,
-    Partial,
-    Complete,
 }
 
 impl<'i> fmt::Display for TypeRef<'i> {
@@ -331,8 +311,17 @@ impl<'i> fmt::Display for TypeRef<'i> {
                 write!(f, "}}")
             }
             Type::Ref(pointee) => write!(f, "ref {}", pointee),
+            Type::Named(decl, args, _) => {
+                write!(
+                    f,
+                    "{}[{}]",
+                    decl.name,
+                    crate::diagnostics::fmt::List(args.iter())
+                )
+            }
             Type::Type(_ty) => write!(f, "type"),
-            Type::Constant(val) => write!(f, "T{}", val.0),
+            Type::Constant(val) => write!(f, "T{}", val),
+            Type::InferenceVar(val) => write!(f, "InfVar{}", val),
             Type::Builtin(BuiltinType::Bool) => write!(f, "bool"),
             Type::Builtin(BuiltinType::Int) => write!(f, "int"),
             Type::Builtin(BuiltinType::Null) => write!(f, "null"),

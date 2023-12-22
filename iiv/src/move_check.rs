@@ -1,8 +1,8 @@
 use crate::{
-    builder::{Block, UnsealedBlock},
+    builder::{self, Block, BlockRef, UnsealedBlock},
     fun::{self, Function},
     ty::{Type, TypeRef},
-    Elem, Instruction, Prop, RawValue,
+    Ctx, Elem, Instruction, Prop, RawValue,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,18 +52,16 @@ impl State {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VarState {
     flags: Vec<State>,
-    next_inst_idx: usize,
 }
 
 impl VarState {
-    fn set_next(&mut self) {
-        self.flags[self.next_inst_idx] = State::Live;
-        println!("making {} live", self.next_inst_idx);
-        self.next_inst_idx += 1;
+    fn set(&mut self, idx: usize) {
+        self.flags[idx] = State::Live;
+        println!("making {} live", idx);
     }
 
-    fn next_is_dead(&self) -> bool {
-        &self.flags[self.next_inst_idx] == &State::Dead
+    fn is_dead(&self, idx: usize) -> bool {
+        &self.flags[idx] == &State::Dead
     }
 
     fn unset(&mut self, val: RawValue) {
@@ -86,10 +84,9 @@ impl VarState {
                 (prop, State::Kindof(states)) => {
                     state = &states[*prop as usize];
                 }
-                _ => panic!("OOF"),
             }
         }
-        match &self.flags[val.0 as usize] {
+        match state {
             State::Live => true,
             _ => false,
         }
@@ -186,7 +183,7 @@ impl VarState {
         self.flags[val.0 as usize].collapse();
     }
 
-    fn process_inst(&mut self, inst: &Instruction<'_>, ty_idx: &[TypeRef<'_>]) {
+    fn process_inst(&mut self, inst: &Instruction<'_>, idx: usize, ty_idx: &[TypeRef<'_>]) {
         match inst {
             Instruction::Int(_) | Instruction::Bool(_) => {}
             Instruction::Add(lhs, rhs)
@@ -234,27 +231,22 @@ impl VarState {
 
             // do
             Instruction::Jump(_, vals)
-            | Instruction::Call(_, vals)
+            | Instruction::Call(_, vals, _)
             | Instruction::Tuple(vals, _) => {
                 for val in vals {
                     self.unset(*val);
                 }
             }
-            Instruction::Branch(lhs, _, yes_args, _, no_args) => {
+            Instruction::Branch(lhs, _, _, args) => {
                 self.unset(*lhs);
-                for val in yes_args {
-                    self.unset(*val);
-                }
-                for val in no_args {
+                for val in args {
                     self.unset(*val);
                 }
             }
-            Instruction::Switch(idx, targets) => {
+            Instruction::Switch(idx, labels, args) => {
                 self.unset(*idx);
-                for (_, args) in targets {
-                    for val in args {
-                        self.unset(*val);
-                    }
+                for arg in args {
+                    self.unset(*arg);
                 }
             }
 
@@ -264,7 +256,7 @@ impl VarState {
         }
         if inst.creates_value() {
             println!("set_next by {:?}", inst);
-            self.set_next();
+            self.set(idx);
         }
     }
 
@@ -277,7 +269,7 @@ impl VarState {
     }
 }
 
-pub fn check(func: &mut Function) {
+pub fn check<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
     let body = match &mut func.body {
         fun::Body::Sealed(_) => panic!("move check on sealed body"),
         fun::Body::Unsealed(unsealed) => unsealed,
@@ -302,11 +294,11 @@ pub fn check(func: &mut Function) {
         })
         .collect();
 
-    dbg!(&starting_idx);
+    dbg!(&func.ty_cache.len());
+    dbg!(&func.sig.name);
 
     let mut first = VarState {
-        flags: vec![State::Dead; func.value_count],
-        next_inst_idx: func.sig.params.len(),
+        flags: vec![State::Dead; func.ty_cache.len()],
     };
 
     for i in 0..func.sig.params.len() {
@@ -320,8 +312,6 @@ pub fn check(func: &mut Function) {
         let old_state = states[next].clone().unwrap();
         let mut new_state = process(&body[next], old_state, &func.ty_cache);
         for successor in body[next].successors() {
-            new_state.next_inst_idx = starting_idx[successor];
-
             if let Some(state) = &mut states[successor] {
                 if state.merge(new_state.clone()) {
                     stack.push(successor);
@@ -347,10 +337,7 @@ pub fn check(func: &mut Function) {
     }
     let mut block_idx = 0;
     for (block, state) in body.iter().zip(states.iter()) {
-        println!(
-            "verifying block {block_idx}, at {}",
-            state.as_ref().unwrap().next_inst_idx
-        );
+        println!("verifying block {block_idx}");
         let after = verify(
             block,
             state.as_ref().unwrap().clone(),
@@ -370,12 +357,16 @@ pub fn check(func: &mut Function) {
         block_idx += 1;
     }
 
-    for (block, state) in body.iter_mut().zip(states.iter()) {
+    for (i, state) in states.iter().enumerate() {
+        let mut cursor = builder::Cursor::new(&ctx.type_pool, func);
+        println!("selecting block: {}", i);
+        cursor.select(BlockRef { idx: i });
+        cursor.goto_block_start();
         DropResolver {
             state: state.as_ref().unwrap().clone(),
-            instructions: vec![],
+            cursor,
         }
-        .resolve(block, &func.ty_cache);
+        .resolve();
     }
 }
 
@@ -400,12 +391,12 @@ fn print_state(state: &State, i: usize, depth: usize) {
 }
 
 fn process(block: &UnsealedBlock<'_>, mut state: VarState, ty_idx: &[TypeRef<'_>]) -> VarState {
-    for _ in &block.params {
+    for (_, idx) in &block.params {
         println!("set_next by block_param");
-        state.set_next();
+        state.set(*idx as usize);
     }
-    for (inst, _) in &block.instructions {
-        state.process_inst(inst, ty_idx);
+    for (inst, idx) in &block.instructions {
+        state.process_inst(inst, *idx as usize, ty_idx);
     }
     state
 }
@@ -416,12 +407,12 @@ fn verify(
     states: &[Option<VarState>],
     ty_idx: &[TypeRef<'_>],
 ) -> VarState {
-    for _ in &block.params {
+    for (_, idx) in &block.params {
         println!("set_next by block_param2");
-        state.set_next();
+        state.set(*idx as usize);
     }
 
-    for (inst, _) in &block.instructions {
+    for (inst, idx) in &block.instructions {
         let valid = match inst {
             Instruction::Int(_) | Instruction::Bool(_) => true,
             Instruction::Add(lhs, rhs)
@@ -469,7 +460,7 @@ fn verify(
 
             // do
             Instruction::Jump(_, vals)
-            | Instruction::Call(_, vals)
+            | Instruction::Call(_, vals, _)
             | Instruction::Tuple(vals, _) => {
                 let mut valid = true;
                 for val in vals {
@@ -477,22 +468,17 @@ fn verify(
                 }
                 valid
             }
-            Instruction::Branch(lhs, _, yes_args, _, no_args) => {
+            Instruction::Branch(lhs, _, _, args) => {
                 let mut valid = state.is_valid(*lhs);
-                for val in yes_args {
-                    valid = valid && state.is_valid(*val);
-                }
-                for val in no_args {
+                for val in args {
                     valid = valid && state.is_valid(*val);
                 }
                 valid
             }
-            Instruction::Switch(idx, targets) => {
+            Instruction::Switch(idx, labels, args) => {
                 let mut valid = state.is_valid(*idx);
-                for (_, args) in targets {
-                    for val in args {
-                        valid = valid && state.is_valid(*val);
-                    }
+                for arg in args {
+                    valid = valid && state.is_valid(*arg);
                 }
                 valid
             }
@@ -502,20 +488,17 @@ fn verify(
         };
         if !valid {
             if inst.creates_value() {
-                eprintln!("use after move -> %{} = {:?}", state.next_inst_idx, inst);
+                eprintln!("use after move -> %{} = {:?}", idx, inst);
             } else {
                 eprintln!("use after move -> {:?}", inst);
             }
             panic!("use after move.");
         }
-        if inst.creates_value() && !state.next_is_dead() {
-            eprintln!(
-                "reinit of undropped value -> %{} = {:?}",
-                state.next_inst_idx, inst
-            );
+        if inst.creates_value() && !state.is_dead(*idx as usize) {
+            eprintln!("reinit of undropped value -> %{} = {:?}", idx, inst);
             panic!("invalid reinit");
         }
-        state.process_inst(inst, ty_idx);
+        state.process_inst(inst, *idx as usize, ty_idx);
     }
 
     for successor in block.successors() {
@@ -539,68 +522,80 @@ fn verify(
     state
 }
 
-struct DropResolver<'i> {
+struct DropResolver<'f, 'i: 'f> {
     state: VarState,
-    instructions: Vec<Instruction<'i>>,
+    cursor: builder::Cursor<'f, 'i>,
 }
 
-impl<'i> DropResolver<'i> {
-    fn invalidate(&mut self, val: RawValue, path: Option<Vec<u8>>, ty_idx: &[TypeRef<'_>]) {
-        self.instructions
-            .push(Instruction::Invalidate(val, path.clone()));
-
-        let mut base_ty = ty_idx[val.0 as usize];
-        let (mut path, mut ty) = if let Some(path) = path {
-            let mut ty = base_ty;
-            for elem in &path {
-                ty = ty.elem(*elem).unwrap();
-            }
-            (path, ty)
+impl<'f, 'i: 'f> DropResolver<'f, 'i> {
+    fn invalidate(&mut self, val: RawValue, path: Option<Vec<u8>>, base_ty: TypeRef<'i>) {
+        let state = self.state.flags[val.0 as usize].clone();
+        let path = if let Some(path) = path {
+            path
         } else {
-            if let Type::Variant(_) = &*base_ty {
-                self.instructions
-                    .push(Instruction::Invalidate(val, Some(vec![])));
-            }
-            (vec![], base_ty)
+            self.cursor.invalidate(val, None);
+            vec![]
         };
 
-        match &*ty {
-            Type::Struct(fields) => {}
-            Type::Variant(elems) => {}
-            _ => {}
-        }
+        self.invalidate_if_needed(val, path, base_ty, &state)
     }
 
-    fn invalidate_if_needed(&mut self, val: RawValue, path: Vec<u8>, ty: TypeRef<'i>) {
-        match &*ty {
-            Type::Struct(fields) => {
+    fn invalidate_if_needed(
+        &mut self,
+        val: RawValue,
+        path: Vec<u8>,
+        ty: TypeRef<'i>,
+        state: &State,
+    ) {
+        match (&*ty, state) {
+            (_, State::Dead) => {
+                return;
+            }
+            (Type::Struct(fields), State::Live) => {
                 for (i, field) in fields.iter().enumerate() {
                     let i = i as u8;
                     let mut path = path.clone();
                     path.push(i);
-                    self.invalidate_if_needed(val, path, ty.elem(i).unwrap());
+                    self.invalidate_if_needed(val, path, field.1, &State::Live);
                 }
             }
-            Type::Variant(elems) => {
-                self.instructions
-                    .push(Instruction::Invalidate(val, Some(path.clone())));
+            (Type::Struct(fields), State::Kindof(field_states)) => {
+                for (i, field) in fields.iter().enumerate() {
+                    let mut path = path.clone();
+                    path.push(i as u8);
+                    self.invalidate_if_needed(val, path, field.1, &field_states[i]);
+                }
+            }
+            (Type::Variant(elems), state) => {
+                let state = if let State::Kindof(elem_states) = state {
+                    &elem_states[0]
+                } else {
+                    &State::Live
+                };
+                self.cursor.invalidate(val, Some(path.clone()));
 
-                let discriminant = RawValue(unimplemented!());
-                for (i, field) in elems.iter().enumerate() {
+                let merge_block = self.cursor.split();
+                let discriminant = self.cursor.discriminant(crate::Value { ty, raw: val });
+                let blocks: Vec<_> = elems.iter().map(|_| self.cursor.create_block()).collect();
+                self.cursor.switch(discriminant, &blocks);
+                for (i, (&block, elem)) in blocks.iter().zip(elems.iter()).enumerate() {
+                    self.cursor.select(block);
                     let i = i as u8;
                     let mut path = path.clone();
                     path.push(i);
-                    self.invalidate_if_needed(val, path, ty.elem(i).unwrap());
+                    self.invalidate_if_needed(val, path, elem.1, state);
+                    self.cursor.jump(merge_block, &[]);
                 }
+                self.cursor.select(merge_block);
+                self.cursor.goto_block_start();
             }
             _ => {}
         }
     }
 
-    fn resolve(&mut self, block: &mut UnsealedBlock, ty_idx: &[TypeRef<'i>]) {
-        let mut new_instructions = vec![];
-        for (inst, _) in &block.instructions {
-            match inst {
+    fn resolve(&mut self) {
+        loop {
+            match self.cursor.get_current_inst() {
                 Instruction::Int(_) | Instruction::Bool(_) => {}
                 Instruction::Add(lhs, rhs)
                 | Instruction::Sub(lhs, rhs)
@@ -612,29 +607,32 @@ impl<'i> DropResolver<'i> {
                 | Instruction::Lt(lhs, rhs)
                 | Instruction::GtEq(lhs, rhs)
                 | Instruction::LtEq(lhs, rhs) => {
-                    self.invalidate(*lhs, None, ty_idx);
-                    self.invalidate(*rhs, None, ty_idx);
+                    let rhs = *rhs;
+                    let lhs_ty = self.cursor.type_of(*lhs);
+                    let rhs_ty = self.cursor.type_of(rhs);
+                    self.invalidate(*lhs, None, lhs_ty);
+                    self.invalidate(rhs, None, rhs_ty);
                 }
 
                 // not sure
                 Instruction::Assign(lhs, path, rhs) => {
-                    self.invalidate(*rhs, None, ty_idx);
+                    let rhs_ty = self.cursor.type_of(*rhs);
+                    self.invalidate(*rhs, None, rhs_ty);
                 }
 
                 Instruction::GetElemRef(val, path) | Instruction::CopyElem(val, path) => {}
 
                 Instruction::MoveElem(val, path) => {
-                    let ty = ty_idx[val.0 as usize];
+                    let mut ty = self.cursor.type_of(*val);
                     let mut invalidation_path = None;
-                    let mut offset = 0;
                     for (i, elem) in path.iter().enumerate() {
                         match &*ty {
                             Type::Struct(props) => {
-                                offset += 1;
+                                ty = props[*elem as usize].1;
                             }
                             Type::Variant(elems) => {
-                                invalidation_path = Some(&path[..offset]);
-                                offset += 1;
+                                ty = elems[*elem as usize].1;
+                                invalidation_path = Some(&path[..i]);
                             }
                             _ => {
                                 panic!("oof");
@@ -642,7 +640,7 @@ impl<'i> DropResolver<'i> {
                         }
                     }
 
-                    self.invalidate(*val, invalidation_path.map(|path| path.to_vec()), ty_idx);
+                    self.invalidate(*val, invalidation_path.map(|path| path.to_vec()), ty);
                 }
 
                 // don't
@@ -657,45 +655,49 @@ impl<'i> DropResolver<'i> {
                 | Instruction::Variant(_, _, val)
                 | Instruction::VariantCast(_, val)
                 | Instruction::Not(val) => {
-                    self.invalidate(*val, None, ty_idx);
+                    let mut ty = self.cursor.type_of(*val);
+                    self.invalidate(*val, None, ty);
                 }
 
                 // do
                 Instruction::Jump(_, vals)
-                | Instruction::Call(_, vals)
+                | Instruction::Call(_, vals, _)
                 | Instruction::Tuple(vals, _) => {
+                    let vals = vals.clone();
                     for val in vals {
-                        self.invalidate(*val, None, ty_idx);
+                        let ty = self.cursor.type_of(val);
+                        self.invalidate(val, None, ty);
                     }
                 }
-                Instruction::Branch(lhs, _, yes_args, _, no_args) => {
-                    self.invalidate(*lhs, None, ty_idx);
-                    for val in yes_args {
-                        self.invalidate(*val, None, ty_idx);
-                    }
-                    for val in no_args {
-                        self.invalidate(*val, None, ty_idx);
+                Instruction::Branch(lhs, _, _, args) => {
+                    let args = args.clone();
+                    let lhs_ty = self.cursor.type_of(*lhs);
+                    self.invalidate(*lhs, None, lhs_ty);
+                    for val in args {
+                        let ty = self.cursor.type_of(val);
+                        self.invalidate(val, None, ty);
                     }
                 }
-                Instruction::Switch(idx, targets) => {
-                    self.invalidate(*idx, None, ty_idx);
-                    for (_, args) in targets {
-                        for val in args {
-                            self.invalidate(*val, None, ty_idx);
-                        }
+                Instruction::Switch(idx, _, args) => {
+                    let args = args.clone();
+                    let idx_ty = self.cursor.type_of(*idx);
+                    self.invalidate(*idx, None, idx_ty);
+                    for val in args {
+                        let ty = self.cursor.type_of(val);
+                        self.invalidate(val, None, ty);
                     }
                 }
                 Instruction::Drop(val) => {
-                    self.invalidate(*val, None, ty_idx);
+                    let ty = self.cursor.type_of(*val);
+                    self.invalidate(*val, None, ty);
                 }
                 Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
                     panic!("invalid instruction")
                 }
             };
-
-            new_instructions.push((inst.clone(), 0));
+            if !self.cursor.advance() {
+                break;
+            }
         }
-
-        block.instructions = new_instructions;
     }
 }

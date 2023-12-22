@@ -1,6 +1,10 @@
 use std::{cell::UnsafeCell, collections::HashMap};
 
-use iiv::{pool::FuncRef, ty::TypeRef};
+use iiv::{
+    fun::Body,
+    pool::{FuncRef, List},
+    ty::TypeRef,
+};
 
 pub struct Backend<'i> {
     ctx: &'i iiv::Ctx<'i>,
@@ -32,6 +36,7 @@ impl<'i> Backend<'i> {
             blocks: vec![],
             llvm_ty_cache: vec![],
             builtins,
+            current_ty_args: self.ctx.type_pool.get_ty_list(vec![]),
         };
 
         ir_gen
@@ -109,23 +114,24 @@ pub struct IRGen<'ll, 'i> {
     phis: Vec<FuturePhi<'ll>>,
     values: Vec<LLVMStackValue<'ll, 'i>>,
     blocks: Vec<llvm::Block<'ll>>,
-    funcs: HashMap<FuncRef<'i>, llvm::Function<'ll>>,
-    work_stack: Vec<FuncRef<'i>>,
+    funcs: HashMap<(FuncRef<'i>, List<'i, TypeRef<'i>>), llvm::Function<'ll>>,
+    work_stack: Vec<(FuncRef<'i>, List<'i, TypeRef<'i>>)>,
     ctx: &'i iiv::Ctx<'i>,
     llvm_ctx: &'ll llvm::LLVMCtx,
     llvm_ty_cache: Vec<UnsafeCell<CachedType<'ll>>>,
     builtins: Builtints<'ll>,
+    current_ty_args: List<'i, TypeRef<'i>>,
 }
 
 impl<'ll, 'i> IRGen<'ll, 'i> {
     pub fn emit_main(&mut self, func: &iiv::fun::Function<'i>) {
-        let main = self.create_signature(func);
+        let main = self.create_signature(func, self.ctx.type_pool.get_ty_list(vec![]));
         self.write_body(func, main);
 
         while let Some(func) = self.work_stack.pop() {
             let llvm_func = self.funcs.get(&func).unwrap();
-            dbg!(func.borrow().sig.name);
-            self.write_body(&*func.borrow(), *llvm_func);
+            dbg!(func.0.borrow().sig.name);
+            self.write_body(&*func.0.borrow(), *llvm_func);
         }
     }
 
@@ -134,7 +140,11 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         self.values.clear();
         self.blocks.clear();
 
-        for _ in &func.body {
+        let Body::Sealed(body) = &func.body else {
+            panic!("codegen on unsealed body!")
+        };
+
+        for _ in body {
             let llvm_block = self.llvm_ctx.create_block();
             llvm_func.append(llvm_block);
             self.blocks.push(llvm_block);
@@ -148,7 +158,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             self.on_the_stack(arg, ty);
         }
 
-        for (i, block) in func.body.iter().enumerate() {
+        for (i, block) in body.iter().enumerate() {
             let llvm_block = self.blocks[i];
             self.ir.set_insert_point(llvm_block);
             self.emit_block(block, i);
@@ -226,11 +236,21 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 iiv::Instruction::Lt(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
-                iiv::Instruction::Call(fun, args) => {
+                iiv::Instruction::Call(fun, args, ty_args) => {
                     let ret_ty = fun.borrow().sig.ret_ty;
                     let mut raw_args = Vec::new();
 
-                    let func = self.get_or_create_fn(*fun);
+                    let ty_args = self.ctx.type_pool.get_ty_list(
+                        ty_args
+                            .iter()
+                            .map(|&ty| {
+                                self.ctx
+                                    .type_pool
+                                    .resolve_ty_args(ty, &self.current_ty_args)
+                            })
+                            .collect(),
+                    );
+                    let func = self.get_or_create_fn(*fun, ty_args);
 
                     raw_args.extend(args.iter().map(|arg| self.get(*arg)));
 
@@ -293,19 +313,21 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
 
                     self.make_ref(value);
                 }
-                iiv::Instruction::Branch(lhs, yes, yes_args, no, no_args) => {
-                    let yes_args: Vec<_> = yes_args.iter().map(|arg| self.get(*arg)).collect();
-                    let no_args: Vec<_> = no_args.iter().map(|arg| self.get(*arg)).collect();
+                iiv::Instruction::Branch(lhs, yes_label, no_label, args) => {
+                    let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
                     let cond = self.get(*lhs);
 
-                    self.apply_block_args(yes, &yes_args);
-                    self.apply_block_args(yes, &no_args);
+                    self.apply_block_args(yes_label, &args);
+                    self.apply_block_args(no_label, &args);
 
                     self.ir.condbr(
                         cond,
-                        self.blocks[yes.0 as usize],
-                        self.blocks[no.0 as usize],
+                        self.blocks[yes_label.0 as usize],
+                        self.blocks[no_label.0 as usize],
                     );
+                }
+                iiv::Instruction::Switch(lhs, labels, args) => {
+                    unimplemented!()
                 }
                 iiv::Instruction::Jump(label, args) => {
                     let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
@@ -594,7 +616,12 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         value
     }
 
-    fn create_signature(&mut self, func: &iiv::fun::Function<'i>) -> llvm::Function<'ll> {
+    fn create_signature(
+        &mut self,
+        func: &iiv::fun::Function<'i>,
+        ty_args: List<'i, TypeRef<'i>>,
+    ) -> llvm::Function<'ll> {
+        let old_ty_args = std::mem::replace(&mut self.current_ty_args, ty_args);
         let ret_ty = self.llvm_ty(func.sig.ret_ty);
         let params: Vec<_> = func
             .sig
@@ -602,18 +629,30 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             .iter()
             .map(|&param| self.llvm_ty(param))
             .collect();
+        self.current_ty_args = old_ty_args;
 
-        let llvm_func = self.module.create_func(&func.sig.name, &params, ret_ty);
+        let name = format!(
+            "{}[{}]",
+            func.sig.name,
+            iiv::diagnostics::fmt::List(ty_args.iter())
+        );
+
+        let llvm_func = self.module.create_func(&name, &params, ret_ty);
         llvm_func
     }
 
-    fn get_or_create_fn(&mut self, func: FuncRef<'i>) -> llvm::Function<'ll> {
-        if let Some(llvm_func) = self.funcs.get(&func) {
+    fn get_or_create_fn(
+        &mut self,
+        func: FuncRef<'i>,
+        ty_args: List<'i, TypeRef<'i>>,
+    ) -> llvm::Function<'ll> {
+        if let Some(llvm_func) = self.funcs.get(&(func, ty_args)) {
             return *llvm_func;
         }
-        let llvm_func = self.create_signature(&*func.borrow());
-        self.funcs.insert(func, llvm_func);
-        self.work_stack.push(func);
+        let llvm_func = self.create_signature(&*func.borrow(), ty_args);
+        self.funcs.insert((func, ty_args), llvm_func);
+
+        self.work_stack.push((func, ty_args));
         llvm_func
     }
 
@@ -674,6 +713,14 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 let field_types: Vec<_> = fields.iter().map(|field| self.llvm_ty(*field)).collect();
                 self.llvm_ctx.struct_ty(&field_types)
             }
+            Type::Named(decl, args, proto) => {
+                let name = format!(
+                    "{}[{}]",
+                    decl.name,
+                    iiv::diagnostics::fmt::List(args.iter())
+                );
+                self.llvm_ctx.create_named_ty(&name, &[self.llvm_ty(proto)])
+            }
             Type::Vector(_) => {
                 unimplemented!()
             }
@@ -696,6 +743,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             Type::Invalid => panic!("size_of invalid type"),
             Type::Type(_) => panic!("invalid type - type"),
             Type::Constant(_) => panic!("invalid type - constant"),
+            Type::InferenceVar(_) => panic!("invalid type - inf var"),
         };
 
         let cached_type = unsafe { &mut *self.llvm_ty_cache[idx].get() };

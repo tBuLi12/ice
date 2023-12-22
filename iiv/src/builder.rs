@@ -1,6 +1,7 @@
 use crate::{
-    fun::{self, Body, Function},
-    pool::FuncRef,
+    diagnostics::fmt::List,
+    fun::{self, Body, Function, Signature},
+    pool::{self, FuncRef},
     ty::TypeRef,
     Elem, Instruction, Label, Prop, RawValue, Value,
 };
@@ -19,7 +20,7 @@ pub struct Block<'i> {
 
 #[derive(Clone, Copy)]
 pub struct BlockRef {
-    idx: usize,
+    pub idx: usize,
 }
 
 impl<'f, 'i: 'f> Cursor<'f, 'i> {
@@ -30,13 +31,33 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         };
 
         Cursor {
-            sig: &func.sig,
+            sig: &mut func.sig,
             ty_pool: pool,
             body: blocks,
             current_block: 0,
             current_inst: 0,
             types: &mut func.ty_cache,
         }
+    }
+
+    pub fn current_signature(&self) -> &'_ &'f mut Signature<'i> {
+        &self.sig
+    }
+
+    pub fn set_params(&mut self, params: pool::List<'i, TypeRef<'i>>) {
+        self.sig.params = params;
+        *self.types = params.to_vec();
+    }
+
+    pub fn params(&self) -> impl Iterator<Item = Value<'i>> + '_ {
+        self.sig.params.iter().zip(0..).map(|(&ty, val)| Value {
+            ty,
+            raw: RawValue(val),
+        })
+    }
+
+    pub fn set_ret_ty(&mut self, ty: TypeRef<'i>) {
+        self.sig.ret_ty = ty;
     }
 
     fn next_id(&mut self) -> RawValue {
@@ -115,12 +136,20 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         Value { ty, raw }
     }
 
-    pub fn call(&mut self, func: FuncRef<'i>, args: &[Value<'i>]) -> Value<'i> {
-        let ret_ty = func.borrow().sig.ret_ty;
+    pub fn call(
+        &mut self,
+        func: FuncRef<'i>,
+        args: &[Value<'i>],
+        ty_args: pool::List<'i, TypeRef<'i>>,
+    ) -> Value<'i> {
+        let ret_ty = self
+            .ty_pool
+            .resolve_ty_args(func.borrow().sig.ret_ty, &ty_args);
+
         Value {
             ty: ret_ty,
             raw: self.push_value_instruction(
-                Instruction::Call(func, args.iter().map(|arg| arg.raw).collect()),
+                Instruction::Call(func, args.iter().map(|arg| arg.raw).collect(), ty_args),
                 ret_ty,
             ),
         }
@@ -154,6 +183,9 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     }
 
     pub fn move_prop(&mut self, value: Value<'i>, prop: u8, prop_ty: TypeRef<'i>) -> Value<'i> {
+        if &*self.sig.name == "add" {
+            panic!("BRUH");
+        }
         Value {
             ty: prop_ty,
             raw: self.push_value_instruction(Instruction::MoveElem(value.raw, vec![prop]), prop_ty),
@@ -232,8 +264,15 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         self.push_instruction(Instruction::Branch(
             condition.raw,
             Label(true_label.idx as u16),
-            vec![],
             Label(false_label.idx as u16),
+            vec![],
+        ));
+    }
+
+    pub fn switch(&mut self, idx: Value<'i>, labels: &[BlockRef]) {
+        self.push_instruction(Instruction::Switch(
+            idx.raw,
+            labels.iter().map(|l| Label(l.idx as u16)).collect(),
             vec![],
         ));
     }
@@ -266,6 +305,15 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         }
     }
 
+    pub fn invalidate(&mut self, value: RawValue, path: Option<Vec<u8>>) {
+        println!(
+            "adding an invalidate, at {}",
+            self.body[self.current_block].instructions.len()
+        );
+
+        self.push_instruction(Instruction::Invalidate(value, path));
+    }
+
     pub fn create_block(&mut self) -> BlockRef {
         let idx = self.body.len();
         self.body.push(UnsealedBlock {
@@ -277,6 +325,7 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
 
     pub fn select(&mut self, block: BlockRef) {
         self.current_block = block.idx;
+        self.current_inst = self.body[block.idx].instructions.len();
     }
 
     pub fn ret(&mut self, val: Value<'i>) {
@@ -302,10 +351,47 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         }
     }
 
+    pub fn goto_block_start(&mut self) {
+        self.current_inst = 0;
+    }
+
     pub fn get_current_block(&self) -> BlockRef {
         BlockRef {
             idx: self.current_block,
         }
+    }
+
+    pub fn get_current_inst(&self) -> &Instruction<'i> {
+        println!("{} {}", self.current_block, self.current_inst);
+        &self.body[self.current_block].instructions[self.current_inst].0
+    }
+
+    pub fn advance(&mut self) -> bool {
+        let res = if self.current_inst < self.body[self.current_block].instructions.len() {
+            self.current_inst += 1;
+            self.current_inst != self.body[self.current_block].instructions.len()
+        } else {
+            false
+        };
+        println!("advancing {}", res);
+        res
+    }
+
+    pub fn type_of(&self, val: RawValue) -> TypeRef<'i> {
+        self.types[val.0 as usize]
+    }
+
+    pub fn split(&mut self) -> BlockRef {
+        println!("splitting...");
+        let idx = self.body.len();
+        let block = &mut self.body[self.current_block];
+        let instructions = block.instructions.drain(self.current_inst..).collect();
+        self.body.push(UnsealedBlock {
+            instructions,
+            params: vec![],
+        });
+
+        BlockRef { idx }
     }
 
     fn add_successors<'a>(
@@ -319,7 +405,7 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
                 add(label.0 as usize);
                 Self::add_successors(blocks, new_block, add);
             }
-            Some((Instruction::Branch(cond, yes_label, yes_args, no_label, no_args), _)) => {
+            Some((Instruction::Branch(cond, yes_label, no_label, args), _)) => {
                 let new_block = &blocks[yes_label.0 as usize];
                 add(yes_label.0 as usize);
                 Self::add_successors(blocks, new_block, add);
@@ -327,8 +413,8 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
                 add(no_label.0 as usize);
                 Self::add_successors(blocks, new_block, add);
             }
-            Some((Instruction::Switch(idx, tagets), _)) => {
-                for (label, _) in tagets {
+            Some((Instruction::Switch(idx, labels, args), _)) => {
+                for label in labels {
                     let new_block = &blocks[label.0 as usize];
                     add(label.0 as usize);
                     Self::add_successors(blocks, new_block, add);
@@ -410,7 +496,7 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
                         val.0 = inst_indices[val.0 as usize];
                     }
 
-                    Instruction::Call(_, vals) | Instruction::Tuple(vals, _) => {
+                    Instruction::Call(_, vals, _) | Instruction::Tuple(vals, _) => {
                         for val in vals {
                             val.0 = inst_indices[val.0 as usize];
                         }
@@ -421,24 +507,21 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
                             val.0 = inst_indices[val.0 as usize];
                         }
                     }
-                    Instruction::Branch(lhs, yes_label, yes_args, no_label, no_args) => {
+                    Instruction::Branch(lhs, yes_label, no_label, args) => {
                         yes_label.0 = block_indices[yes_label.0 as usize].unwrap() as u16;
                         no_label.0 = block_indices[no_label.0 as usize].unwrap() as u16;
                         lhs.0 = inst_indices[lhs.0 as usize];
-                        for val in yes_args {
-                            val.0 = inst_indices[val.0 as usize];
-                        }
-                        for val in no_args {
+                        for val in args {
                             val.0 = inst_indices[val.0 as usize];
                         }
                     }
-                    Instruction::Switch(lhs, targets) => {
+                    Instruction::Switch(lhs, labels, args) => {
                         lhs.0 = inst_indices[lhs.0 as usize];
-                        for (label, args) in targets {
+                        for label in labels {
                             label.0 = block_indices[label.0 as usize].unwrap() as u16;
-                            for val in args {
-                                val.0 = inst_indices[val.0 as usize];
-                            }
+                        }
+                        for val in args {
+                            val.0 = inst_indices[val.0 as usize];
                         }
                     }
                     Instruction::Ty(_) => {}
@@ -501,13 +584,13 @@ impl<'i> Instruction<'i> {
             | Instruction::Ty(_)
             | Instruction::Not(_)
             | Instruction::Tuple(_, _)
-            | Instruction::Call(_, _)
+            | Instruction::Call(_, _, _)
             | Instruction::Null
             | Instruction::LtEq(_, _) => true,
 
             Instruction::Jump(_, _)
-            | Instruction::Branch(_, _, _, _, _)
-            | Instruction::Switch(_, _)
+            | Instruction::Branch(_, _, _, _)
+            | Instruction::Switch(_, _, _)
             | Instruction::Return(_)
             | Instruction::Invalidate(_, _)
             | Instruction::CallDrop(_, _)
@@ -520,15 +603,12 @@ impl<'i> UnsealedBlock<'i> {
     pub fn successors(&self) -> impl Iterator<Item = usize> {
         match self.instructions.last() {
             Some((Instruction::Jump(label, _args), _)) => vec![*label].into_iter(),
-            Some((Instruction::Branch(_, yes_label, _, no_label, _), _)) => {
+            Some((Instruction::Branch(_, yes_label, no_label, _), _)) => {
                 vec![*no_label, *yes_label].into_iter()
             }
-            Some((Instruction::Switch(_, targets), _)) => targets
-                .iter()
-                .rev()
-                .map(|(label, _)| *label)
-                .collect::<Vec<_>>()
-                .into_iter(),
+            Some((Instruction::Switch(_, labels, _), _)) => {
+                labels.iter().rev().copied().collect::<Vec<_>>().into_iter()
+            }
             Some((Instruction::Return(_), _)) => vec![].into_iter(),
             _ => panic!("invalid terminator!"),
         }
@@ -536,8 +616,8 @@ impl<'i> UnsealedBlock<'i> {
     }
 }
 
-struct Cursor<'f, 'i: 'f> {
-    sig: &'f fun::Signature<'i>,
+pub struct Cursor<'f, 'i: 'f> {
+    sig: &'f mut fun::Signature<'i>,
     body: &'f mut Vec<UnsealedBlock<'i>>,
     ty_pool: &'i crate::ty::Pool<'i>,
     types: &'f mut Vec<TypeRef<'i>>,

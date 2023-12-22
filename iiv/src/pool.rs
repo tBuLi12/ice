@@ -9,7 +9,11 @@ use std::{
     ptr, slice,
 };
 
-use crate::{fun, str::Str};
+use crate::{
+    fun,
+    str::Str,
+    ty_decl::{self, TypeDecl},
+};
 
 struct PinnedVec<T> {
     // This is probably UB when the enclosing pool cell is mutably borrowed, because the slice is owned - use ptrs
@@ -314,7 +318,6 @@ impl<'i> Hash for FuncRef<'i> {
 
 struct RawFunPool<'i> {
     storage: PinnedVec<RefCell<fun::Function<'i>>>,
-    index: HashMap<Str<'i>, FuncRef<'i>>,
 }
 
 impl<'i> PartialEq for FuncRef<'i> {
@@ -335,18 +338,12 @@ impl<'i> RawFunPool<'i> {
     pub fn new() -> Self {
         RawFunPool {
             storage: PinnedVec::new(),
-            index: HashMap::new(),
         }
     }
 
-    pub fn insert(&'i mut self, name: Str<'i>, fun: fun::Function<'i>) -> FuncRef<'i> {
+    pub fn insert(&'i mut self, fun: fun::Function<'i>) -> FuncRef<'i> {
         let fun = FuncRef(self.storage.next().write(RefCell::new(fun)));
-        self.index.insert(name, fun);
         fun
-    }
-
-    pub fn get(&mut self, name: Str<'i>) -> Option<FuncRef<'i>> {
-        self.index.get(&name).copied()
     }
 }
 
@@ -359,11 +356,29 @@ impl<'i> FunPool<'i> {
 
     pub fn insert(&'i self, fun: fun::Function<'i>) -> FuncRef<'i> {
         let inner = unsafe { &mut *self.0.get() };
-        inner.insert(fun.sig.name, fun)
+        inner.insert(fun)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TyDeclRef<'i>(Ref<'i, TypeDecl<'i>>);
+
+impl<'i> Deref for TyDeclRef<'i> {
+    type Target = ty_decl::TypeDecl<'i>;
+    fn deref(&self) -> &Self::Target {
+        self.0 .0
+    }
+}
+
+pub struct TyDeclPool<'i>(UnsafeCell<PinnedVec<TypeDecl<'i>>>);
+
+impl<'i> TyDeclPool<'i> {
+    pub fn new() -> Self {
+        Self(UnsafeCell::new(PinnedVec::new()))
     }
 
-    pub fn get(&self, name: Str<'i>) -> Option<FuncRef<'i>> {
+    pub fn insert(&'i self, decl: ty_decl::TypeDecl<'i>) -> TyDeclRef<'i> {
         let inner = unsafe { &mut *self.0.get() };
-        inner.get(name)
+        TyDeclRef(Ref(inner.next().write(decl)))
     }
 }

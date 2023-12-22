@@ -1,6 +1,6 @@
 use std::{fmt::Display, fs::File};
 
-use diagnostics::Diagnostics;
+use diagnostics::{fmt::List, Diagnostics};
 use pool::FuncRef;
 use ty::TypeRef;
 
@@ -11,6 +11,7 @@ pub mod move_check;
 pub mod pool;
 pub mod str;
 pub mod ty;
+pub mod ty_decl;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
@@ -107,15 +108,15 @@ pub enum Instruction<'i> {
     Lt(RawValue, RawValue),
     GtEq(RawValue, RawValue),
     LtEq(RawValue, RawValue),
-    Call(FuncRef<'i>, Vec<RawValue>),
+    Call(FuncRef<'i>, Vec<RawValue>, pool::List<'i, TypeRef<'i>>),
     Assign(RawValue, Vec<Elem>, RawValue),
     Tuple(Vec<RawValue>, TypeRef<'i>),
     Name(TypeRef<'i>, RawValue),
     MoveElem(RawValue, Vec<u8>),
     CopyElem(RawValue, Vec<Elem>),
     GetElemRef(RawValue, Vec<Elem>),
-    Branch(RawValue, Label, Vec<RawValue>, Label, Vec<RawValue>),
-    Switch(RawValue, Vec<(Label, Vec<RawValue>)>),
+    Branch(RawValue, Label, Label, Vec<RawValue>),
+    Switch(RawValue, Vec<Label>, Vec<RawValue>),
     Jump(Label, Vec<RawValue>),
     Return(RawValue),
     Ty(TypeRef<'i>),
@@ -150,6 +151,7 @@ pub struct Source {
 pub struct Ctx<'i> {
     pub type_pool: crate::ty::Pool<'i>,
     pub fun_pool: pool::FunPool<'i>,
+    pub ty_decl_pool: pool::TyDeclPool<'i>,
     pub diagnostcs: Diagnostics,
     pub source: Source,
 }
@@ -159,6 +161,7 @@ impl<'i> Ctx<'i> {
         Ctx {
             type_pool: crate::ty::Pool::new(),
             fun_pool: pool::FunPool::new(),
+            ty_decl_pool: pool::TyDeclPool::new(),
             diagnostcs: Diagnostics::new(),
             source: Source { file, name },
         }

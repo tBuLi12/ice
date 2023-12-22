@@ -33,7 +33,7 @@ fn main() {
 
     for fun in &package.funcs {
         println!("{}", fun.borrow());
-        iiv::move_check::check(&mut *fun.borrow_mut());
+        iiv::move_check::check(&ctx, &mut *fun.borrow_mut());
         println!("{}", fun.borrow());
     }
 

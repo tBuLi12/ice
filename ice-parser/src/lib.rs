@@ -74,10 +74,17 @@ impl<'i, R: io::Read> Parser<'i, R> {
 
     pub fn parse_program(&mut self) -> Module<'i> {
         let mut funs = vec![];
+        let mut types = vec![];
         loop {
             match self.parse_function() {
                 Ok(fun) => funs.push(fun),
-                Err(ParseError::NoMatch) => break,
+                Err(ParseError::NoMatch) => match self.parse_type_decl() {
+                    Ok(type_decl) => types.push(type_decl),
+                    Err(ParseError::NoMatch) => break,
+                    Err(ParseError::InvalidSyntax(msg)) => self
+                        .messages
+                        .add(diagnostics::error(&self.current.span(), msg.to_string())),
+                },
                 Err(ParseError::InvalidSyntax(msg)) => self
                     .messages
                     .add(diagnostics::error(&self.current.span(), msg.to_string())),
@@ -92,7 +99,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
         Module {
             imports: vec![],
             functions: funs,
-            types: vec![],
+            types,
             traits: vec![],
             impls: vec![],
             trait_impls: vec![],
@@ -188,6 +195,10 @@ impl<'i, R: io::Read> Parser<'i, R> {
         self.any_parens(Punctuation::LBrace, Punctuation::RBrace, "}", fun)
     }
 
+    fn brackets<T>(&mut self, fun: impl FnOnce(&mut Self) -> Parsed<T>) -> Parsed<(T, Span)> {
+        self.any_parens(Punctuation::LBracket, Punctuation::RBracket, "]", fun)
+    }
+
     fn opt<T>(&mut self, fun: impl FnOnce(&mut Self) -> Parsed<T>) -> Parsed<Option<T>> {
         match fun(self) {
             Ok(val) => Ok(Some(val)),
@@ -199,6 +210,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
     fn parse_signature(&mut self) -> Parsed<Signature<'i>> {
         let fun = self.eat_kw(Keyword::Fun)?;
         let name = self.ident().expected("function name")?;
+        let type_params = self.parse_type_params()?;
         let ((params, _), _) = self
             .parens(|p| {
                 p.list(Punctuation::Comma, |p| {
@@ -222,7 +234,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
             params,
             return_ty,
             visibility: Visibility::Public,
-            type_params: vec![],
+            type_params,
         })
     }
 
@@ -235,6 +247,50 @@ impl<'i, R: io::Read> Parser<'i, R> {
         };
 
         Ok(Function { signature, body })
+    }
+
+    fn parse_type_params(&mut self) -> Parsed<Vec<TypeParam<'i>>> {
+        let type_params = self
+            .opt(|p| {
+                p.brackets(|p| {
+                    p.list(Punctuation::Comma, |p| {
+                        let name = p.ident()?;
+                        Ok(TypeParam {
+                            name,
+                            trait_bounds: vec![],
+                        })
+                    })
+                    .map(|(params, _)| params)
+                })
+            })?
+            .map(|(params, _)| params)
+            .unwrap_or(vec![]);
+        Ok(type_params)
+    }
+
+    fn parse_type_decl(&mut self) -> Parsed<TypeDecl<'i>> {
+        let (is_data, span) = if let Ok(span) = self.eat_kw(Keyword::Data) {
+            (true, span)
+        } else if let Ok(span) = self.eat_kw(Keyword::Type) {
+            (false, span)
+        } else {
+            return Err(ParseError::NoMatch);
+        };
+        let name = self.ident().expected("a name")?;
+
+        let type_params = self.parse_type_params()?;
+
+        let proto = self.parse_expr().expected("a prototype")?;
+
+        let span = span.to(proto.span());
+        Ok(TypeDecl {
+            name,
+            proto,
+            proto_visibility: Visibility::Public,
+            span,
+            type_params,
+            visibility: Visibility::Public,
+        })
     }
 
     fn parse_block(&mut self) -> Parsed<Expr<'i>> {

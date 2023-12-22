@@ -14,6 +14,7 @@ use cranelift::{
 use cranelift_module::{default_libcall_names, DataDescription, FuncId, Linkage, Module};
 use cranelift_object::{ObjectBuilder, ObjectModule};
 use iiv::{
+    fun::Body,
     pool::FuncRef,
     ty::{BuiltinType, TypeRef},
     Ctx, RawValue,
@@ -183,6 +184,9 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
             builder.append_block_params_for_function_params(entry);
             builder.switch_to_block(entry);
             builder.seal_block(entry);
+            let Body::Sealed(body) = &fun.body else {
+                panic!("codegen on unsealed body!")
+            };
             FunctionTransformer {
                 funs: &self.funs,
                 layouts: self.layouts,
@@ -192,7 +196,7 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
                 values: Vec::new(),
                 blocks: vec![entry],
             }
-            .gen(&fun.sig, &fun.body);
+            .gen(&fun.sig, &body);
             builder.seal_all_blocks();
             builder.finalize();
             self.module.define_function(id, &mut ctx).unwrap();
@@ -499,7 +503,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                     iiv::Instruction::Lt(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
-                    iiv::Instruction::Call(fun, args) => {
+                    iiv::Instruction::Call(fun, args, _) => {
                         let ret_ty = fun.borrow().sig.ret_ty;
                         let return_via_pointer = !ret_ty.has_primitive_repr();
                         let mut raw_args = Vec::new();
@@ -584,19 +588,18 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         let elem_ptr = self.address_of(elem_loc);
                         self.values.push(elem_ptr);
                     }
-                    iiv::Instruction::Branch(lhs, yes, yes_args, no, no_args) => {
-                        let yes_args: Vec<_> = yes_args.iter().map(|arg| self.get(*arg)).collect();
-                        let no_args: Vec<_> = no_args.iter().map(|arg| self.get(*arg)).collect();
+                    iiv::Instruction::Branch(lhs, yes, no, args) => {
+                        let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
                         let cond = self.get(*lhs);
                         self.fb.ins().brif(
                             cond,
                             self.blocks[yes.0 as usize],
-                            &yes_args,
+                            &args,
                             self.blocks[no.0 as usize],
-                            &no_args,
+                            &args,
                         );
                     }
-                    iiv::Instruction::Switch(_, _) => {
+                    iiv::Instruction::Switch(_, _, _) => {
                         unimplemented!()
                     }
                     iiv::Instruction::Jump(label, args) => {
@@ -800,6 +803,9 @@ impl<'i> LayoutCache<'i> {
                 //         .unwrap()
                 unimplemented!()
             }
+            Type::Named(_, _, _) => {
+                unimplemented!()
+            }
             Type::Variant(variants) => variants.iter().fold(
                 Layout {
                     size: 8,
@@ -810,6 +816,7 @@ impl<'i> LayoutCache<'i> {
             ),
             Type::Invalid => panic!("size_of invalid type"),
             Type::Type(_) => panic!("invalid type - type"),
+            Type::InferenceVar(_) => panic!("invalid type - inf variable"),
         };
 
         let layout_state = unsafe { &mut *self.storage[idx].get() };

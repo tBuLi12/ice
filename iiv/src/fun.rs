@@ -12,6 +12,7 @@ use crate::{
 pub struct Signature<'i> {
     pub name: Str<'i>,
     pub params: pool::List<'i, TypeRef<'i>>,
+    pub ty_params: Vec<()>,
     pub ret_ty: TypeRef<'i>,
 }
 
@@ -20,13 +21,27 @@ pub struct Function<'i> {
     pub sig: Signature<'i>,
     pub body: Body<'i>,
     pub ty_cache: Vec<TypeRef<'i>>,
-    pub value_count: usize,
 }
 
 #[derive(Debug)]
 pub enum Body<'i> {
     Unsealed(Vec<UnsealedBlock<'i>>),
     Sealed(Vec<Block<'i>>),
+}
+
+impl<'i> Function<'i> {
+    pub fn empty(ty_pool: &'i crate::ty::Pool<'i>, name: Str<'i>) -> Self {
+        Function {
+            sig: Signature {
+                name,
+                params: ty_pool.get_ty_list(vec![]),
+                ty_params: vec![],
+                ret_ty: ty_pool.get_null(),
+            },
+            body: crate::fun::Body::Unsealed(vec![]),
+            ty_cache: vec![],
+        }
+    }
 }
 
 impl<'i> Display for Function<'i> {
@@ -47,7 +62,7 @@ impl<'i> Display for Function<'i> {
                     writeln!(f, "b{} {}:", block_index, fmt::List(block.params.iter()))?;
                     i += block.params.len();
                     for inst in &block.instructions {
-                        print_inst(f, &mut i, inst);
+                        print_inst(f, &mut i, inst)?;
                     }
                 }
             }
@@ -60,8 +75,9 @@ impl<'i> Display for Function<'i> {
                         fmt::List(block.params.iter().map(|(ty, _)| ty))
                     )?;
                     i += block.params.len();
-                    for (inst, _) in &block.instructions {
-                        print_inst(f, &mut i, inst);
+                    for (inst, idx) in &block.instructions {
+                        let mut i = *idx as usize;
+                        print_inst(f, &mut i, inst)?;
                     }
                 }
             }
@@ -104,8 +120,14 @@ fn print_inst(
         Instruction::Lt(_lhs, _rhs) => unimplemented!(),
         Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
         Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
-        Instruction::Call(fun, args) => {
-            write!(f, "    %{} = call {}(", i, fun.borrow().sig.name)?;
+        Instruction::Call(fun, args, ty_args) => {
+            write!(
+                f,
+                "    %{} = call {}{}(",
+                i,
+                fun.borrow().sig.name,
+                fmt::List(ty_args.iter()),
+            )?;
             for arg in args {
                 write!(f, "%{}, ", arg.0)?;
             }
@@ -174,22 +196,24 @@ fn print_inst(
             writeln!(f, "")?;
             i += 1;
         }
-        Instruction::Branch(lhs, yes, yes_args, no, no_args) => {
+        Instruction::Branch(lhs, yes, no, args) => {
             writeln!(
                 f,
-                "    br %{} ? b{} {} : b{} {}",
+                "    br %{} ? b{} : b{} with {}",
                 lhs.0,
                 yes.0,
-                fmt::List(yes_args.iter()),
                 no.0,
-                fmt::List(no_args.iter()),
+                fmt::List(args.iter()),
             )?;
         }
-        Instruction::Switch(lhs, targets) => {
-            write!(f, "    switch %{} [", lhs.0,)?;
-            for (label, args) in targets {
-                write!(f, "b{} {}, ", label.0, fmt::List(args.iter()))?;
-            }
+        Instruction::Switch(lhs, labels, args) => {
+            write!(
+                f,
+                "    switch %{} [{}] with {}",
+                lhs.0,
+                fmt::List(labels.iter().map(|l| format!("b{}", l.0))),
+                fmt::List(args.iter())
+            )?;
             writeln!(f, "]")?;
         }
         Instruction::Jump(label, args) => {
