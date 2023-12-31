@@ -124,6 +124,12 @@ extern "C" {
         yes: *mut BlockData,
         no: *mut BlockData,
     );
+    fn builderSwitch(
+        builder: *mut IRBuilderData,
+        idx: *mut ValueData,
+        blocks: *const *mut BlockData,
+        cases_len: u32,
+    );
     fn builderLoad(
         builder: *mut IRBuilderData,
         ptr: *mut ValueData,
@@ -497,6 +503,18 @@ impl<'ll> IRBuilder<'ll> {
 
     pub fn condbr(&self, cond: Value<'ll>, yes: Block<'ll>, no: Block<'ll>) {
         unsafe { builderCondBr(self.ptr, cond.ptr, yes.ptr, no.ptr) }
+    }
+
+    pub fn switch(&self, idx: Value<'ll>, args: &[Block<'ll>]) {
+        assert!(args.len() != 0);
+        unsafe {
+            builderSwitch(
+                self.ptr,
+                idx.ptr,
+                args.as_ptr() as *const *mut BlockData,
+                args.len() as u32,
+            )
+        }
     }
 
     pub fn load(&self, ptr: Value<'ll>, src: Type<'ll>) -> Value<'ll> {

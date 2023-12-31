@@ -48,4 +48,5 @@ extern "C" void rt_validate(int32_t* gen, int32_t val) {
         printf("invalid reference\n");
         exit(1);
     }
+    printf("ref ok\n");
 }

@@ -6,6 +6,7 @@ members = [
     "iiv-gen",
     "iiv-cl",
     "iiv-llvm",
+    "ice-lsp",
     "iiv-llvm/llvm",
     "icy",
     "ice-parser",

@@ -1,29 +1,59 @@
-use std::fmt::Display;
+use std::fmt::{Debug, Display};
 
 use crate::{
     builder::{Block, UnsealedBlock},
-    pool,
+    pool::{self, FuncRef},
     str::Str,
-    ty::TypeRef,
+    ty::{TraitRef, TypeRef},
     Elem, Instruction,
 };
 
-#[derive(Debug)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct Bound<'i> {
+    pub ty: TypeRef<'i>,
+    pub tr: TraitRef<'i>,
+}
+
+impl<'i> Debug for Bound<'i> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Bound")
+            .field("ty", &format!("{}", self.ty))
+            .field("tr", &format!("{}", self.tr))
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Signature<'i> {
     pub name: Str<'i>,
     pub params: pool::List<'i, TypeRef<'i>>,
     pub ty_params: Vec<()>,
+    pub trait_bounds: Vec<Bound<'i>>,
     pub ret_ty: TypeRef<'i>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Function<'i> {
     pub sig: Signature<'i>,
     pub body: Body<'i>,
     pub ty_cache: Vec<TypeRef<'i>>,
 }
 
-#[derive(Debug)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Receiver {
+    None,
+    Immutable,
+    Mut,
+    Move,
+}
+
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub struct Method<'i> {
+    pub fun: FuncRef<'i>,
+    pub receiver: Receiver,
+}
+
+#[derive(Debug, Clone)]
 pub enum Body<'i> {
     Unsealed(Vec<UnsealedBlock<'i>>),
     Sealed(Vec<Block<'i>>),
@@ -36,11 +66,212 @@ impl<'i> Function<'i> {
                 name,
                 params: ty_pool.get_ty_list(vec![]),
                 ty_params: vec![],
+                trait_bounds: vec![],
                 ret_ty: ty_pool.get_null(),
             },
             body: crate::fun::Body::Unsealed(vec![]),
             ty_cache: vec![],
         }
+    }
+
+    pub fn apply_ty_args(
+        &mut self,
+        ty_pool: &'i crate::ty::Pool<'i>,
+        args: pool::List<'i, TypeRef<'i>>,
+    ) {
+        let mut new_args = self.sig.params.to_vec();
+        for ty in self.ty_cache.iter_mut().chain(new_args.iter_mut()) {
+            *ty = ty_pool.resolve_ty_args(*ty, &args);
+        }
+        self.sig.params = ty_pool.get_ty_list(new_args);
+        self.sig.ret_ty = ty_pool.resolve_ty_args(self.sig.ret_ty, &args);
+        self.sig.ty_params.clear();
+
+        let body = match &mut self.body {
+            Body::Sealed(_) => panic!("apply_ty_args on sealed body"),
+            Body::Unsealed(unsealed) => unsealed,
+        };
+
+        for block in body {
+            for (param, _) in &mut block.params {
+                *param = ty_pool.resolve_ty_args(*param, &args);
+            }
+            for (inst, _) in &mut block.instructions {
+                inst.visit_type(ty_pool, |ty| {
+                    *ty = ty_pool.resolve_ty_args(*ty, &args);
+                })
+            }
+        }
+    }
+
+    fn add_successors<'a>(
+        blocks: &'a [UnsealedBlock<'i>],
+        block: &'a UnsealedBlock<'i>,
+        add: &mut impl FnMut(usize),
+    ) {
+        match block.instructions.last() {
+            Some((Instruction::Jump(label, _args), _)) => {
+                let new_block = &blocks[label.0 as usize];
+                add(label.0 as usize);
+                Self::add_successors(blocks, new_block, add);
+            }
+            Some((Instruction::Branch(_, yes_label, no_label, _), _)) => {
+                let new_block = &blocks[yes_label.0 as usize];
+                add(yes_label.0 as usize);
+                Self::add_successors(blocks, new_block, add);
+                let new_block = &blocks[no_label.0 as usize];
+                add(no_label.0 as usize);
+                Self::add_successors(blocks, new_block, add);
+            }
+            Some((Instruction::Switch(_, labels, _), _)) => {
+                for label in labels {
+                    let new_block = &blocks[label.0 as usize];
+                    add(label.0 as usize);
+                    Self::add_successors(blocks, new_block, add);
+                }
+            }
+            Some((Instruction::Return(_), _)) => {}
+            _ => panic!("invalid terminator!"),
+        }
+    }
+
+    pub fn seal(&mut self) {
+        let body = match &mut self.body {
+            Body::Sealed(_) => panic!("seal called twice"),
+            Body::Unsealed(unsealed) => unsealed,
+        };
+
+        let mut inst_indices = vec![0u16; self.ty_cache.len()];
+
+        let mut block_indices = vec![None; body.len()];
+
+        let mut new_block_order = vec![0];
+
+        Self::add_successors(body, &body[0], &mut |idx| {
+            if block_indices[idx].is_none() {
+                block_indices[idx] = Some(new_block_order.len());
+                new_block_order.push(idx);
+            }
+        });
+
+        let mut current = 0;
+        for i in 0..self.sig.params.len() {
+            inst_indices[current as usize] = i as u16;
+            current += 1;
+        }
+
+        let mut new_types = vec![];
+
+        for &block_idx in &new_block_order {
+            let block = &body[block_idx];
+            for (_, idx) in &block.params {
+                inst_indices[*idx as usize] = current;
+                current += 1;
+                new_types.push(self.ty_cache[*idx as usize]);
+            }
+            for (inst, idx) in &block.instructions {
+                if inst.creates_value() {
+                    inst_indices[*idx as usize] = current;
+                    current += 1;
+                    new_types.push(self.ty_cache[*idx as usize]);
+                }
+            }
+        }
+
+        for &block_idx in &new_block_order {
+            let block = &mut body[block_idx];
+            for (inst, _) in &mut block.instructions {
+                match inst {
+                    Instruction::Int(_) | Instruction::Bool(_) => {}
+                    Instruction::Add(lhs, rhs)
+                    | Instruction::Sub(lhs, rhs)
+                    | Instruction::Mul(lhs, rhs)
+                    | Instruction::Div(lhs, rhs)
+                    | Instruction::Eq(lhs, rhs)
+                    | Instruction::Neq(lhs, rhs)
+                    | Instruction::Gt(lhs, rhs)
+                    | Instruction::Lt(lhs, rhs)
+                    | Instruction::GtEq(lhs, rhs)
+                    | Instruction::Assign(lhs, _, rhs)
+                    | Instruction::LtEq(lhs, rhs) => {
+                        rhs.0 = inst_indices[rhs.0 as usize];
+                        lhs.0 = inst_indices[lhs.0 as usize];
+                    }
+                    Instruction::GetElemRef(val, _)
+                    | Instruction::CopyElem(val, _)
+                    | Instruction::MoveElem(val, _)
+                    | Instruction::Name(_, val)
+                    | Instruction::Return(val)
+                    | Instruction::Neg(val)
+                    | Instruction::Variant(_, _, val)
+                    | Instruction::VariantCast(_, val)
+                    | Instruction::Discriminant(val)
+                    | Instruction::Drop(val)
+                    | Instruction::CallDrop(val, _)
+                    | Instruction::Invalidate(val, _)
+                    | Instruction::Not(val) => {
+                        val.0 = inst_indices[val.0 as usize];
+                    }
+
+                    Instruction::Call(_, vals, _)
+                    | Instruction::TraitCall(_, _, vals, _)
+                    | Instruction::Tuple(vals, _) => {
+                        for val in vals {
+                            val.0 = inst_indices[val.0 as usize];
+                        }
+                    }
+                    Instruction::Jump(label, vals) => {
+                        label.0 = block_indices[label.0 as usize].unwrap() as u16;
+                        for val in vals {
+                            val.0 = inst_indices[val.0 as usize];
+                        }
+                    }
+                    Instruction::Branch(lhs, yes_label, no_label, args) => {
+                        yes_label.0 = block_indices[yes_label.0 as usize].unwrap() as u16;
+                        no_label.0 = block_indices[no_label.0 as usize].unwrap() as u16;
+                        lhs.0 = inst_indices[lhs.0 as usize];
+                        for val in args {
+                            val.0 = inst_indices[val.0 as usize];
+                        }
+                    }
+                    Instruction::Switch(lhs, labels, args) => {
+                        lhs.0 = inst_indices[lhs.0 as usize];
+                        for label in labels {
+                            label.0 = block_indices[label.0 as usize].unwrap() as u16;
+                        }
+                        for val in args {
+                            val.0 = inst_indices[val.0 as usize];
+                        }
+                    }
+                    Instruction::Ty(_) => {}
+                    Instruction::Null => {}
+                }
+            }
+        }
+
+        let final_blocks = new_block_order
+            .into_iter()
+            .map(|block_idx| {
+                let block = std::mem::replace(
+                    &mut body[block_idx],
+                    UnsealedBlock {
+                        instructions: vec![],
+                        params: vec![],
+                    },
+                );
+                Block {
+                    params: block.params.into_iter().map(|(param, _)| param).collect(),
+                    instructions: block
+                        .instructions
+                        .into_iter()
+                        .map(|(inst, _)| inst)
+                        .collect(),
+                }
+            })
+            .collect();
+
+        self.body = Body::Sealed(final_blocks);
+        self.ty_cache = new_types;
     }
 }
 
@@ -134,6 +365,23 @@ fn print_inst(
             writeln!(f, ")")?;
             i += 1;
         }
+        Instruction::TraitCall(tr, idx, args, ty_args) => {
+            write!(
+                f,
+                "    %{} = trait call {}.[{}{}]{}{}(",
+                i,
+                ty_args[0],
+                tr.borrow().name,
+                fmt::List(ty_args[1..tr.borrow().ty_params.len()].iter()),
+                tr.borrow().signatures[*idx as usize].fun.borrow().sig.name,
+                fmt::List(ty_args[tr.borrow().ty_params.len()..].iter()),
+            )?;
+            for arg in args {
+                write!(f, "%{}, ", arg.0)?;
+            }
+            writeln!(f, ")")?;
+            i += 1;
+        }
         Instruction::Assign(lhs, path, rhs) => {
             write!(f, "    store %{} ", lhs.0)?;
             for elem in path {
@@ -157,7 +405,10 @@ fn print_inst(
             writeln!(f, ")")?;
             i += 1;
         }
-        Instruction::Name(_type_id, _value) => unimplemented!(),
+        Instruction::Name(ty, value) => {
+            write!(f, "    %{} = named {} %{} ", i, ty, value.0)?;
+            i += 1;
+        }
         Instruction::CopyElem(lhs, path) => {
             write!(f, "    %{} = copy elem %{} ", i, lhs.0)?;
             for elem in path {

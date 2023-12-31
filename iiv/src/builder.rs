@@ -1,7 +1,6 @@
 use crate::{
-    diagnostics::fmt::List,
-    fun::{self, Body, Function, Signature},
-    pool::{self, FuncRef},
+    fun::{self, Body, Bound, Function, Signature},
+    pool::{self, FuncRef, TraitDeclRef},
     ty::TypeRef,
     Elem, Instruction, Label, Prop, RawValue, Value,
 };
@@ -47,6 +46,14 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     pub fn set_params(&mut self, params: pool::List<'i, TypeRef<'i>>) {
         self.sig.params = params;
         *self.types = params.to_vec();
+    }
+
+    pub fn set_bounds(&mut self, bounds: Vec<Bound<'i>>) {
+        self.sig.trait_bounds = bounds;
+    }
+
+    pub fn set_ty_params(&mut self, count: usize) {
+        self.sig.ty_params = vec![(); count];
     }
 
     pub fn params(&self) -> impl Iterator<Item = Value<'i>> + '_ {
@@ -155,6 +162,39 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         }
     }
 
+    pub fn trait_call(
+        &mut self,
+        tr: TraitDeclRef<'i>,
+        idx: usize,
+        args: &[Value<'i>],
+        ty_args: pool::List<'i, TypeRef<'i>>,
+    ) -> Value<'i> {
+        let ret_ty = self.ty_pool.resolve_ty_args(
+            tr.borrow().signatures[idx].fun.borrow().sig.ret_ty,
+            &ty_args,
+        );
+
+        Value {
+            ty: ret_ty,
+            raw: self.push_value_instruction(
+                Instruction::TraitCall(
+                    tr,
+                    idx as u16,
+                    args.iter().map(|arg| arg.raw).collect(),
+                    ty_args,
+                ),
+                ret_ty,
+            ),
+        }
+    }
+
+    pub fn named(&mut self, ty: TypeRef<'i>, val: Value<'i>) -> Value<'i> {
+        Value {
+            ty,
+            raw: self.push_value_instruction(Instruction::Name(ty, val.raw), ty),
+        }
+    }
+
     // pub fn assign(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
     // pub fn ref_assign(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
     pub fn make_tuple(&mut self, _values: &[Value<'i>]) -> Value<'i> {
@@ -183,9 +223,6 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     }
 
     pub fn move_prop(&mut self, value: Value<'i>, prop: u8, prop_ty: TypeRef<'i>) -> Value<'i> {
-        if &*self.sig.name == "add" {
-            panic!("BRUH");
-        }
         Value {
             ty: prop_ty,
             raw: self.push_value_instruction(Instruction::MoveElem(value.raw, vec![prop]), prop_ty),
@@ -306,11 +343,6 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     }
 
     pub fn invalidate(&mut self, value: RawValue, path: Option<Vec<u8>>) {
-        println!(
-            "adding an invalidate, at {}",
-            self.body[self.current_block].instructions.len()
-        );
-
         self.push_instruction(Instruction::Invalidate(value, path));
     }
 
@@ -324,6 +356,7 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     }
 
     pub fn select(&mut self, block: BlockRef) {
+        // eprintln!("selecting {}", block.idx);
         self.current_block = block.idx;
         self.current_inst = self.body[block.idx].instructions.len();
     }
@@ -361,20 +394,18 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         }
     }
 
-    pub fn get_current_inst(&self) -> &Instruction<'i> {
-        println!("{} {}", self.current_block, self.current_inst);
-        &self.body[self.current_block].instructions[self.current_inst].0
+    pub fn get_current_inst(&self) -> Option<&Instruction<'i>> {
+        if self.current_inst < self.body[self.current_block].instructions.len() {
+            Some(&self.body[self.current_block].instructions[self.current_inst].0)
+        } else {
+            None
+        }
     }
 
-    pub fn advance(&mut self) -> bool {
-        let res = if self.current_inst < self.body[self.current_block].instructions.len() {
+    pub fn advance(&mut self) {
+        if self.current_inst < self.body[self.current_block].instructions.len() {
             self.current_inst += 1;
-            self.current_inst != self.body[self.current_block].instructions.len()
-        } else {
-            false
         };
-        println!("advancing {}", res);
-        res
     }
 
     pub fn type_of(&self, val: RawValue) -> TypeRef<'i> {
@@ -382,7 +413,6 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     }
 
     pub fn split(&mut self) -> BlockRef {
-        println!("splitting...");
         let idx = self.body.len();
         let block = &mut self.body[self.current_block];
         let instructions = block.instructions.drain(self.current_inst..).collect();
@@ -394,167 +424,18 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         BlockRef { idx }
     }
 
-    fn add_successors<'a>(
-        blocks: &'a [UnsealedBlock<'i>],
-        block: &'a UnsealedBlock<'i>,
-        add: &mut impl FnMut(usize),
-    ) {
-        match block.instructions.last() {
-            Some((Instruction::Jump(label, _args), _)) => {
-                let new_block = &blocks[label.0 as usize];
-                add(label.0 as usize);
-                Self::add_successors(blocks, new_block, add);
-            }
-            Some((Instruction::Branch(cond, yes_label, no_label, args), _)) => {
-                let new_block = &blocks[yes_label.0 as usize];
-                add(yes_label.0 as usize);
-                Self::add_successors(blocks, new_block, add);
-                let new_block = &blocks[no_label.0 as usize];
-                add(no_label.0 as usize);
-                Self::add_successors(blocks, new_block, add);
-            }
-            Some((Instruction::Switch(idx, labels, args), _)) => {
-                for label in labels {
-                    let new_block = &blocks[label.0 as usize];
-                    add(label.0 as usize);
-                    Self::add_successors(blocks, new_block, add);
-                }
-            }
-            Some((Instruction::Return(value), _)) => {}
-            _ => panic!("invalid terminator!"),
-        }
+    pub fn delete_inst(&mut self) {
+        self.body[self.current_block]
+            .instructions
+            .remove(self.current_inst);
     }
 
-    pub fn build(self) -> (Vec<Block<'i>>, Vec<TypeRef<'i>>, usize) {
-        let mut inst_indices = vec![0u16; self.types.len()];
+    pub fn body_mut(&mut self) -> &mut &'f mut Vec<UnsealedBlock<'i>> {
+        &mut self.body
+    }
 
-        let mut block_indices = vec![None; self.body.len()];
-
-        let mut new_block_order = vec![0];
-
-        Self::add_successors(&self.body, &self.body[0], &mut |idx| {
-            if block_indices[idx].is_none() {
-                block_indices[idx] = Some(new_block_order.len());
-                new_block_order.push(idx);
-            }
-        });
-
-        let mut current = 0;
-        for i in 0..self.sig.params.len() {
-            inst_indices[current as usize] = i as u16;
-            current += 1;
-        }
-
-        let mut new_types = vec![];
-
-        for &block_idx in &new_block_order {
-            let block = &self.body[block_idx];
-            for (_, idx) in &block.params {
-                inst_indices[*idx as usize] = current;
-                current += 1;
-                new_types.push(self.types[*idx as usize]);
-            }
-            for (inst, idx) in &block.instructions {
-                if inst.creates_value() {
-                    inst_indices[*idx as usize] = current;
-                    current += 1;
-                    new_types.push(self.types[*idx as usize]);
-                }
-            }
-        }
-
-        for &block_idx in &new_block_order {
-            let block = &mut self.body[block_idx];
-            for (inst, _) in &mut block.instructions {
-                match inst {
-                    Instruction::Int(_) | Instruction::Bool(_) => {}
-                    Instruction::Add(lhs, rhs)
-                    | Instruction::Sub(lhs, rhs)
-                    | Instruction::Mul(lhs, rhs)
-                    | Instruction::Div(lhs, rhs)
-                    | Instruction::Eq(lhs, rhs)
-                    | Instruction::Neq(lhs, rhs)
-                    | Instruction::Gt(lhs, rhs)
-                    | Instruction::Lt(lhs, rhs)
-                    | Instruction::GtEq(lhs, rhs)
-                    | Instruction::Assign(lhs, _, rhs)
-                    | Instruction::LtEq(lhs, rhs) => {
-                        rhs.0 = inst_indices[rhs.0 as usize];
-                        lhs.0 = inst_indices[lhs.0 as usize];
-                    }
-                    Instruction::GetElemRef(val, _)
-                    | Instruction::CopyElem(val, _)
-                    | Instruction::MoveElem(val, _)
-                    | Instruction::Name(_, val)
-                    | Instruction::Return(val)
-                    | Instruction::Neg(val)
-                    | Instruction::Variant(_, _, val)
-                    | Instruction::VariantCast(_, val)
-                    | Instruction::Discriminant(val)
-                    | Instruction::Drop(val)
-                    | Instruction::Not(val) => {
-                        val.0 = inst_indices[val.0 as usize];
-                    }
-
-                    Instruction::Call(_, vals, _) | Instruction::Tuple(vals, _) => {
-                        for val in vals {
-                            val.0 = inst_indices[val.0 as usize];
-                        }
-                    }
-                    Instruction::Jump(label, vals) => {
-                        label.0 = block_indices[label.0 as usize].unwrap() as u16;
-                        for val in vals {
-                            val.0 = inst_indices[val.0 as usize];
-                        }
-                    }
-                    Instruction::Branch(lhs, yes_label, no_label, args) => {
-                        yes_label.0 = block_indices[yes_label.0 as usize].unwrap() as u16;
-                        no_label.0 = block_indices[no_label.0 as usize].unwrap() as u16;
-                        lhs.0 = inst_indices[lhs.0 as usize];
-                        for val in args {
-                            val.0 = inst_indices[val.0 as usize];
-                        }
-                    }
-                    Instruction::Switch(lhs, labels, args) => {
-                        lhs.0 = inst_indices[lhs.0 as usize];
-                        for label in labels {
-                            label.0 = block_indices[label.0 as usize].unwrap() as u16;
-                        }
-                        for val in args {
-                            val.0 = inst_indices[val.0 as usize];
-                        }
-                    }
-                    Instruction::Ty(_) => {}
-                    Instruction::Null => {}
-                    Instruction::CallDrop(_, _) | Instruction::Invalidate(_, _) => {
-                        panic!("invalid instruction")
-                    }
-                }
-            }
-        }
-
-        let final_blocks = new_block_order
-            .into_iter()
-            .map(|block_idx| {
-                let block = std::mem::replace(
-                    &mut self.body[block_idx],
-                    UnsealedBlock {
-                        instructions: vec![],
-                        params: vec![],
-                    },
-                );
-                Block {
-                    params: block.params.into_iter().map(|(param, _)| param).collect(),
-                    instructions: block
-                        .instructions
-                        .into_iter()
-                        .map(|(inst, _)| inst)
-                        .collect(),
-                }
-            })
-            .collect();
-
-        (final_blocks, new_types, inst_indices.len())
+    pub fn ty_cache_mut(&mut self) -> &mut &'f mut Vec<TypeRef<'i>> {
+        &mut self.types
     }
 }
 
@@ -585,6 +466,7 @@ impl<'i> Instruction<'i> {
             | Instruction::Not(_)
             | Instruction::Tuple(_, _)
             | Instruction::Call(_, _, _)
+            | Instruction::TraitCall(_, _, _, _)
             | Instruction::Null
             | Instruction::LtEq(_, _) => true,
 

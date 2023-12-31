@@ -1,7 +1,9 @@
 use iiv::{
     err,
+    fun::Bound,
     pool::List,
     ty::{PropRef, Type, TypeRef},
+    Span,
 };
 
 #[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -11,8 +13,16 @@ pub enum TypeOverlap {
     Complete,
 }
 
+#[derive(Debug)]
+struct Goal<'i> {
+    span: Span,
+    bound: Bound<'i>,
+    givens: Vec<Bound<'i>>,
+}
+
 pub struct InferenceCtx<'i> {
     vars: Vec<Option<TypeRef<'i>>>,
+    goals: Vec<Goal<'i>>,
     ty_pool: &'i iiv::ty::Pool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
 }
@@ -30,6 +40,7 @@ impl<'i> InferenceCtx<'i> {
     ) -> Self {
         InferenceCtx {
             vars: vec![],
+            goals: vec![],
             ty_pool,
             messages,
         }
@@ -39,6 +50,36 @@ impl<'i> InferenceCtx<'i> {
         let var = self.ty_pool.get_ty_inference_var(self.vars.len());
         self.vars.push(None);
         var
+    }
+
+    pub fn new_bound(&mut self, span: Span, bound: Bound<'i>, givens: Vec<Bound<'i>>) {
+        self.goals.push(Goal {
+            bound,
+            givens,
+            span,
+        });
+    }
+
+    pub fn check_bounds(&mut self) {
+        for mut goal in std::mem::replace(&mut self.goals, vec![]) {
+            goal.bound.ty = self.unwrap(goal.bound.ty);
+            goal.bound.tr.1 = self.ty_pool.get_ty_list(self.unwrap_list(goal.bound.tr.1));
+            eprintln!("trying: {:?}", goal);
+            if !goal.givens.iter().any(|given| {
+                let mut given = *given;
+                given.ty = self.unwrap(given.ty);
+                given.tr.1 = self.ty_pool.get_ty_list(self.unwrap_list(given.tr.1));
+                goal.bound == given
+            }) {
+                self.messages
+                    .add(err!(&goal.span, "unsatisfied trait bound"))
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.check_bounds();
+        self.vars.clear();
     }
 
     pub fn try_eq<'c>(&'c mut self) -> EqAttempt<'c, 'i> {
@@ -161,26 +202,51 @@ impl<'i> InferenceCtx<'i> {
                     ty
                 }
             }
-            Type::Type(s1) => {
+            Type::Type(_) => {
                 unimplemented!()
             }
         }
     }
 
     pub fn contains_var(ty: TypeRef<'i>, idx: usize) -> bool {
+        ty.contains(|ty| match &*ty {
+            Type::InferenceVar(other_idx) => idx == *other_idx,
+            _ => false,
+        })
+    }
+
+    pub fn unwrap_list(&self, ty_list: List<'i, TypeRef<'i>>) -> Vec<TypeRef<'i>> {
+        ty_list.iter().map(|&ty| self.unwrap(ty)).collect()
+    }
+
+    pub fn unwrap_prop_list(&self, prop_list: List<'i, PropRef<'i>>) -> Vec<PropRef<'i>> {
+        prop_list
+            .iter()
+            .map(|prop| self.ty_pool.get_prop(prop.0, self.unwrap(prop.1)))
+            .collect()
+    }
+
+    pub fn unwrap(&self, ty: TypeRef<'i>) -> TypeRef<'i> {
         match &*ty {
-            Type::Builtin(_) | Type::Constant(_) | Type::Invalid => false,
+            Type::Builtin(_) | Type::Constant(_) | Type::Invalid => ty,
             Type::Vector(_) => unimplemented!(),
-            Type::Union(types) | Type::Tuple(types) | Type::Named(_, types, _) => {
-                types.iter().any(|&ty| Self::contains_var(ty, idx))
+            Type::Union(types) => self.ty_pool.get_union(self.unwrap_list(*types)),
+            Type::Tuple(types) => self.ty_pool.get_tuple(self.unwrap_list(*types)),
+            Type::Named(decl, types, _) => {
+                self.ty_pool.get_ty_named(*decl, self.unwrap_list(*types))
             }
 
-            Type::Variant(props) | Type::Struct(props) => {
-                props.iter().any(|prop| Self::contains_var(prop.1, idx))
+            Type::Variant(props) => self.ty_pool.get_variant(self.unwrap_prop_list(*props)),
+            Type::Struct(props) => self.ty_pool.get_struct(self.unwrap_prop_list(*props)),
+            Type::Ref(ty) => self.ty_pool.get_ref(self.unwrap(*ty)),
+            Type::InferenceVar(idx) => {
+                if let Some(ty) = self.vars[*idx] {
+                    self.unwrap(ty)
+                } else {
+                    panic!("Could not infer :c");
+                }
             }
-            Type::Ref(ty) => Self::contains_var(*ty, idx),
-            Type::InferenceVar(other_idx) => *other_idx == idx,
-            Type::Type(s1) => {
+            Type::Type(_) => {
                 unimplemented!()
             }
         }
@@ -239,7 +305,7 @@ impl<'c, 'i> EqAttempt<'c, 'i> {
                         .all(|(&t1, &t2)| self.eq(t1, t2))
                 }
             }
-            (Type::Type(s1), Type::Type(s2)) => {
+            (Type::Type(_), Type::Type(_)) => {
                 unimplemented!()
             }
             (Type::Constant(val), Type::Constant(val2)) => val == val2,

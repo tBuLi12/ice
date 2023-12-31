@@ -75,12 +75,19 @@ impl<'i, R: io::Read> Parser<'i, R> {
     pub fn parse_program(&mut self) -> Module<'i> {
         let mut funs = vec![];
         let mut types = vec![];
+        let mut traits = vec![];
         loop {
             match self.parse_function() {
                 Ok(fun) => funs.push(fun),
                 Err(ParseError::NoMatch) => match self.parse_type_decl() {
                     Ok(type_decl) => types.push(type_decl),
-                    Err(ParseError::NoMatch) => break,
+                    Err(ParseError::NoMatch) => match self.parse_trait_decl() {
+                        Ok(type_decl) => traits.push(type_decl),
+                        Err(ParseError::NoMatch) => break,
+                        Err(ParseError::InvalidSyntax(msg)) => self
+                            .messages
+                            .add(diagnostics::error(&self.current.span(), msg.to_string())),
+                    },
                     Err(ParseError::InvalidSyntax(msg)) => self
                         .messages
                         .add(diagnostics::error(&self.current.span(), msg.to_string())),
@@ -100,7 +107,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
             imports: vec![],
             functions: funs,
             types,
-            traits: vec![],
+            traits,
             impls: vec![],
             trait_impls: vec![],
         }
@@ -257,7 +264,11 @@ impl<'i, R: io::Read> Parser<'i, R> {
                         let name = p.ident()?;
                         Ok(TypeParam {
                             name,
-                            trait_bounds: vec![],
+                            trait_bounds: if p.eat_punct(Punctuation::Colon).is_ok() {
+                                vec![p.parse_ty_name().expected("a trait bound")?]
+                            } else {
+                                vec![]
+                            },
                         })
                     })
                     .map(|(params, _)| params)
@@ -269,7 +280,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
     }
 
     fn parse_type_decl(&mut self) -> Parsed<TypeDecl<'i>> {
-        let (is_data, span) = if let Ok(span) = self.eat_kw(Keyword::Data) {
+        let (_is_data, span) = if let Ok(span) = self.eat_kw(Keyword::Data) {
             (true, span)
         } else if let Ok(span) = self.eat_kw(Keyword::Type) {
             (false, span)
@@ -280,7 +291,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
 
         let type_params = self.parse_type_params()?;
 
-        let proto = self.parse_expr().expected("a prototype")?;
+        let proto = self.parse_ty_name().expected("a prototype")?;
 
         let span = span.to(proto.span());
         Ok(TypeDecl {
@@ -293,13 +304,30 @@ impl<'i, R: io::Read> Parser<'i, R> {
         })
     }
 
+    fn parse_trait_decl(&mut self) -> Parsed<TraitDecl<'i>> {
+        let span = self.eat_kw(Keyword::Trait)?;
+        let name = self.ident().expected("a name")?;
+        let type_params = self.parse_type_params()?;
+
+        let ((signatures, _), block_span) = self
+            .braces(|p| p.list(Punctuation::Semicolon, |p| p.parse_signature()))
+            .expected("signature block")?;
+
+        let span = span.to(block_span);
+        Ok(TraitDecl {
+            name,
+            span,
+            type_params,
+            visibility: Visibility::Public,
+            signatures,
+        })
+    }
+
     fn parse_block(&mut self) -> Parsed<Expr<'i>> {
         let ((exprs, trailing_separator), span) =
             self.braces(|p| p.list(Punctuation::Semicolon, |p| p.parse_block_item()))?;
 
         let len = exprs.len();
-        dbg!(len);
-        dbg!(trailing_separator);
         Ok(Expr::Block(Block {
             span,
             items: exprs,
@@ -443,9 +471,20 @@ impl<'i, R: io::Read> Parser<'i, R> {
     }
 
     fn parse_ty_name(&mut self) -> Parsed<Expr<'i>> {
-        self.ident()
-            .map(Expr::Variable)
-            .or_else(|_| self.parse_struct_or_variant_ty())
+        if let Ok(ident) = self.ident() {
+            let expr = Expr::Variable(ident);
+            if let Ok((span, args)) = self.parse_ty_args().invalid()? {
+                Ok(Expr::TyArgApply(TyArgApply {
+                    span,
+                    lhs: Box::new(expr),
+                    args,
+                }))
+            } else {
+                Ok(expr)
+            }
+        } else {
+            self.parse_struct_or_variant_ty()
+        }
     }
 
     fn parse_struct_or_block(&mut self) -> Parsed<Expr<'i>> {
@@ -512,6 +551,12 @@ impl<'i, R: io::Read> Parser<'i, R> {
         })
     }
 
+    fn parse_ty_args(&mut self) -> Parsed<(Span, Vec<Expr<'i>>)> {
+        self.brackets(|p| p.list(Punctuation::Comma, |p| p.parse_ty_name()))
+            .invalid()?
+            .map(|((args, _), span)| (span, args))
+    }
+
     fn parse_rhs(&mut self, mut lhs: Expr<'i>) -> Parsed<Expr<'i>> {
         let mut lhs = loop {
             if self.eat_punct(Punctuation::Plus).is_ok() {
@@ -533,7 +578,12 @@ impl<'i, R: io::Read> Parser<'i, R> {
                 lhs = Expr::Call(Call {
                     span,
                     lhs: Box::new(lhs),
-                    type_args: vec![],
+                    args,
+                });
+            } else if let Ok((span, args)) = self.parse_ty_args().invalid()? {
+                lhs = Expr::TyArgApply(TyArgApply {
+                    span,
+                    lhs: Box::new(lhs),
                     args,
                 });
             } else if self.eat_punct(Punctuation::Period).is_ok() {

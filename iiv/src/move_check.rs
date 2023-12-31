@@ -1,8 +1,8 @@
 use crate::{
-    builder::{self, Block, BlockRef, UnsealedBlock},
+    builder::{self, BlockRef, UnsealedBlock},
     fun::{self, Function},
     ty::{Type, TypeRef},
-    Ctx, Elem, Instruction, Prop, RawValue,
+    Ctx, Elem, Instruction, RawValue,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -57,7 +57,6 @@ struct VarState {
 impl VarState {
     fn set(&mut self, idx: usize) {
         self.flags[idx] = State::Live;
-        println!("making {} live", idx);
     }
 
     fn is_dead(&self, idx: usize) -> bool {
@@ -93,8 +92,6 @@ impl VarState {
     }
 
     fn partial_unset(&mut self, val: RawValue, mut ty: TypeRef<'_>, path: &[u8]) {
-        println!("PARTIAL UNSETTING {:?} {:?}", ty, path);
-
         let mut state = &mut self.flags[val.0 as usize];
         for &elem in path {
             match &*ty {
@@ -138,8 +135,6 @@ impl VarState {
     }
 
     fn partial_set(&mut self, val: RawValue, mut ty: TypeRef<'_>, path: &[Elem]) {
-        println!("PARTIAL SETTING {:?} {:?}", ty, path);
-
         let mut state = &mut self.flags[val.0 as usize];
         for elem in path {
             match (elem, &*ty) {
@@ -232,6 +227,7 @@ impl VarState {
             // do
             Instruction::Jump(_, vals)
             | Instruction::Call(_, vals, _)
+            | Instruction::TraitCall(_, _, vals, _)
             | Instruction::Tuple(vals, _) => {
                 for val in vals {
                     self.unset(*val);
@@ -243,7 +239,7 @@ impl VarState {
                     self.unset(*val);
                 }
             }
-            Instruction::Switch(idx, labels, args) => {
+            Instruction::Switch(idx, _, args) => {
                 self.unset(*idx);
                 for arg in args {
                     self.unset(*arg);
@@ -255,7 +251,6 @@ impl VarState {
             }
         }
         if inst.creates_value() {
-            println!("set_next by {:?}", inst);
             self.set(idx);
         }
     }
@@ -269,33 +264,13 @@ impl VarState {
     }
 }
 
-pub fn check<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
-    let body = match &mut func.body {
+pub fn check<'i>(func: &Function<'i>) {
+    let body = match &func.body {
         fun::Body::Sealed(_) => panic!("move check on sealed body"),
         fun::Body::Unsealed(unsealed) => unsealed,
     };
 
-    // return;
     let mut states = vec![None; body.len()];
-
-    let starting_idx: Vec<usize> = body
-        .iter()
-        .scan(func.sig.params.len(), |state, block| {
-            let current: usize = *state;
-
-            *state += block.params.len()
-                + block
-                    .instructions
-                    .iter()
-                    .filter(|(inst, _)| inst.creates_value())
-                    .count();
-
-            Some(current)
-        })
-        .collect();
-
-    dbg!(&func.ty_cache.len());
-    dbg!(&func.sig.name);
 
     let mut first = VarState {
         flags: vec![State::Dead; func.ty_cache.len()],
@@ -308,9 +283,8 @@ pub fn check<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
 
     let mut stack = vec![0];
     while let Some(next) = stack.pop() {
-        println!("processing block b{}", next);
         let old_state = states[next].clone().unwrap();
-        let mut new_state = process(&body[next], old_state, &func.ty_cache);
+        let new_state = process(&body[next], old_state, &func.ty_cache);
         for successor in body[next].successors() {
             if let Some(state) = &mut states[successor] {
                 if state.merge(new_state.clone()) {
@@ -323,21 +297,15 @@ pub fn check<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
         }
     }
 
-    let mut block_idx = 0;
     for block in &states {
-        println!("at entry of block {block_idx}:");
         let mut i = 0;
 
         for flag in &block.as_ref().unwrap().flags {
             print_state(flag, i, 1);
             i += 1;
         }
-        block_idx += 1;
-        println!("");
     }
-    let mut block_idx = 0;
     for (block, state) in body.iter().zip(states.iter()) {
-        println!("verifying block {block_idx}");
         let after = verify(
             block,
             state.as_ref().unwrap().clone(),
@@ -353,13 +321,44 @@ pub fn check<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
                 }
             }
         }
+    }
+}
 
-        block_idx += 1;
+pub fn resolve_drops<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
+    let body = match &mut func.body {
+        fun::Body::Sealed(_) => panic!("move check on sealed body"),
+        fun::Body::Unsealed(unsealed) => unsealed,
+    };
+
+    let mut states = vec![None; body.len()];
+
+    let mut first = VarState {
+        flags: vec![State::Dead; func.ty_cache.len()],
+    };
+
+    for i in 0..func.sig.params.len() {
+        first.flags[i] = State::Live;
+    }
+    states[0] = Some(first);
+
+    let mut stack = vec![0];
+    while let Some(next) = stack.pop() {
+        let old_state = states[next].clone().unwrap();
+        let new_state = process(&body[next], old_state, &func.ty_cache);
+        for successor in body[next].successors() {
+            if let Some(state) = &mut states[successor] {
+                if state.merge(new_state.clone()) {
+                    stack.push(successor);
+                }
+            } else {
+                states[successor] = Some(new_state.clone());
+                stack.push(successor);
+            }
+        }
     }
 
     for (i, state) in states.iter().enumerate() {
         let mut cursor = builder::Cursor::new(&ctx.type_pool, func);
-        println!("selecting block: {}", i);
         cursor.select(BlockRef { idx: i });
         cursor.goto_block_start();
         DropResolver {
@@ -376,13 +375,13 @@ fn print_state(state: &State, i: usize, depth: usize) {
     }
     match state {
         State::Dead => {
-            println!("%{i} = dead")
+            eprintln!("%{i} = dead")
         }
         State::Live => {
-            println!("%{i} = live")
+            eprintln!("%{i} = live")
         }
         State::Kindof(fields) => {
-            println!("%{i} = kindof {}", fields.len());
+            eprintln!("%{i} = kindof {}", fields.len());
             for (i, field) in fields.iter().enumerate() {
                 print_state(field, i, depth + 1)
             }
@@ -392,7 +391,6 @@ fn print_state(state: &State, i: usize, depth: usize) {
 
 fn process(block: &UnsealedBlock<'_>, mut state: VarState, ty_idx: &[TypeRef<'_>]) -> VarState {
     for (_, idx) in &block.params {
-        println!("set_next by block_param");
         state.set(*idx as usize);
     }
     for (inst, idx) in &block.instructions {
@@ -408,7 +406,6 @@ fn verify(
     ty_idx: &[TypeRef<'_>],
 ) -> VarState {
     for (_, idx) in &block.params {
-        println!("set_next by block_param2");
         state.set(*idx as usize);
     }
 
@@ -461,6 +458,7 @@ fn verify(
             // do
             Instruction::Jump(_, vals)
             | Instruction::Call(_, vals, _)
+            | Instruction::TraitCall(_, _, vals, _)
             | Instruction::Tuple(vals, _) => {
                 let mut valid = true;
                 for val in vals {
@@ -475,7 +473,7 @@ fn verify(
                 }
                 valid
             }
-            Instruction::Switch(idx, labels, args) => {
+            Instruction::Switch(idx, _, args) => {
                 let mut valid = state.is_valid(*idx);
                 for arg in args {
                     valid = valid && state.is_valid(*arg);
@@ -503,13 +501,11 @@ fn verify(
 
     for successor in block.successors() {
         if &states[successor].as_ref().unwrap().flags != &state.flags {
-            println!("jumping to: {}", successor);
             let mut i = 0;
             for state in &state.flags {
                 print_state(&state, i, 0);
                 i += 1;
             }
-            println!("");
             i = 0;
             for state in &states[successor].as_ref().unwrap().flags {
                 print_state(&state, i, 0);
@@ -594,8 +590,8 @@ impl<'f, 'i: 'f> DropResolver<'f, 'i> {
     }
 
     fn resolve(&mut self) {
-        loop {
-            match self.cursor.get_current_inst() {
+        while let Some(inst) = self.cursor.get_current_inst() {
+            match inst {
                 Instruction::Int(_) | Instruction::Bool(_) => {}
                 Instruction::Add(lhs, rhs)
                 | Instruction::Sub(lhs, rhs)
@@ -615,12 +611,12 @@ impl<'f, 'i: 'f> DropResolver<'f, 'i> {
                 }
 
                 // not sure
-                Instruction::Assign(lhs, path, rhs) => {
+                Instruction::Assign(_, _, rhs) => {
                     let rhs_ty = self.cursor.type_of(*rhs);
                     self.invalidate(*rhs, None, rhs_ty);
                 }
 
-                Instruction::GetElemRef(val, path) | Instruction::CopyElem(val, path) => {}
+                Instruction::GetElemRef(_, _) | Instruction::CopyElem(_, _) => {}
 
                 Instruction::MoveElem(val, path) => {
                     let mut ty = self.cursor.type_of(*val);
@@ -644,7 +640,7 @@ impl<'f, 'i: 'f> DropResolver<'f, 'i> {
                 }
 
                 // don't
-                Instruction::Discriminant(val) => {}
+                Instruction::Discriminant(_) => {}
                 Instruction::Ty(_) => {}
                 Instruction::Null => {}
 
@@ -655,13 +651,14 @@ impl<'f, 'i: 'f> DropResolver<'f, 'i> {
                 | Instruction::Variant(_, _, val)
                 | Instruction::VariantCast(_, val)
                 | Instruction::Not(val) => {
-                    let mut ty = self.cursor.type_of(*val);
+                    let ty = self.cursor.type_of(*val);
                     self.invalidate(*val, None, ty);
                 }
 
                 // do
                 Instruction::Jump(_, vals)
                 | Instruction::Call(_, vals, _)
+                | Instruction::TraitCall(_, _, vals, _)
                 | Instruction::Tuple(vals, _) => {
                     let vals = vals.clone();
                     for val in vals {
@@ -688,16 +685,17 @@ impl<'f, 'i: 'f> DropResolver<'f, 'i> {
                     }
                 }
                 Instruction::Drop(val) => {
-                    let ty = self.cursor.type_of(*val);
-                    self.invalidate(*val, None, ty);
+                    let val = *val;
+                    self.cursor.delete_inst();
+                    let ty = self.cursor.type_of(val);
+                    self.invalidate(val, None, ty);
+                    continue;
                 }
                 Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {
                     panic!("invalid instruction")
                 }
             };
-            if !self.cursor.advance() {
-                break;
-            }
+            self.cursor.advance();
         }
     }
 }

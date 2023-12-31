@@ -452,7 +452,6 @@ spanned_enum! {
 pub struct Call<'i> {
     pub span: Span,
     pub lhs: Box<Expr<'i>>,
-    pub type_args: Vec<Expr<'i>>,
     pub args: Vec<Expr<'i>>,
 }
 
@@ -476,9 +475,10 @@ pub struct Field<'i> {
 }
 
 #[derive(Debug)]
-pub struct Index<'i> {
+pub struct TyArgApply<'i> {
+    pub span: Span,
     pub lhs: Box<Expr<'i>>,
-    pub index: Box<Expr<'i>>,
+    pub args: Vec<Expr<'i>>,
 }
 
 #[derive(Debug)]
@@ -638,7 +638,7 @@ spanned_enum! {
         Call(Call<'i>),
         Prop(Prop<'i>),
         Field(Field<'i>),
-        Index(Index<'i>),
+        TyArgApply(TyArgApply<'i>),
         Cast(Cast<'i>),
         Add(Add<'i>),
         Mul(Mul<'i>),
@@ -781,7 +781,7 @@ spanned_impls! {
     Call,
     Prop : lhs - prop,
     Field : lhs - prop,
-    Index : lhs - index,
+    TyArgApply,
     Cast : lhs - ty,
     Add : lhs - rhs,
     Sub : lhs - rhs,

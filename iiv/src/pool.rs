@@ -11,7 +11,6 @@ use std::{
 
 use crate::{
     fun,
-    str::Str,
     ty_decl::{self, TypeDecl},
 };
 
@@ -96,14 +95,14 @@ impl<'i, T> Hash for Ref<'i, T> {
     }
 }
 
-impl<'i, T: PartialOrd> PartialOrd for Ref<'i, T> {
+impl<'i, T> PartialOrd for Ref<'i, T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        T::partial_cmp(&self.0, other.0)
+        PartialOrd::partial_cmp(&(self.0 as *const T), &(other.0 as *const T))
     }
 }
-impl<'i, T: Ord> Ord for Ref<'i, T> {
+impl<'i, T> Ord for Ref<'i, T> {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        T::cmp(&self.0, other.0)
+        Ord::cmp(&(self.0 as *const T), &(other.0 as *const T))
     }
 }
 
@@ -307,12 +306,12 @@ impl<'i, T: Hash + Eq + Ord> ListPool<'i, T> {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
-pub struct FuncRef<'i>(&'i RefCell<fun::Function<'i>>);
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct FuncRef<'i>(Ref<'i, RefCell<fun::Function<'i>>>);
 
 impl<'i> Hash for FuncRef<'i> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        ptr::hash(self.0, state)
+        ptr::hash(self.0 .0, state)
     }
 }
 
@@ -320,17 +319,10 @@ struct RawFunPool<'i> {
     storage: PinnedVec<RefCell<fun::Function<'i>>>,
 }
 
-impl<'i> PartialEq for FuncRef<'i> {
-    fn eq(&self, other: &Self) -> bool {
-        ptr::eq(self.0, other.0)
-    }
-}
-impl<'i> Eq for FuncRef<'i> {}
-
 impl<'i> Deref for FuncRef<'i> {
     type Target = RefCell<fun::Function<'i>>;
     fn deref(&self) -> &Self::Target {
-        self.0
+        self.0 .0
     }
 }
 
@@ -342,7 +334,7 @@ impl<'i> RawFunPool<'i> {
     }
 
     pub fn insert(&'i mut self, fun: fun::Function<'i>) -> FuncRef<'i> {
-        let fun = FuncRef(self.storage.next().write(RefCell::new(fun)));
+        let fun = FuncRef(Ref(self.storage.next().write(RefCell::new(fun))));
         fun
     }
 }
@@ -380,5 +372,28 @@ impl<'i> TyDeclPool<'i> {
     pub fn insert(&'i self, decl: ty_decl::TypeDecl<'i>) -> TyDeclRef<'i> {
         let inner = unsafe { &mut *self.0.get() };
         TyDeclRef(Ref(inner.next().write(decl)))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TraitDeclRef<'i>(Ref<'i, RefCell<ty_decl::TraitDecl<'i>>>);
+
+impl<'i> Deref for TraitDeclRef<'i> {
+    type Target = RefCell<ty_decl::TraitDecl<'i>>;
+    fn deref(&self) -> &Self::Target {
+        self.0 .0
+    }
+}
+
+pub struct TraitDeclPool<'i>(UnsafeCell<PinnedVec<RefCell<ty_decl::TraitDecl<'i>>>>);
+
+impl<'i> TraitDeclPool<'i> {
+    pub fn new() -> Self {
+        Self(UnsafeCell::new(PinnedVec::new()))
+    }
+
+    pub fn insert(&'i self, decl: ty_decl::TraitDecl<'i>) -> TraitDeclRef<'i> {
+        let inner = unsafe { &mut *self.0.get() };
+        TraitDeclRef(Ref(inner.next().write(RefCell::new(decl))))
     }
 }

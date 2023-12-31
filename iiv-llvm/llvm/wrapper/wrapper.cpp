@@ -255,6 +255,18 @@ extern "C" void builderCondBr(
     ) {
         builder->CreateCondBr(cond, yes, no);
     }
+extern "C" void builderSwitch(
+        llvm::IRBuilder<>* builder,
+        llvm::Value* idx,
+        llvm::BasicBlock* const* blocks,
+        uint32_t cases_len
+    ) {
+        auto switchInst = builder->CreateSwitch(idx, *blocks);
+        for (int32_t i = 0; i < cases_len; i++) {
+            auto idx = llvm::ConstantInt::get(builder->getContext(), llvm::APInt(32, i));
+            switchInst->addCase(idx, blocks[i]);
+        }
+    }
 extern "C" llvm::Value* builderLoad(
         llvm::IRBuilder<>* builder,
         llvm::Value* ptr,

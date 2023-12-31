@@ -17,6 +17,7 @@ pub struct Lexer<'i, R> {
 pub enum Keyword {
     Type,
     Data,
+    Trait,
     Fun,
     If,
     Else,
@@ -135,6 +136,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
         Some(match &ident[..] {
             "data" => Token::Keyword(Keyword::Data, span),
             "type" => Token::Keyword(Keyword::Type, span),
+            "trait" => Token::Keyword(Keyword::Trait, span),
             "fun" => Token::Keyword(Keyword::Fun, span),
             "if" => Token::Keyword(Keyword::If, span),
             "else" => Token::Keyword(Keyword::Else, span),

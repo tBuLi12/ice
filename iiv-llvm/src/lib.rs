@@ -34,22 +34,17 @@ impl<'i> Backend<'i> {
             work_stack: vec![],
             llvm_ctx: &ctx,
             blocks: vec![],
-            llvm_ty_cache: vec![],
+            llvm_ty_cache: UnsafeCell::new(vec![]),
             builtins,
-            current_ty_args: self.ctx.type_pool.get_ty_list(vec![]),
         };
 
-        ir_gen
-            .llvm_ty_cache
-            .resize_with(self.ctx.type_pool.len(), || {
-                UnsafeCell::new(CachedType::NotComputed)
-            });
-
+        iiv::move_check::resolve_drops(&self.ctx, &mut *main.borrow_mut());
+        main.borrow_mut().seal();
         ir_gen.emit_main(&*main.borrow());
 
-        println!("dump mod");
+        eprintln!("dump mod");
         ctx.emit(ir_gen.module, out);
-        println!("main done");
+        eprintln!("main done");
     }
 }
 
@@ -118,9 +113,8 @@ pub struct IRGen<'ll, 'i> {
     work_stack: Vec<(FuncRef<'i>, List<'i, TypeRef<'i>>)>,
     ctx: &'i iiv::Ctx<'i>,
     llvm_ctx: &'ll llvm::LLVMCtx,
-    llvm_ty_cache: Vec<UnsafeCell<CachedType<'ll>>>,
+    llvm_ty_cache: UnsafeCell<Vec<UnsafeCell<CachedType<'ll>>>>,
     builtins: Builtints<'ll>,
-    current_ty_args: List<'i, TypeRef<'i>>,
 }
 
 impl<'ll, 'i> IRGen<'ll, 'i> {
@@ -128,10 +122,15 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         let main = self.create_signature(func, self.ctx.type_pool.get_ty_list(vec![]));
         self.write_body(func, main);
 
-        while let Some(func) = self.work_stack.pop() {
-            let llvm_func = self.funcs.get(&func).unwrap();
-            dbg!(func.0.borrow().sig.name);
-            self.write_body(&*func.0.borrow(), *llvm_func);
+        while let Some((func, ty_args)) = self.work_stack.pop() {
+            let llvm_func = self.funcs.get(&(func, ty_args)).unwrap();
+
+            let mut fun = func.borrow().clone();
+            fun.apply_ty_args(&self.ctx.type_pool, ty_args);
+            iiv::move_check::resolve_drops(&self.ctx, &mut fun);
+            fun.seal();
+
+            self.write_body(&fun, *llvm_func);
         }
     }
 
@@ -236,21 +235,15 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 iiv::Instruction::Lt(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::TraitCall(_, _, _, _) => {}
                 iiv::Instruction::Call(fun, args, ty_args) => {
-                    let ret_ty = fun.borrow().sig.ret_ty;
+                    let ret_ty = self
+                        .ctx
+                        .type_pool
+                        .resolve_ty_args(fun.borrow().sig.ret_ty, &ty_args);
                     let mut raw_args = Vec::new();
 
-                    let ty_args = self.ctx.type_pool.get_ty_list(
-                        ty_args
-                            .iter()
-                            .map(|&ty| {
-                                self.ctx
-                                    .type_pool
-                                    .resolve_ty_args(ty, &self.current_ty_args)
-                            })
-                            .collect(),
-                    );
-                    let func = self.get_or_create_fn(*fun, ty_args);
+                    let func = self.get_or_create_fn(*fun, *ty_args);
 
                     raw_args.extend(args.iter().map(|arg| self.get(*arg)));
 
@@ -279,7 +272,12 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                         self.write(field, val);
                     }
                 }
-                iiv::Instruction::Name(_type_id, _value) => unimplemented!(),
+                iiv::Instruction::Name(ty, value) => {
+                    let value = self.val(*value);
+                    let named_value = self.alloc(*ty).value();
+                    let inner = self.elem_ptr(named_value, 0);
+                    self.write(inner, value);
+                }
                 iiv::Instruction::CopyElem(lhs, path) => {
                     let mut value = self.val(*lhs);
 
@@ -327,7 +325,17 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     );
                 }
                 iiv::Instruction::Switch(lhs, labels, args) => {
-                    unimplemented!()
+                    let idx = self.get(*lhs);
+
+                    let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
+                    for label in labels {
+                        self.apply_block_args(label, &args);
+                    }
+                    let blocks: Vec<_> = labels
+                        .iter()
+                        .map(|label| self.blocks[label.0 as usize])
+                        .collect();
+                    self.ir.switch(idx, &blocks);
                 }
                 iiv::Instruction::Jump(label, args) => {
                     let args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
@@ -404,8 +412,8 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 iiv::Instruction::Null => {
                     self.null_val();
                 }
-                iiv::Instruction::Drop(value) => {
-                    // unimplemented!()
+                iiv::Instruction::Drop(_) => {
+                    panic!("invalid instruction")
                 }
                 iiv::Instruction::Invalidate(val, path) => {
                     let stack_value = self.values[val.0 as usize];
@@ -424,7 +432,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                             .call(self.builtins.rt_invalidate, &[stack_value.gen_ptr]);
                     }
                 }
-                iiv::Instruction::CallDrop(val, prop) => {
+                iiv::Instruction::CallDrop(_, _) => {
                     unimplemented!();
                 }
             }
@@ -547,6 +555,17 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     ),
                 }
             }
+            Type::Named(_, _, proto) => LLVMValue {
+                ty: proto,
+                value: {
+                    self.ir.gep(
+                        ty,
+                        val.value,
+                        &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(0).val()],
+                    )
+                },
+                gen_ptr: val.gen_ptr,
+            },
             _ => panic!("invalid elem_ptr"),
         }
     }
@@ -621,18 +640,20 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         func: &iiv::fun::Function<'i>,
         ty_args: List<'i, TypeRef<'i>>,
     ) -> llvm::Function<'ll> {
-        let old_ty_args = std::mem::replace(&mut self.current_ty_args, ty_args);
-        let ret_ty = self.llvm_ty(func.sig.ret_ty);
+        let ret_ty = self.llvm_ty(
+            self.ctx
+                .type_pool
+                .resolve_ty_args(func.sig.ret_ty, &ty_args),
+        );
         let params: Vec<_> = func
             .sig
             .params
             .iter()
-            .map(|&param| self.llvm_ty(param))
+            .map(|&param| self.llvm_ty(self.ctx.type_pool.resolve_ty_args(param, &ty_args)))
             .collect();
-        self.current_ty_args = old_ty_args;
 
         let name = format!(
-            "{}[{}]",
+            "{}{}",
             func.sig.name,
             iiv::diagnostics::fmt::List(ty_args.iter())
         );
@@ -686,13 +707,16 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         let idx = self.ctx.type_pool.index_of(ty);
 
         {
-            let cached_ty = unsafe { &*self.llvm_ty_cache[idx].get() };
+            let cache = unsafe { &mut *self.llvm_ty_cache.get() };
+            if idx >= cache.len() {
+                cache.resize_with(idx + 1, || UnsafeCell::new(CachedType::NotComputed))
+            }
+            let cached_ty = unsafe { &mut *cache[idx].get() };
             match cached_ty {
                 CachedType::Cached(ty) => return *ty,
                 CachedType::NotComputed => {}
                 CachedType::Computing => panic!("recursive type"),
             };
-            let cached_ty = unsafe { &mut *self.llvm_ty_cache[idx].get() };
             *cached_ty = CachedType::Computing;
         }
 
@@ -714,11 +738,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 self.llvm_ctx.struct_ty(&field_types)
             }
             Type::Named(decl, args, proto) => {
-                let name = format!(
-                    "{}[{}]",
-                    decl.name,
-                    iiv::diagnostics::fmt::List(args.iter())
-                );
+                let name = format!("{}{}", decl.name, iiv::diagnostics::fmt::List(args.iter()));
                 self.llvm_ctx.create_named_ty(&name, &[self.llvm_ty(proto)])
             }
             Type::Vector(_) => {
@@ -746,7 +766,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             Type::InferenceVar(_) => panic!("invalid type - inf var"),
         };
 
-        let cached_type = unsafe { &mut *self.llvm_ty_cache[idx].get() };
+        let cached_type = unsafe { &mut *(&*self.llvm_ty_cache.get())[idx].get() };
         *cached_type = CachedType::Cached(llvm_ty);
         llvm_ty
     }

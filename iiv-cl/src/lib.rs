@@ -200,7 +200,7 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
             builder.seal_all_blocks();
             builder.finalize();
             self.module.define_function(id, &mut ctx).unwrap();
-            println!("{}", ctx.func);
+            eprintln!("{}", ctx.func);
             self.module.clear_context(&mut ctx);
         });
 
@@ -503,6 +503,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                     iiv::Instruction::Lt(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
+                    iiv::Instruction::TraitCall(_, _, _, _) => unimplemented!(),
                     iiv::Instruction::Call(fun, args, _) => {
                         let ret_ty = fun.borrow().sig.ret_ty;
                         let return_via_pointer = !ret_ty.has_primitive_repr();
@@ -581,7 +582,6 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                             let iiv::Elem::Prop(iiv::Prop(idx)) = elem else {
                                 panic!("invalid get_elem");
                             };
-                            dbg!("REFF", lhs.0);
                             elem_loc = self.elem(elem_loc, *idx as usize);
                         }
 
@@ -656,7 +656,6 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                         let src_value = self.raw_union(src_variant.into());
                         let value = self.raw_union(target.into());
                         self.fb.set_srcloc(ir::SourceLoc::new(loc + 1));
-                        dbg!("VAR CAST");
                         self.write(value, src_value.into());
                         self.fb.set_srcloc(ir::SourceLoc::new(loc));
                         let cast_table = self
@@ -881,7 +880,6 @@ enum LayoutState {
 
 fn as_ty<'i>(ty: TypeRef<'i>) -> ir::Type {
     use iiv::ty::Type;
-    dbg!(ty);
     match *ty {
         Type::Builtin(BuiltinType::Int) => types::I64,
         Type::Builtin(BuiltinType::Null) => types::I8,

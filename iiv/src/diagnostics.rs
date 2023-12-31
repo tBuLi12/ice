@@ -5,23 +5,18 @@ use std::{
 
 use crate::{Source, Span};
 
-// pub trait Error {
-//     fn span(&self) -> ast::Span;
-// }
-
-// pub struct AnyError(Box<dyn Error>);
-
 #[derive(Debug)]
 enum Level {
     Error,
-    Warn,
-    Note,
+    _Warn,
+    _Note,
 }
 
 #[derive(Debug)]
 pub struct Diagnostic {
     message: String,
     span: Span,
+    #[allow(dead_code)]
     level: Level,
 }
 
@@ -82,10 +77,13 @@ pub mod fmt {
         I::Item: Display,
     {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "[")?;
-            let this = self.0.clone();
+            let mut this = self.0.clone();
+            let Some(first) = this.next() else {
+                return Ok(());
+            };
+            write!(f, "[{}", first)?;
             for item in this {
-                write!(f, "{}, ", item)?;
+                write!(f, ",{}", item)?;
             }
             write!(f, "]")
         }
@@ -118,7 +116,7 @@ pub mod fmt {
         }
     }
 
-    #[derive(Clone, Copy)]
+    #[derive(Clone, Copy, Debug)]
     pub struct SideNumber {
         margin: u32,
         n: u32,
@@ -126,12 +124,7 @@ pub mod fmt {
 
     impl Display for SideNumber {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(
-                f,
-                "{}{}",
-                self.n,
-                Margin(self.margin - n_of_digits(self.n + 1))
-            )
+            write!(f, "{}{}", self.n, Margin(self.margin - n_of_digits(self.n)))
         }
     }
 
@@ -174,7 +167,6 @@ impl Diagnostics {
         let messages = unsafe { &mut *self.0.get() };
         let has_errors = messages.len() != 0;
         for Diagnostic { message, span, .. } in messages {
-            println!("printing: {:?}", span);
             let margin = fmt::Margin(fmt::n_of_digits(span.last_line + 1));
             eprintln!("{}", message);
             eprintln!("{}", margin);

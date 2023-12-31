@@ -15,7 +15,7 @@ fn main() {
     let ctx = iiv::Ctx::new(File::open(&name).unwrap(), name);
 
     let mut parser = Parser::new(&ctx, BufReader::new(&ctx.source.file));
-    let mut generator = Generator::new(&ctx);
+    let mut generator = Generator::new(&ctx, false);
     let mut backend = Backend::new(&ctx);
 
     let module = parser.parse_program();
@@ -23,18 +23,18 @@ fn main() {
         return;
     }
 
-    println!("{:?}", module);
+    eprintln!("{:?}", module);
 
     let package = generator.emit_iiv(&[module]);
     if ctx.flush_diagnostics() {
-        println!("there were errors");
+        eprintln!("there were errors");
         return;
     }
 
     for fun in &package.funcs {
-        println!("{}", fun.borrow());
-        iiv::move_check::check(&ctx, &mut *fun.borrow_mut());
-        println!("{}", fun.borrow());
+        // eprintln!("{}", fun.borrow());
+        iiv::move_check::check(&*fun.borrow());
+        // eprintln!("{}", fun.borrow());
     }
 
     backend.transform(&package, "out.o");
@@ -50,6 +50,6 @@ fn main() {
     //         eprintln!("linking failed");
     //     }
     // } else {
-    //     println!("no link");
+    //     eprintln!("no link");
     // }
 }

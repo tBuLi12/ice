@@ -1,10 +1,12 @@
 use std::{fmt, ops::Deref};
 
 use crate::{
-    pool::{self, List, TyDeclRef},
+    pool::{self, List, TraitDeclRef, TyDeclRef},
     str::{Str, StrPool},
-    RawValue,
 };
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct TraitRef<'i>(pub TraitDeclRef<'i>, pub List<'i, TypeRef<'i>>);
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct TypeRef<'i>(pool::Ref<'i, Type<'i>>);
@@ -201,6 +203,19 @@ impl<'i> Pool<'i> {
         TypeRef(self.ty_pool.get(Type::InferenceVar(idx)))
     }
 
+    pub fn resolve_ty_list_args(
+        &'i self,
+        ty_list: List<'i, TypeRef<'i>>,
+        args: &[TypeRef<'i>],
+    ) -> List<'i, TypeRef<'i>> {
+        self.get_ty_list(
+            ty_list
+                .iter()
+                .map(|&ty| self.resolve_ty_args(ty, args))
+                .collect(),
+        )
+    }
+
     pub fn resolve_ty_args(&'i self, ty: TypeRef<'i>, args: &[TypeRef<'i>]) -> TypeRef<'i> {
         match &*ty {
             Type::Invalid | Type::Builtin(_) => ty,
@@ -216,7 +231,7 @@ impl<'i> Pool<'i> {
                     .map(|&prop| self.get_prop(prop.0 .0, self.resolve_ty_args(prop.1, args)))
                     .collect(),
             ),
-            Type::Vector(elem) => unimplemented!(),
+            Type::Vector(_) => unimplemented!(),
             Type::Union(fields) => self.get_union(
                 fields
                     .iter()
@@ -230,7 +245,7 @@ impl<'i> Pool<'i> {
                     .collect(),
             ),
             Type::Ref(pointee) => self.get_ref(self.resolve_ty_args(*pointee, args)),
-            Type::Named(decl, ty_args, proto) => self.get_ty_named(
+            Type::Named(decl, ty_args, _) => self.get_ty_named(
                 *decl,
                 ty_args
                     .iter()
@@ -239,32 +254,16 @@ impl<'i> Pool<'i> {
             ),
             Type::Type(_ty) => unimplemented!(),
             Type::Constant(idx) => args[*idx],
-            Type::InferenceVar(val) => panic!("type variable out of context"),
+            Type::InferenceVar(_) => panic!("type variable out of context"),
         }
     }
 }
 
 impl<'i> TypeRef<'i> {
     pub fn elem(&self, i: u8) -> Option<TypeRef<'i>> {
-        dbg!(&*self.0, i);
         match *self.0 {
             Type::Struct(props) => Some(props[i as usize].1),
             Type::Variant(elems) => Some(elems[i as usize].1),
-            _ => None,
-        }
-    }
-
-    pub fn prop(&self, name: Str<'i>) -> Option<(u8, TypeRef<'i>)> {
-        match *self.0 {
-            Type::Struct(props) | Type::Variant(props) => {
-                Some(props.into_iter().enumerate().find_map(|(i, &prop)| {
-                    if prop.0 .0 == name {
-                        Some((i as u8, prop.0 .1))
-                    } else {
-                        None
-                    }
-                })?)
-            }
             _ => None,
         }
     }
@@ -275,8 +274,36 @@ impl<'i> TypeRef<'i> {
             _ => false,
         }
     }
+
+    pub fn contains(&self, mut fun: impl FnMut(Self) -> bool) -> bool {
+        fun(*self)
+            || match &**self {
+                Type::Builtin(_) | Type::Constant(_) | Type::Invalid => false,
+                Type::Vector(_) => unimplemented!(),
+                Type::Union(types) | Type::Tuple(types) | Type::Named(_, types, _) => {
+                    types.iter().any(|&ty| fun(ty))
+                }
+
+                Type::Variant(props) | Type::Struct(props) => props.iter().any(|prop| fun(prop.1)),
+                Type::Ref(ty) => fun(*ty),
+                Type::InferenceVar(_) => false,
+                Type::Type(_) => {
+                    unimplemented!()
+                }
+            }
+    }
 }
 
+impl<'i> fmt::Display for TraitRef<'i> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}{}",
+            self.0.borrow().name,
+            crate::diagnostics::fmt::List(self.1.iter())
+        )
+    }
+}
 impl<'i> fmt::Display for TypeRef<'i> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.0 {
@@ -314,7 +341,7 @@ impl<'i> fmt::Display for TypeRef<'i> {
             Type::Named(decl, args, _) => {
                 write!(
                     f,
-                    "{}[{}]",
+                    "{}{}",
                     decl.name,
                     crate::diagnostics::fmt::List(args.iter())
                 )
