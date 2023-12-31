@@ -1,6 +1,7 @@
 use std::{env, fs::File, io::BufReader};
 
 use ice_parser::Parser;
+use iiv::FileSource;
 use iiv_gen::Generator;
 use iiv_llvm::Backend;
 
@@ -12,21 +13,26 @@ fn main() {
         return;
     };
 
-    let ctx = iiv::Ctx::new(File::open(&name).unwrap(), name);
+    let source = FileSource {
+        file: File::open(&name).unwrap(),
+        name,
+    };
 
-    let mut parser = Parser::new(&ctx, BufReader::new(&ctx.source.file));
+    let ctx = iiv::Ctx::new();
+
+    let mut parser = Parser::new(&ctx, BufReader::new(&source.file));
     let mut generator = Generator::new(&ctx, false);
     let mut backend = Backend::new(&ctx);
 
     let module = parser.parse_program();
-    if ctx.flush_diagnostics() {
+    if ctx.flush_diagnostics(&source) {
         return;
     }
 
     eprintln!("{:?}", module);
 
     let package = generator.emit_iiv(&[module]);
-    if ctx.flush_diagnostics() {
+    if ctx.flush_diagnostics(&source) {
         eprintln!("there were errors");
         return;
     }

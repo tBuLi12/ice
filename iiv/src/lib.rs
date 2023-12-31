@@ -1,4 +1,4 @@
-use std::{fmt::Display, fs::File};
+use std::{fmt::Display, fs::File, io};
 
 use diagnostics::Diagnostics;
 use pool::{FuncRef, TraitDeclRef};
@@ -70,6 +70,18 @@ impl Span {
         RightSpan {
             last_line: self.last_line,
             end_highlight_offset: self.end_highlight_offset,
+        }
+    }
+}
+
+impl LeftSpan {
+    pub fn to(self, right: RightSpan) -> Span {
+        Span {
+            first_line: self.first_line,
+            last_line: right.last_line,
+            begin_offset: self.begin_offset,
+            begin_highlight_offset: self.begin_highlight_offset,
+            end_highlight_offset: right.end_highlight_offset,
         }
     }
 }
@@ -205,9 +217,28 @@ impl<'i> PartialEq for Value<'i> {
     }
 }
 
-pub struct Source {
+pub trait Source {
+    type Reader<'this>: io::Read + io::Seek
+    where
+        Self: 'this;
+
+    fn name(&self) -> &str;
+    fn reader(&self) -> Self::Reader<'_>;
+}
+
+pub struct FileSource {
     pub file: File,
     pub name: String,
+}
+
+impl Source for FileSource {
+    type Reader<'a> = &'a File;
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn reader(&self) -> Self::Reader<'_> {
+        &self.file
+    }
 }
 
 pub struct Ctx<'i> {
@@ -216,23 +247,21 @@ pub struct Ctx<'i> {
     pub ty_decl_pool: pool::TyDeclPool<'i>,
     pub trait_decl_pool: pool::TraitDeclPool<'i>,
     pub diagnostcs: Diagnostics,
-    pub source: Source,
 }
 
 impl<'i> Ctx<'i> {
-    pub fn new(file: File, name: String) -> Self {
+    pub fn new() -> Self {
         Ctx {
             type_pool: crate::ty::Pool::new(),
             fun_pool: pool::FunPool::new(),
             ty_decl_pool: pool::TyDeclPool::new(),
             trait_decl_pool: pool::TraitDeclPool::new(),
             diagnostcs: Diagnostics::new(),
-            source: Source { file, name },
         }
     }
 
-    pub fn flush_diagnostics(&self) -> bool {
-        self.diagnostcs.print_all(&self.source)
+    pub fn flush_diagnostics(&self, source: &impl Source) -> bool {
+        self.diagnostcs.print_all(source)
     }
 }
 

@@ -218,7 +218,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
         let fun = self.eat_kw(Keyword::Fun)?;
         let name = self.ident().expected("function name")?;
         let type_params = self.parse_type_params()?;
-        let ((params, _), _) = self
+        let ((params, _), span) = self
             .parens(|p| {
                 p.list(Punctuation::Comma, |p| {
                     let name = p.ident()?;
@@ -235,7 +235,11 @@ impl<'i, R: io::Read> Parser<'i, R> {
         })?;
 
         Ok(Signature {
-            span: fun,
+            span: if let Some(ty) = &return_ty {
+                fun.to(ty.span())
+            } else {
+                fun.to(span)
+            },
             name,
             is_mut: false,
             params,
@@ -357,20 +361,20 @@ impl<'i, R: io::Read> Parser<'i, R> {
             return Ok(self.pattern_ident(name));
         }
 
-        if self.eat_punct(Punctuation::Period).is_ok() {
+        if let Ok(span) = self.eat_punct(Punctuation::Period) {
             let name = self.ident().expected("a variant name")?;
 
-            let inner = if let Ok((pattern, _)) = self
+            let (span, inner) = if let Ok((pattern, paren_span)) = self
                 .parens(|p| p.parse_pattern().expected("a pattern"))
                 .invalid()?
             {
-                Some(Box::new(pattern))
+                (span.to(paren_span.span()), Some(Box::new(pattern)))
             } else {
-                None
+                (span.to(name.span), None)
             };
 
             return Ok(Pattern {
-                body: PatternBody::Variant(VariantPattern { name, inner }),
+                body: PatternBody::Variant(VariantPattern { span, name, inner }),
                 guard: None,
             });
         }
@@ -425,7 +429,8 @@ impl<'i, R: io::Read> Parser<'i, R> {
             let value = self.parse_expr().expected("an initializer")?;
 
             return Ok(BlockItem::Bind(Binding {
-                span: span.to(binding.span()),
+                binding_type,
+                span: span.to(value.span()),
                 binding,
                 value,
             }));
@@ -453,12 +458,12 @@ impl<'i, R: io::Read> Parser<'i, R> {
             let first = p.parse_ty_prop()?;
             if p.eat_punct(Punctuation::Pipe).is_ok() {
                 let mut prop_list = p.list(Punctuation::Pipe, |p| p.parse_ty_prop())?.0;
-                prop_list.push(first);
+                prop_list.insert(0, first);
                 return Ok((prop_list, true));
             }
             if p.eat_punct(Punctuation::Comma).is_ok() {
                 let mut prop_list = p.list(Punctuation::Comma, |p| p.parse_ty_prop())?.0;
-                prop_list.push(first);
+                prop_list.insert(0, first);
                 return Ok((prop_list, false));
             }
             Ok((vec![first], false))
@@ -475,7 +480,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
             let expr = Expr::Variable(ident);
             if let Ok((span, args)) = self.parse_ty_args().invalid()? {
                 Ok(Expr::TyArgApply(TyArgApply {
-                    span,
+                    span: ident.span.to(span),
                     lhs: Box::new(expr),
                     args,
                 }))
@@ -576,21 +581,21 @@ impl<'i, R: io::Read> Parser<'i, R> {
                 .invalid()?
             {
                 lhs = Expr::Call(Call {
-                    span,
+                    span: lhs.span().to(span),
                     lhs: Box::new(lhs),
                     args,
                 });
             } else if let Ok((span, args)) = self.parse_ty_args().invalid()? {
                 lhs = Expr::TyArgApply(TyArgApply {
-                    span,
+                    span: lhs.span().to(span),
                     lhs: Box::new(lhs),
                     args,
                 });
             } else if self.eat_punct(Punctuation::Period).is_ok() {
                 if let Ok(span) = self.eat_punct(Punctuation::Asterisk) {
                     lhs = Expr::Deref(Deref {
+                        span: lhs.span().to(span),
                         lhs: Box::new(lhs),
-                        span,
                     });
                 } else {
                     let prop = self.ident().expected("property name")?;
@@ -646,14 +651,12 @@ impl<'i, R: io::Read> Parser<'i, R> {
         if let Ok((expr, paren_span)) = self.parens(|p| p.parse_expr()).invalid()? {
             Ok(Expr::Variant(Variant {
                 span: span.to(paren_span),
-                ty: None,
                 variant: name,
                 value: Some(Box::new(expr)),
             }))
         } else {
             Ok(Expr::Variant(Variant {
                 span: span.to(name.span()),
-                ty: None,
                 variant: name,
                 value: None,
             }))

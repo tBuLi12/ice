@@ -371,7 +371,7 @@ pub fn resolve_drops<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
 
 fn print_state(state: &State, i: usize, depth: usize) {
     for _ in 0..depth {
-        print!("    ");
+        eprint!("    ");
     }
     match state {
         State::Dead => {

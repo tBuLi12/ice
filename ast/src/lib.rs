@@ -189,6 +189,7 @@ pub enum BindingType {
 #[derive(Debug)]
 pub struct Binding<'i> {
     pub span: Span,
+    pub binding_type: BindingType,
     pub binding: Pattern<'i>,
     pub value: Expr<'i>,
 }
@@ -207,6 +208,7 @@ pub struct NamedPattern<'i> {
 
 #[derive(Debug)]
 pub struct VariantPattern<'i> {
+    pub span: Span,
     pub name: Ident<'i>,
     pub inner: Option<Box<Pattern<'i>>>,
 }
@@ -616,7 +618,6 @@ pub struct Vector<'i> {
 #[derive(Debug)]
 pub struct Variant<'i> {
     pub span: Span,
-    pub ty: Option<Box<Expr<'i>>>,
     pub variant: Ident<'i>,
     pub value: Option<Box<Expr<'i>>>,
 }
@@ -700,17 +701,20 @@ impl Spanned for Span {
     }
 }
 
+impl<L: Spanned, R: Spanned> Spanned for (L, R) {
+    fn left_span(&self) -> LeftSpan {
+        self.0.left_span()
+    }
+    fn right_span(&self) -> RightSpan {
+        self.1.right_span()
+    }
+}
+
 pub trait Spanned {
     fn span(&self) -> Span {
         let left = self.left_span();
         let right = self.right_span();
-        Span {
-            first_line: left.first_line,
-            last_line: right.last_line,
-            begin_offset: left.begin_offset,
-            begin_highlight_offset: left.begin_highlight_offset,
-            end_highlight_offset: right.end_highlight_offset,
-        }
+        left.to(right)
     }
 
     fn left_span(&self) -> LeftSpan;
@@ -806,7 +810,7 @@ spanned_impls! {
     Vector,
     Variant,
     NamedPattern : name - inner,
-    VariantPattern : name - ?inner name,
+    VariantPattern,
     NamedTyPattern,
     BindPattern : name - name,
     TuplePattern,

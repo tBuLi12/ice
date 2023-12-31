@@ -160,7 +160,7 @@ impl<T> ListPoolStorage<T> {
         }
 
         let len = self.buf.last().unwrap().len();
-        if (self.next_idx + value.len() - 1) == len {
+        if self.next_idx + value.len() > len {
             self.next_idx = 0;
             let mut new_len = len * 2;
             while new_len < value.len() {

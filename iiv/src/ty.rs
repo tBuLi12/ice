@@ -348,7 +348,7 @@ impl<'i> fmt::Display for TypeRef<'i> {
             }
             Type::Type(_ty) => write!(f, "type"),
             Type::Constant(val) => write!(f, "T{}", val),
-            Type::InferenceVar(val) => write!(f, "InfVar{}", val),
+            Type::InferenceVar(_) => write!(f, "_"),
             Type::Builtin(BuiltinType::Bool) => write!(f, "bool"),
             Type::Builtin(BuiltinType::Int) => write!(f, "int"),
             Type::Builtin(BuiltinType::Null) => write!(f, "null"),

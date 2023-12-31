@@ -462,7 +462,6 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     }
 
     fn msg(&mut self, message: diagnostics::Diagnostic) {
-        eprintln!("adding error");
         self.messages.add(message);
     }
 
@@ -1071,23 +1070,24 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             Expr::Variable(ident) => self.resolve(ident),
             Expr::Block(block) => {
                 self.begin_scope();
-                for item in &block.items[..(block.items.len() - 1)] {
-                    let value = self.check_statement(item);
-                    self.drop(value);
-                }
-                let result = if let (Some(value), true) =
-                    (block.items.last(), block.has_trailing_expression)
-                {
-                    self.check_statement(value)
+                let result = if let Some((last, rest)) = block.items.split_last() {
+                    for item in rest {
+                        let value = self.check_statement(item);
+                        self.drop(value);
+                    }
+                    let last_result = self.check_statement(last);
+                    let result = if block.has_trailing_expression {
+                        last_result
+                    } else {
+                        self.null()
+                    };
+                    let result = self.move_val(result);
+                    result.obj()
                 } else {
-                    // let last = self.check_statement(value);
-                    // self.drop(last);
-
-                    self.null()
+                    self.null().obj()
                 };
-                let result = self.move_val(result);
                 self.end_scope();
-                result.obj()
+                result
             }
             Expr::Int(int) => self.iiv.int_lit(int.value).obj(),
             Expr::Bool(boolean) => self.iiv.bool_lit(boolean.value).obj(),
@@ -1525,7 +1525,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             name.value
         ));
 
-        self.invalid().obj()
+        Object::Invalid
     }
 
     fn resolve_val(&mut self, name: &Ident<'i>) -> Value<'i> {

@@ -237,6 +237,7 @@ dependencies = [
 name = "ice-lsp"
 version = "0.1.0"
 dependencies = [
+ "ast",
  "ice-parser",
  "iiv",
  "iiv-gen",

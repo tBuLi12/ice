@@ -3,7 +3,7 @@ use std::{
     io::{BufReader, Read, Seek, SeekFrom},
 };
 
-use crate::{Source, Span};
+use crate::{FileSource, Source, Span};
 
 #[derive(Debug)]
 enum Level {
@@ -163,7 +163,7 @@ impl Diagnostics {
         messages.is_empty()
     }
 
-    pub fn print_all(&self, source: &Source) -> bool {
+    pub fn print_all(&self, source: &impl Source) -> bool {
         let messages = unsafe { &mut *self.0.get() };
         let has_errors = messages.len() != 0;
         for Diagnostic { message, span, .. } in messages {
@@ -171,8 +171,12 @@ impl Diagnostics {
             eprintln!("{}", message);
             eprintln!("{}", margin);
 
-            Seek::seek(&mut &source.file, SeekFrom::Start(span.begin_offset as u64)).unwrap();
-            let mut bytes = BufReader::new(&source.file).bytes();
+            Seek::seek(
+                &mut source.reader(),
+                SeekFrom::Start(span.begin_offset as u64),
+            )
+            .unwrap();
+            let mut bytes = BufReader::new(source.reader()).bytes();
             let mut current_line = span.first_line;
             while current_line <= span.last_line {
                 eprint!("{}", fmt::color::RESET);
@@ -185,7 +189,6 @@ impl Diagnostics {
                 while let Some(byte) = bytes.next() {
                     let byte = char::from(byte.unwrap());
                     if byte == '\n' {
-                        print!("newline {}", column);
                         break;
                     }
 
@@ -214,7 +217,7 @@ impl Diagnostics {
             eprintln!(
                 "{}@ {}:{}:{}",
                 fmt::Repeat(margin.0, ' '),
-                &source.name,
+                source.name(),
                 span.first_line + 1,
                 span.begin_highlight_offset + 1
             );

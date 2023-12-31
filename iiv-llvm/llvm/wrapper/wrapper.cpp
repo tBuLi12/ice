@@ -59,7 +59,7 @@ extern "C" int32_t getTargetMachine(llvm::LLVMContext* ctx, llvm::TargetMachine*
 }
 
 extern "C" int32_t emitModule(llvm::Module* llvmModule, llvm::TargetMachine* targetMachine, char const* name, uint32_t name_len) {
-    llvmModule->print(llvm::outs(), nullptr);
+    llvmModule->print(llvm::errs(), nullptr);
     
     llvm::legacy::PassManager passManager{};
 

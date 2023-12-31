@@ -1,17 +1,38 @@
 use ice_parser::Parser;
+use iiv::Source;
 use iiv_gen::{Generator, TokenType};
 use lsp_types::{
-    InitializeParams, InitializeResult, SemanticToken, SemanticTokenModifier, SemanticTokenType,
-    SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions,
-    SemanticTokensParams, SemanticTokensResult, SemanticTokensServerCapabilities,
-    ServerCapabilities, ServerInfo, WorkDoneProgressOptions,
+    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
+    DocumentFormattingParams, InitializeParams, InitializeResult, OneOf, Position, Range,
+    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
+    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
+    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     error::Error,
-    fs::File,
-    io::{self, BufRead, BufReader, Read, Write},
+    io::{self, BufRead, BufReader, Cursor, Read, Write},
 };
+
+mod fmt;
+
+struct StrSource<'s> {
+    name: String,
+    text: &'s str,
+}
+
+impl<'s> Source for StrSource<'s> {
+    type Reader<'this> = Cursor<&'this [u8]>     where
+    Self: 'this;
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn reader(&self) -> Self::Reader<'_> {
+        Cursor::new(self.text.as_bytes())
+    }
+}
 
 fn err(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -30,10 +51,10 @@ fn parse_option<'a>(option: &'static str, arg: &'a str) -> Result<&'a str, Box<d
 
 fn main() -> Result<(), Box<dyn Error>> {
     let res = _main();
-    if let Err(err) = &res {
-        let mut f = File::create("C:/Users/tbuli/Apps/DEV/ice/ice-lsp/logs.txt")?;
-        f.write_all(err.to_string().as_bytes())?;
-    }
+    // if let Err(err) = &res {
+    //     let mut f = File::create("C:/Users/tbuli/Apps/DEV/ice/ice-lsp/logs.txt")?;
+    //     f.write_all(err.to_string().as_bytes())?;
+    // }
     res
 }
 
@@ -68,17 +89,12 @@ fn run_server(reader: impl Read, mut writer: impl Write) -> Result<(), Box<dyn E
     let mut reader = BufReader::new(reader);
     let body = get_body(&mut reader)?;
     handle_initial_request(body, &mut writer)?;
-    let mut f = File::options()
-        .append(true)
-        .open("C:/Users/tbuli/Apps/DEV/ice/ice-lsp/logs.txt")?;
 
-    f.write_all("initial done\n".as_bytes())?;
-    f.flush()?;
+    let mut files = HashMap::new();
+
     loop {
-        f.write_all("waiting for next\n".as_bytes())?;
-        f.flush()?;
         let body = get_body(&mut reader)?;
-        do_request(body, &mut writer)?;
+        do_request(&mut files, body, &mut writer)?;
     }
 }
 
@@ -127,13 +143,7 @@ fn get_body(reader: &mut impl BufRead) -> Result<String, Box<dyn Error>> {
         if reader.read_line(&mut header)? == 0 {
             return Err(err("recieved incomplete request"));
         };
-        let mut f = File::options()
-            .append(true)
-            .open("C:/Users/tbuli/Apps/DEV/ice/ice-lsp/logs.txt")?;
 
-        f.write_all("read header line\n".as_bytes())?;
-        f.flush()?;
-        drop(f);
         let header = header.trim();
         if header.is_empty() {
             break;
@@ -176,13 +186,6 @@ fn handle_initial_request(body: String, writer: &mut impl Write) -> Result<(), B
         return Ok(());
     };
 
-    let mut f = File::options()
-        .append(true)
-        .open("C:/Users/tbuli/Apps/DEV/ice/ice-lsp/logs.txt")?;
-
-    f.write_all(request.method.as_bytes())?;
-    f.write_all("\n".as_bytes())?;
-
     // SemanticTokenType::;
     match request.method {
         "initialize" => {
@@ -214,7 +217,10 @@ fn handle_initial_request(body: String, writer: &mut impl Write) -> Result<(), B
                             },
                         ),
                     ),
-
+                    text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                        TextDocumentSyncKind::FULL,
+                    )),
+                    document_formatting_provider: Some(OneOf::Left(true)),
                     // hover_provider: Some(HoverProviderCapability::Simple(true)),
                     // {
 
@@ -238,51 +244,84 @@ fn handle_initial_request(body: String, writer: &mut impl Write) -> Result<(), B
     Ok(())
 }
 
-fn do_request(body: String, writer: &mut impl Write) -> Result<(), Box<dyn Error>> {
+fn do_request(
+    files: &mut HashMap<Url, String>,
+    body: String,
+    writer: &mut impl Write,
+) -> Result<(), Box<dyn Error>> {
     let request: Request = serde_json::from_str(&body).map_err(add_ctx("in request body"))?;
-    let Some(id) = request.id else {
-        let mut f = File::options()
-            .append(true)
-            .open("C:/Users/tbuli/Apps/DEV/ice/ice-lsp/logs.txt")?;
 
-        f.write_all(request.method.as_bytes())?;
-        f.write_all("\n".as_bytes())?;
+    eprintln!("method: {}", request.method);
+
+    let Some(id) = request.id else {
+        match request.method {
+            "textDocument/didOpen" => {
+                let request: Params<DidOpenTextDocumentParams> =
+                    serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
+                let request = request.params;
+                files.insert(request.text_document.uri, request.text_document.text);
+            }
+            "textDocument/didChange" => {
+                let request: Params<DidChangeTextDocumentParams> =
+                    serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
+                let request = request.params;
+                if let Some(text) = files.get_mut(&request.text_document.uri) {
+                    *text = request.content_changes.into_iter().next().unwrap().text;
+                }
+            }
+            "textDocument/didClose" => {
+                let request: Params<DidCloseTextDocumentParams> =
+                    serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
+                let request = request.params;
+                files.remove(&request.text_document.uri);
+            }
+            _ => {}
+        }
+
         return Ok(());
     };
-    let mut f = File::options()
-        .append(true)
-        .open("C:/Users/tbuli/Apps/DEV/ice/ice-lsp/logs.txt")?;
 
-    f.write_all(request.method.as_bytes())?;
-    f.write_all("\n".as_bytes())?;
     match request.method {
         "textDocument/semanticTokens/full" => {
             let request: Params<SemanticTokensParams> =
                 serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
             let request = request.params;
 
-            let name = request
-                .text_document
-                .uri
-                .path_segments()
-                .map(|segments| segments.last())
-                .flatten()
-                .unwrap_or("<unknown file>");
+            if let Some(text) = files.get(&request.text_document.uri) {
+                let source = StrSource {
+                    name: request
+                        .text_document
+                        .uri
+                        .path_segments()
+                        .map(|segments| segments.last())
+                        .flatten()
+                        .unwrap_or("<unknown file>")
+                        .to_string(),
+                    text,
+                };
 
-            let path = request
-                .text_document
-                .uri
-                .to_file_path()
-                .map_err(|_| err("invalid text url"))?;
+                let result = SemanticTokensResult::Tokens(SemanticTokens {
+                    result_id: None,
+                    data: semantic_highlight(&source),
+                });
 
-            let file = File::open(path)?;
-
-            let result = SemanticTokensResult::Tokens(SemanticTokens {
-                result_id: None,
-                data: semantic_highlight(file, name.to_string()),
-            });
-
-            write_response(result, id, writer)?;
+                write_response(result, id, writer)?;
+            }
+        }
+        "textDocument/formatting" => {
+            let request: Params<DocumentFormattingParams> = serde_json::from_str(&body)?;
+            let request = request.params;
+            let edits = if let Some(text) = files.get(&request.text_document.uri) {
+                let ctx = iiv::Ctx::new();
+                let mut parser = Parser::new(&ctx, text.as_bytes());
+                let module = parser.parse_program();
+                let edits = fmt::format_module(module);
+                eprintln!("{:#?}", edits);
+                edits
+            } else {
+                vec![]
+            };
+            write_response(edits, id, writer)?;
         }
         "exit" => std::process::exit(0),
         _ => return Err(err("invalid request")),
@@ -291,28 +330,22 @@ fn do_request(body: String, writer: &mut impl Write) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-fn semantic_highlight(file: File, name: String) -> Vec<SemanticToken> {
-    let ctx = iiv::Ctx::new(file, name);
+fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {
+    let ctx = iiv::Ctx::new();
 
-    let mut parser = Parser::new(&ctx, BufReader::new(&ctx.source.file));
+    let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
     let mut generator = Generator::new(&ctx, true);
 
     let module = parser.parse_program();
 
     let _ = generator.emit_iiv(&[module]);
 
+    if !ctx.diagnostcs.ok() {
+        ctx.flush_diagnostics(source);
+    }
+
     let mut prev_line = 0;
     let mut prev_start = 0;
-
-    let mut f = File::options()
-        .append(true)
-        .open("C:/Users/tbuli/Apps/DEV/ice/ice-lsp/logs.txt")
-        .unwrap();
-
-    f.write_all(format!("{:#?}", generator.index.0).as_bytes())
-        .unwrap();
-    f.flush().unwrap();
-    drop(f);
 
     generator
         .index
