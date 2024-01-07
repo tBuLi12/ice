@@ -9,14 +9,13 @@ use iiv::{
     diagnostics::{self},
     err,
     fun::{Bound, Function, Method, Receiver},
+    impl_tree::ImplForest,
     pool::{self, FuncRef, TraitDeclRef, TyDeclRef},
     str::Str,
-    ty::{PropRef, TraitRef, Type, TypeRef},
+    ty::{PropRef, TraitRef, Type, TypeOverlap, TypeRef},
     ty_decl, Ctx, Package, Prop, Span, Value,
 };
 use ty::InferenceCtx;
-
-use crate::ty::TypeOverlap;
 
 mod ty;
 
@@ -41,7 +40,7 @@ impl LspIndex {
                     Type::Builtin(_) => TokenType::Keyword,
                     _ => TokenType::Type,
                 }),
-                Object::Place(_, _, _) => Some(TokenType::Variable),
+                Object::Place(_, _) => Some(TokenType::Variable),
                 Object::Fun(_, _) | Object::FunDecl(_) => Some(TokenType::Function),
                 _ => None,
             };
@@ -66,7 +65,10 @@ pub struct Generator<'i> {
     fun_pool: &'i iiv::pool::FunPool<'i>,
     ty_decl_pool: &'i iiv::pool::TyDeclPool<'i>,
     trait_decl_pool: &'i iiv::pool::TraitDeclPool<'i>,
+    trait_impl_pool: &'i iiv::pool::TraitImplPool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
+    impl_forest: ImplForest<'i>,
+    copy_trait: TraitRef<'i>,
 }
 
 struct Scope<'i> {
@@ -79,7 +81,7 @@ struct Scope<'i> {
 impl<'i> Scopes<'i> {
     pub fn define(&mut self, name: &Ident<'i>, object: Object<'i>) {
         let scope = self.inner.last_mut().unwrap();
-        if let Object::Place(val, _, _) = &object {
+        if let Object::Place(val, _) = &object {
             scope.values.push(*val);
         }
         if scope.index.insert(name.value, object).is_some() {
@@ -141,6 +143,8 @@ struct Scopes<'i> {
     inner: Vec<Scope<'i>>,
     messages: &'i iiv::diagnostics::Diagnostics,
     ty_pool: &'i iiv::ty::Pool<'i>,
+    this_ty: Option<TypeRef<'i>>,
+    this: Option<Value<'i>>,
 }
 
 enum Callable<'i> {
@@ -166,12 +170,14 @@ pub struct FunctionGenerator<'f, 'i, 'g> {
     trait_method_scope: &'g HashMap<Str<'i>, Vec<(TraitDeclRef<'i>, usize)>>,
     index: &'g mut LspIndex,
     scopes: &'g mut Scopes<'i>,
+    impl_forest: &'g mut ImplForest<'i>,
     ty: &'i iiv::ty::Pool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
     constant_depth: usize,
     ret_type: Option<TypeRef<'i>>,
     iiv: iiv::builder::Cursor<'f, 'i>,
     inf_ctx: InferenceCtx<'i>,
+    copy_trait: TraitRef<'i>,
 }
 
 impl<'i> Generator<'i> {
@@ -186,23 +192,53 @@ impl<'i> Generator<'i> {
                 }],
                 messages: &ctx.diagnostcs,
                 ty_pool: &ctx.type_pool,
+                this_ty: None,
+                this: None,
             },
             trait_method_scope: HashMap::new(),
             ty: &ctx.type_pool,
             fun_pool: &ctx.fun_pool,
             ty_decl_pool: &ctx.ty_decl_pool,
             trait_decl_pool: &ctx.trait_decl_pool,
+            trait_impl_pool: &ctx.trait_impl_pool,
             messages: &ctx.diagnostcs,
+            impl_forest: ImplForest::new(&ctx.type_pool, &ctx.diagnostcs),
             index: if index_tokens {
                 LspIndex(Some(vec![]))
             } else {
                 LspIndex(None)
             },
+            copy_trait: ctx.builtins.get_copy(),
         }
     }
 
     fn define_global(&mut self, name: Str<'i>, obj: Object<'i>) {
         self.scopes.inner[0].index.insert(name, obj);
+    }
+
+    pub fn resolve_ty_param_list(
+        &mut self,
+        ty_params: &[ast::TypeParam<'i>],
+    ) -> (Vec<Bound<'i>>, pool::List<'i, TypeRef<'i>>) {
+        let mut bounds = vec![];
+        let trait_ty_params = self.ty.get_ty_list(
+            ty_params
+                .iter()
+                .map(|param| {
+                    let ty = self.scopes.new_ty_param(&param.name);
+                    let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""));
+                    let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+                    for tr_expr in &param.trait_bounds {
+                        if let Some(mut tr) = fun_gen.check_trait(tr_expr) {
+                            tr.1 = fun_gen.ty.get_ty_list(fun_gen.inf_ctx.unwrap_list(tr.1));
+                            bounds.push(Bound { ty, tr });
+                        }
+                    }
+                    ty
+                })
+                .collect(),
+        );
+        (bounds, trait_ty_params)
     }
 
     pub fn emit_iiv(&mut self, modules: &[Module<'i>]) -> Package<'i> {
@@ -243,35 +279,31 @@ impl<'i> Generator<'i> {
         for trait_node in traits {
             self.scopes.begin();
             let this_ty = self.scopes.generate_ty_param();
-            let trait_ty_params = self.ty.get_ty_list(
-                trait_node
-                    .type_params
-                    .iter()
-                    .map(|param| self.scopes.new_ty_param(&param.name))
-                    .collect(),
-            );
+            self.scopes.this_ty = Some(this_ty);
+            let (mut bounds, trait_ty_params) = self.resolve_ty_param_list(&trait_node.type_params);
 
             let tr = ty_decl::TraitDecl {
                 name: trait_node.name.value,
                 ty_params: trait_node.type_params.iter().map(|_| ()).collect(),
                 signatures: Vec::with_capacity(trait_node.signatures.len()),
+                trait_bounds: bounds.clone(),
             };
             let tr_ref = self.trait_decl_pool.insert(tr);
             let tr = &mut *tr_ref.borrow_mut();
+
+            bounds.insert(
+                0,
+                Bound {
+                    ty: this_ty,
+                    tr: TraitRef(tr_ref, trait_ty_params),
+                },
+            );
 
             for sig in &trait_node.signatures {
                 let mut fun = Function::empty(self.ty, sig.name.value);
                 let mut fun_gen = FunctionGenerator::new(self, &mut fun);
                 fun_gen.begin_scope();
-                fun_gen.set_signature(
-                    &sig,
-                    vec![Bound {
-                        ty: this_ty,
-                        tr: TraitRef(tr_ref, trait_ty_params),
-                    }],
-                    tr.ty_params.len() + 1,
-                    Some(this_ty),
-                );
+                fun_gen.set_signature(&sig, bounds.clone(), tr.ty_params.len() + 1, Some(this_ty));
                 fun_gen.end_scope();
                 let fun = self.fun_pool.insert(fun);
                 tr.signatures.push(Method {
@@ -291,13 +323,209 @@ impl<'i> Generator<'i> {
                     .or_insert_with(|| vec![]);
                 methods.push((tr_ref, i));
             }
-
+            self.scopes.this_ty = None;
             self.define_global(trait_node.name.value, Object::TraitDecl(tr_ref));
             package_traits.push(tr_ref);
         }
 
-        let funcs = &modules[0].functions;
+        let trait_impls = &modules[0].trait_impls;
+        let mut package_trait_impls = vec![];
 
+        for impl_node in trait_impls {
+            self.scopes.begin();
+            let (own_bounds, impl_ty_params) = self.resolve_ty_param_list(&impl_node.type_params);
+
+            let (ty, tr) = {
+                let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""));
+                let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+                let ty = fun_gen.check_type(&impl_node.ty);
+                fun_gen.scopes.this_ty = Some(ty);
+                let tr = fun_gen.check_trait(&impl_node.tr);
+                let ty = fun_gen.inf_ctx.unwrap(ty);
+                let tr = tr.map(|mut tr| {
+                    tr.1 = fun_gen.ty.get_ty_list(fun_gen.inf_ctx.unwrap_list(tr.1));
+                    tr
+                });
+                (ty, tr)
+            };
+
+            self.scopes.this_ty = Some(ty);
+
+            let bounds = tr
+                .map(|tr| {
+                    std::iter::once(Bound { ty, tr })
+                        .chain(
+                            tr.0.borrow()
+                                .trait_bounds
+                                .iter()
+                                .map(|&bound| self.ty.resolve_bound(bound, &tr.1)),
+                        )
+                        .chain(own_bounds.clone())
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or(vec![]);
+
+            let funcs = impl_node
+                .functions
+                .iter()
+                .map(|fun_node| {
+                    let mut fun = Function::empty(self.ty, fun_node.signature.name.value);
+                    let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+
+                    fun_gen.begin_scope();
+                    fun_gen.set_signature(
+                        &fun_node.signature,
+                        bounds.clone(),
+                        impl_ty_params.len(),
+                        Some(ty),
+                    );
+                    fun_gen.end_scope();
+
+                    if let Some(tr) = tr {
+                        let tr_ty_args = tr.1;
+                        let tr = &*tr.0.borrow();
+                        let method = tr.signatures.iter().find(|method| {
+                            method.fun.borrow().sig.name == fun_node.signature.name.value
+                        });
+                        if let Some(method) = method {
+                            self.scopes.begin();
+                            let mut method_ty_args = self.ty.get_ty_list(
+                                impl_ty_params.iter().copied().chain(
+                                    fun_node
+                                    .signature
+                                    .type_params
+                                    .iter()
+                                    .map(|_| self.scopes.generate_ty_param())
+                                )
+
+                                    .collect()
+                            );
+                            let tr_fun = &*method.fun.borrow();
+                            if (method_ty_args.len() - impl_ty_params.len()) != (tr_fun.sig.ty_params.len() - 1 - tr_ty_args.len()) {
+                                self.messages.add(err!(
+                                    &fun_node.signature.name.span,
+                                    "trait method declares {} type parameters",
+                                    tr_fun.sig.ty_params.len() - 1 - tr_ty_args.len()
+                                ));
+                                method_ty_args = self.ty.get_ty_list(
+                                    (0..(tr_fun.sig.ty_params.len() - 1 - tr_ty_args.len() + impl_ty_params.len()))
+                                        .into_iter()
+                                        .map(|i| {
+                                            method_ty_args
+                                                .get(i)
+                                                .copied()
+                                                .unwrap_or_else(|| self.ty.get_ty_invalid())
+                                        })
+                                        .collect(),
+                                )
+                            }
+                            if tr_fun.sig.params.len() != fun.sig.params.len() {
+                                self.messages.add(err!(
+                                    &fun_node.signature.name.span,
+                                    "trait method declares {} parameters",
+                                    tr_fun.sig.params.len()
+                                ));
+                            }
+                            for ((&tr_ty, &ty), param) in tr_fun
+                                .sig
+                                .params
+                                .iter()
+                                .skip(1)
+                                .zip(fun.sig.params.iter().skip(1))
+                                .zip(fun_node.signature.params.iter())
+                            {
+                                let tr_ty = self.ty.resolve_ty_args(tr_ty, &method_ty_args);
+                                if tr_ty != ty {
+                                    self.messages.add(err!(
+                                        &param.span(),
+                                        "parameter type does not match the one declared by the trait"
+                                    ));
+                                }
+                            }
+                            let tr_ret_ty =
+                                self.ty.resolve_ty_args(tr_fun.sig.ret_ty, &method_ty_args);
+                            if tr_ret_ty != fun.sig.ret_ty {
+                                self.messages.add(err!(
+                                    &fun_node.signature.span,
+                                    "return type does not match the one declared by the trait"
+                                ));
+                            }
+
+                            let mut bounds = fun.sig.trait_bounds[bounds.len()..].to_vec();
+
+                            for tr_bound in tr_fun.sig.trait_bounds[(tr.trait_bounds.len() + 1)..]
+                                .iter()
+                                .copied()
+                            {
+                                let tr_bound = self.ty.resolve_bound(tr_bound, &method_ty_args);
+
+                                if let Some(bound_idx) =
+                                    bounds.iter().position(|&bound| bound == tr_bound)
+                                {
+                                    bounds.swap_remove(bound_idx);
+                                } else {
+                                    self.messages.add(err!(
+                                        &fun_node.signature.span,
+                                        "trait declares stricter bounds on this function"
+                                    ))
+                                }
+                            }
+                            if !bounds.is_empty() {
+                                self.messages.add(err!(
+                                    &fun_node.signature.span,
+                                    "cannot add extra trait bounds"
+                                ))
+                            }
+                            self.scopes.end();
+                        } else {
+                            self.messages.add(err!(
+                                &fun_node.signature.name.span,
+                                "trait does not declare a function named {}",
+                                fun_node.signature.name.value
+                            ));
+                        }
+                    }
+                    let fun = self.fun_pool.insert(fun);
+                    self.index
+                        .register_token_obj(fun_node.signature.name.span, &Object::FunDecl(fun));
+                    self.scopes.end();
+                    Method {
+                        fun,
+                        receiver: Receiver::Immutable,
+                    }
+                })
+                .collect();
+
+            if let Some(tr) = tr {
+                for tr_sig in &tr.0.borrow().signatures {
+                    if impl_node
+                        .functions
+                        .iter()
+                        .find(|fun| fun.signature.name.value == tr_sig.fun.borrow().sig.name)
+                        .is_none()
+                    {
+                        self.messages.add(err!(
+                            &impl_node.span,
+                            "missing associated function {}",
+                            tr_sig.fun.borrow().sig.name
+                        ));
+                    }
+                }
+                let trait_impl = ty_decl::TraitImpl {
+                    ty_params: impl_node.type_params.iter().map(|_| ()).collect(),
+                    functions: funcs,
+                    tr,
+                    ty,
+                    trait_bounds: own_bounds,
+                };
+                let impl_ref = self.trait_impl_pool.insert(trait_impl);
+                package_trait_impls.push(impl_ref);
+                self.impl_forest.add(&impl_node.span, impl_ref);
+            }
+            self.scopes.this_ty = None;
+        }
+
+        let funcs = &modules[0].functions;
         let mut package_funs = vec![];
         for fun_node in funcs {
             let mut fun = Function::empty(self.ty, fun_node.signature.name.value);
@@ -320,8 +548,19 @@ impl<'i> Generator<'i> {
 
         for (&fun, fun_node) in package_funs.iter().zip(funcs) {
             let mut fun = fun.borrow_mut();
+            eprintln!("emitting {}", fun.sig.name);
             let gen = FunctionGenerator::new(self, &mut *fun);
-            gen.emit_function_body(fun_node);
+            gen.emit_function_body(fun_node, Receiver::None);
+        }
+
+        for (&trait_impl, impl_node) in package_trait_impls.iter().zip(trait_impls) {
+            let trait_impl = trait_impl.borrow();
+
+            for (method, fun_node) in trait_impl.functions.iter().zip(&impl_node.functions) {
+                let mut fun = method.fun.borrow_mut();
+                let gen = FunctionGenerator::new(self, &mut *fun);
+                gen.emit_function_body(fun_node, Receiver::Immutable);
+            }
         }
 
         let main = if let Some(Object::FunDecl(main)) =
@@ -333,6 +572,10 @@ impl<'i> Generator<'i> {
         };
 
         Package {
+            impl_forest: std::mem::replace(
+                &mut self.impl_forest,
+                ImplForest::new(self.ty, self.messages),
+            ),
             funcs: package_funs,
             main,
         }
@@ -347,10 +590,12 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             index: &mut parent.index,
             ty: &parent.ty,
             messages: &parent.messages,
+            impl_forest: &mut parent.impl_forest,
             constant_depth: 0,
             ret_type: None,
             iiv: iiv::builder::Cursor::new(parent.ty, func),
             inf_ctx: InferenceCtx::new(parent.ty, parent.messages),
+            copy_trait: parent.copy_trait,
         }
     }
 
@@ -394,7 +639,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         self.iiv.set_ret_ty(ret_ty);
     }
 
-    fn emit_function_body(mut self, fun_node: &ast::Function<'i>) {
+    fn emit_function_body(mut self, fun_node: &ast::Function<'i>, receiver: Receiver) {
         self.begin_scope();
         let sig = self.iiv.current_signature();
         let ret_ty = sig.ret_ty;
@@ -405,9 +650,20 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         for bound in &sig.trait_bounds {
             self.scopes.new_bound(*bound);
         }
-        for (param, ast_param) in self.iiv.params().zip(&fun_node.signature.params) {
+
+        let mut params = self.iiv.params();
+
+        match receiver {
+            Receiver::Immutable => {
+                self.scopes.this = params.next();
+            }
+            Receiver::None => {}
+            _ => panic!("unsupported receiver"),
+        }
+
+        for (param, ast_param) in params.zip(&fun_node.signature.params) {
             self.scopes
-                .define(&ast_param.name, Object::Place(param, param.ty, vec![]));
+                .define(&ast_param.name, Object::Place(param, vec![]));
         }
 
         self.ret_type = Some(ret_ty);
@@ -432,7 +688,8 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 })
             }
         }
-        self.inf_ctx.clear();
+        self.inf_ctx.clear(&mut self.impl_forest);
+        self.scopes.this = None;
     }
 
     fn check_val(&mut self, expr: &Expr<'i>) -> Value<'i> {
@@ -573,14 +830,10 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     ) {
         match &pattern.body {
             PatternBody::Bind(BindPattern { binding_type, name }) => {
-                self.register_token_obj(name.span, &Object::Place(value, value.ty, vec![]));
+                self.register_token_obj(name.span, &Object::Place(value, vec![]));
                 match binding_type {
-                    BindingType::Var => self
-                        .scopes
-                        .define(name, Object::Place(value, value.ty, vec![])),
-                    BindingType::Let => self
-                        .scopes
-                        .define(name, Object::Place(value, value.ty, vec![])),
+                    BindingType::Var => self.scopes.define(name, Object::Place(value, vec![])),
+                    BindingType::Let => self.scopes.define(name, Object::Place(value, vec![])),
                     _ => unimplemented!(),
                 }
             }
@@ -661,11 +914,11 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     fn check_statement(&mut self, item: &BlockItem<'i>) -> Value<'i> {
         match item {
             BlockItem::Expr(expr) => match self.check(expr, None) {
-                Object::Place(val, _, offsets) => {
+                Object::Place(val, offsets) => {
                     if offsets.is_empty() {
                         val
                     } else {
-                        self.iiv.get_deep_prop(val, offsets, val.ty)
+                        self.copy_prop(val, offsets, val.ty)
                     }
                 }
                 Object::Value(val) => val,
@@ -715,11 +968,11 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     self.invalid()
             // }
             Object::Value(val) => val,
-            Object::Place(val, _, offsets) => {
+            Object::Place(val, offsets) => {
                 let result = if offsets.is_empty() {
                     val
                 } else {
-                    self.iiv.get_deep_prop(val, offsets, val.ty)
+                    self.copy_prop(val, offsets, val.ty)
                 };
                 self.copy(result)
             }
@@ -758,7 +1011,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     err!(span, "expected a type, found module");
             //     self.ty.get_ty_invalid()
             // }
-            Object::Value(val) | Object::Place(val, _, _) => {
+            Object::Value(val) | Object::Place(val, _) => {
                 // if val.ty == self.ty.get_ty_type() {
                 //     self.ty.get_ty_constant(val.raw)
                 // } else {
@@ -809,7 +1062,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     err!(span, "expected a type, found module");
             //     self.ty.get_ty_invalid()
             // }
-            Object::Value(val) | Object::Place(val, _, _) => {
+            Object::Value(val) | Object::Place(val, _) => {
                 self.msg(err!(
                     span,
                     "expected a trait, found value of type {}",
@@ -986,19 +1239,17 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
 
     fn _get_prop(&mut self, value: Object<'i>, prop: &Ident<'i>) -> Object<'i> {
         match value {
-            Object::Place(mut place, raw_ty, mut offsets) => {
+            Object::Place(mut place, mut offsets) => {
                 match self.lookup_item_on_type(place.ty, prop) {
                     Item::Field(extra_offsets, ty) => {
                         offsets.extend(extra_offsets);
                         place.ty = ty;
-                        Object::Place(place, raw_ty, offsets)
+                        Object::Place(place, offsets)
                     }
                     Item::TraitMethod(tr_decl, idx) => Object::TraitMethodDecl(
                         match tr_decl.borrow().signatures[idx].receiver {
-                            Receiver::Immutable => {
-                                Some(self.iiv.get_deep_prop(place, offsets, raw_ty))
-                            }
-                            Receiver::Mut => Some(self.iiv.get_prop_ref(place, offsets, raw_ty)),
+                            Receiver::Immutable => Some(self.copy_prop(place, offsets, place.ty)),
+                            Receiver::Mut => Some(self.iiv.get_prop_ref(place, offsets, place.ty)),
                             Receiver::None => {
                                 self.msg(err!(&prop.span(), "static method called on a value"));
                                 None
@@ -1017,7 +1268,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Object::Value(value) => match self.lookup_item_on_type(value.ty, prop) {
                 Item::Field(offsets, ty) => {
-                    let prop = self.iiv.get_deep_prop(value, offsets, ty).obj();
+                    let prop = self.copy_prop(value, offsets, ty).obj();
                     self.drop(value);
                     prop
                 }
@@ -1196,7 +1447,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                             Object::Fun(decl, self.ty.get_ty_list(args))
                         } else {
                             self.msg(err!(&apply.span, "invalid number of type arguments"));
-                            self.invalid().obj()
+                            Object::Invalid
                         }
                     }
                     Object::TypeDecl(decl) => {
@@ -1204,12 +1455,35 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                             Object::Type(self.ty.get_ty_named(decl, args))
                         } else {
                             self.msg(err!(&apply.span, "invalid number of type arguments"));
-                            self.invalid().obj()
+                            Object::Invalid
                         }
                     }
-                    _ => {
+                    Object::TraitMethodDecl(recv, ty, tr, idx) => {
+                        if args.len()
+                            == tr.0.borrow().signatures[idx]
+                                .fun
+                                .borrow()
+                                .sig
+                                .ty_params
+                                .len()
+                                - tr.1.len()
+                                - 1
+                        {
+                            Object::TraitMethod(
+                                recv,
+                                tr.0,
+                                idx,
+                                self.ty.get_trait_method_ty_args(ty, tr.1.to_vec(), args),
+                            )
+                        } else {
+                            self.msg(err!(&apply.span, "invalid number of type arguments"));
+                            Object::Invalid
+                        }
+                    }
+                    obj => {
+                        dbg!(obj);
                         self.msg(err!(&apply.lhs.span(), "expected a generic declaration"));
-                        self.invalid().obj()
+                        Object::Invalid
                     }
                 }
             }
@@ -1331,7 +1605,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             Expr::RefTo(ref_to) => {
                 let checked = self.check(&ref_to.rhs, false_block);
                 match checked {
-                    Object::Place(place, _, offsets) => {
+                    Object::Place(place, offsets) => {
                         let r = self.iiv.get_prop_ref(place, offsets, place.ty);
                         r.obj()
                     }
@@ -1343,7 +1617,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Expr::Deref(deref) => {
                 let checked = self.check(&deref.lhs, None);
-                if let Object::Place(val, base_ty, mut offsets) = checked {
+                if let Object::Place(val, mut offsets) = checked {
                     if let Type::Ref(inner) = &*val.ty {
                         offsets.push(0);
                         Object::Place(
@@ -1351,7 +1625,6 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                                 ty: *inner,
                                 raw: val.raw,
                             },
-                            base_ty,
                             offsets,
                         )
                     } else {
@@ -1388,7 +1661,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 let rhs = self.check_val(&assign.rhs);
                 let lhs = self.check(&assign.lhs, None);
                 match lhs {
-                    Object::Place(place, _, offsets) => {
+                    Object::Place(place, offsets) => {
                         let rhs = self.ensure_ty(&assign.rhs.span(), place.ty, rhs);
                         let elems = offsets
                             .into_iter()
@@ -1488,7 +1761,21 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     }
 
     fn copy(&mut self, val: Value<'i>) -> Value<'i> {
-        self.iiv.copy(val)
+        self.copy_prop(val, vec![], val.ty)
+    }
+
+    fn copy_prop(&mut self, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
+        if let Some(_) = self.impl_forest.find(ty, self.copy_trait) {
+            let prop_ref = self.iiv.get_prop_ref(value, props, ty);
+            self.iiv.trait_call(
+                self.copy_trait.0,
+                0,
+                &[prop_ref],
+                self.ty.get_ty_list(vec![ty]),
+            )
+        } else {
+            self.iiv.move_prop_deep(value, props, ty)
+        }
     }
 
     fn move_val(&mut self, val: Value<'i>) -> Value<'i> {
@@ -1515,6 +1802,24 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     }
 
     fn _resolve(&mut self, name: &Ident<'i>) -> Object<'i> {
+        match &*name.value {
+            "this" => {
+                if let Some(this) = self.scopes.this {
+                    return Object::Place(this, vec![]);
+                }
+                self.msg(err!(&name.span, "this is not avaliable in this context"));
+                return self.invalid().obj();
+            }
+            "This" => {
+                if let Some(this) = self.scopes.this_ty {
+                    return Object::Type(this);
+                }
+                self.msg(err!(&name.span, "This is not avaliable in this context"));
+                return self.ty.get_ty_invalid().obj();
+            }
+            _ => {}
+        }
+
         if let Some(obj) = self.scopes.resolve(name.value) {
             return obj.clone();
         }
@@ -1563,7 +1868,7 @@ enum Object<'i> {
     // Module,
     Invalid,
     Value(Value<'i>),
-    Place(Value<'i>, TypeRef<'i>, Vec<u8>),
+    Place(Value<'i>, Vec<u8>),
     Type(TypeRef<'i>),
     TypeDecl(TyDeclRef<'i>),
     TraitDecl(TraitDeclRef<'i>),

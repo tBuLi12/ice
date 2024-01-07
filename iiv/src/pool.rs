@@ -15,7 +15,7 @@ use crate::{
 };
 
 struct PinnedVec<T> {
-    // This is probably UB when the enclosing pool cell is mutably borrowed, because the slice is owned - use ptrs
+    // This is maybe UB when the enclosing pool cell is mutably borrowed, because the slice is owned? - use ptrs
     bufs: Vec<Box<[MaybeUninit<T>]>>,
     next_idx: usize,
 }
@@ -395,5 +395,28 @@ impl<'i> TraitDeclPool<'i> {
     pub fn insert(&'i self, decl: ty_decl::TraitDecl<'i>) -> TraitDeclRef<'i> {
         let inner = unsafe { &mut *self.0.get() };
         TraitDeclRef(Ref(inner.next().write(RefCell::new(decl))))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TraitImplRef<'i>(Ref<'i, RefCell<ty_decl::TraitImpl<'i>>>);
+
+impl<'i> Deref for TraitImplRef<'i> {
+    type Target = RefCell<ty_decl::TraitImpl<'i>>;
+    fn deref(&self) -> &Self::Target {
+        self.0 .0
+    }
+}
+
+pub struct TraitImplPool<'i>(UnsafeCell<PinnedVec<RefCell<ty_decl::TraitImpl<'i>>>>);
+
+impl<'i> TraitImplPool<'i> {
+    pub fn new() -> Self {
+        Self(UnsafeCell::new(PinnedVec::new()))
+    }
+
+    pub fn insert(&'i self, decl: ty_decl::TraitImpl<'i>) -> TraitImplRef<'i> {
+        let inner = unsafe { &mut *self.0.get() };
+        TraitImplRef(Ref(inner.next().write(RefCell::new(decl))))
     }
 }

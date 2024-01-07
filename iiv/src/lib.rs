@@ -1,14 +1,23 @@
-use std::{fmt::Display, fs::File, io};
+use std::{
+    cell::{Cell, RefCell, UnsafeCell},
+    fmt::Display,
+    fs::File,
+    io,
+};
 
 use diagnostics::Diagnostics;
-use pool::{FuncRef, TraitDeclRef};
-use ty::TypeRef;
+use fun::{Bound, Function, Method, Signature};
+use impl_tree::ImplForest;
+use pool::{FuncRef, TraitDeclRef, TraitImplRef};
+use ty::{TraitRef, TypeRef};
+use ty_decl::{TraitDecl, TraitImpl};
 
 use crate::diagnostics::fmt;
 
 pub mod builder;
 pub mod diagnostics;
 pub mod fun;
+pub mod impl_tree;
 pub mod move_check;
 pub mod pool;
 pub mod str;
@@ -38,6 +47,16 @@ pub struct RightSpan {
 }
 
 impl Span {
+    pub fn null() -> Self {
+        Self {
+            first_line: 0,
+            last_line: 0,
+            begin_offset: 0,
+            begin_highlight_offset: 0,
+            end_highlight_offset: 0,
+        }
+    }
+
     pub fn to(self, other: Span) -> Span {
         Span {
             first_line: self.first_line,
@@ -246,7 +265,34 @@ pub struct Ctx<'i> {
     pub fun_pool: pool::FunPool<'i>,
     pub ty_decl_pool: pool::TyDeclPool<'i>,
     pub trait_decl_pool: pool::TraitDeclPool<'i>,
+    pub trait_impl_pool: pool::TraitImplPool<'i>,
     pub diagnostcs: Diagnostics,
+    pub builtins: Builtints<'i>,
+}
+
+pub struct Builtints<'i> {
+    pub drop: Cell<Option<TraitRef<'i>>>,
+    pub copy: Cell<Option<TraitRef<'i>>>,
+    pub bitwise_copy_impl: Cell<Option<TraitImplRef<'i>>>,
+    pub auto_copy_impl: Cell<Option<TraitImplRef<'i>>>,
+}
+
+impl<'i> Builtints<'i> {
+    pub fn get_drop(&self) -> TraitRef<'i> {
+        self.drop.get().unwrap()
+    }
+
+    pub fn get_copy(&self) -> TraitRef<'i> {
+        self.copy.get().unwrap()
+    }
+
+    pub fn get_bitwise_copy(&self) -> TraitImplRef<'i> {
+        self.bitwise_copy_impl.get().unwrap()
+    }
+
+    pub fn get_auto_copy(&self) -> TraitImplRef<'i> {
+        self.auto_copy_impl.get().unwrap()
+    }
 }
 
 impl<'i> Ctx<'i> {
@@ -256,8 +302,114 @@ impl<'i> Ctx<'i> {
             fun_pool: pool::FunPool::new(),
             ty_decl_pool: pool::TyDeclPool::new(),
             trait_decl_pool: pool::TraitDeclPool::new(),
+            trait_impl_pool: pool::TraitImplPool::new(),
             diagnostcs: Diagnostics::new(),
+            builtins: Builtints {
+                drop: Cell::new(None),
+                copy: Cell::new(None),
+                bitwise_copy_impl: Cell::new(None),
+                auto_copy_impl: Cell::new(None),
+            },
         }
+    }
+
+    pub fn init(&'i self) {
+        let this_ty = self.type_pool.get_ty_constant(0);
+
+        let drop_signature = self.fun_pool.insert(Function {
+            body: fun::Body::Unsealed(vec![]),
+            ty_cache: vec![],
+            sig: Signature {
+                name: self.type_pool.str_pool.get("drop"),
+                params: self
+                    .type_pool
+                    .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
+                ret_ty: self.type_pool.get_null(),
+                trait_bounds: vec![],
+                ty_params: vec![],
+            },
+        });
+
+        let drop_decl = self.trait_decl_pool.insert(TraitDecl {
+            name: self.type_pool.str_pool.get("Drop"),
+            signatures: vec![fun::Method {
+                fun: drop_signature,
+                receiver: fun::Receiver::Mut,
+            }],
+            trait_bounds: vec![],
+            ty_params: vec![],
+        });
+
+        let copy_signature = self.fun_pool.insert(Function {
+            body: fun::Body::Unsealed(vec![]),
+            ty_cache: vec![],
+            sig: Signature {
+                name: self.type_pool.str_pool.get("copy"),
+                params: self
+                    .type_pool
+                    .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
+                ret_ty: this_ty,
+                trait_bounds: vec![],
+                ty_params: vec![],
+            },
+        });
+
+        let copy_decl = self.trait_decl_pool.insert(TraitDecl {
+            name: self.type_pool.str_pool.get("Copy"),
+            signatures: vec![fun::Method {
+                fun: copy_signature,
+                receiver: fun::Receiver::Immutable,
+            }],
+            trait_bounds: vec![],
+            ty_params: vec![],
+        });
+
+        let copy = TraitRef(copy_decl, self.type_pool.get_ty_list(vec![]));
+        let drop = TraitRef(drop_decl, self.type_pool.get_ty_list(vec![]));
+
+        drop_signature.borrow_mut().sig.trait_bounds.push(Bound {
+            ty: this_ty,
+            tr: drop,
+        });
+
+        copy_signature.borrow_mut().sig.trait_bounds.push(Bound {
+            ty: this_ty,
+            tr: copy,
+        });
+
+        let bitwise_copy_impl_signature = self.fun_pool.insert(Function {
+            body: fun::Body::Unsealed(vec![]),
+            ty_cache: vec![],
+            sig: Signature {
+                name: self.type_pool.str_pool.get("copy"),
+                params: self
+                    .type_pool
+                    .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
+                ret_ty: this_ty,
+                trait_bounds: vec![],
+                ty_params: vec![()],
+            },
+        });
+
+        let bitwise_copy_impl = self.trait_impl_pool.insert(TraitImpl {
+            functions: vec![Method {
+                receiver: crate::fun::Receiver::Immutable,
+                fun: bitwise_copy_impl_signature,
+            }],
+            tr: copy,
+            trait_bounds: vec![],
+            ty_params: vec![()],
+            ty: this_ty,
+        });
+        // bitwise_copy_impl
+        let auto_copy_impl = self
+            .trait_impl_pool
+            .insert(TraitImpl::clone(&*bitwise_copy_impl.borrow()));
+
+        self.builtins.drop.set(Some(drop));
+        self.builtins.copy.set(Some(copy));
+        self.builtins.bitwise_copy_impl.set(Some(bitwise_copy_impl));
+        self.builtins.auto_copy_impl.set(Some(auto_copy_impl));
     }
 
     pub fn flush_diagnostics(&self, source: &impl Source) -> bool {
@@ -266,6 +418,7 @@ impl<'i> Ctx<'i> {
 }
 
 pub struct Package<'i> {
+    pub impl_forest: ImplForest<'i>,
     pub funcs: Vec<FuncRef<'i>>,
     pub main: Option<FuncRef<'i>>,
 }

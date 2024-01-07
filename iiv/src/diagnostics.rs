@@ -31,7 +31,7 @@ pub fn error(span: &Span, message: String) -> Diagnostic {
 #[macro_export]
 macro_rules! err {
     ($span:expr, $fmt:literal $(, $val:expr)*) => {
-        ::iiv::diagnostics::error($span, format!($fmt $(,$val)*))
+        $crate::diagnostics::error($span, format!($fmt $(,$val)*))
     };
 }
 

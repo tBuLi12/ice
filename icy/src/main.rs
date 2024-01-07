@@ -19,6 +19,7 @@ fn main() {
     };
 
     let ctx = iiv::Ctx::new();
+    ctx.init();
 
     let mut parser = Parser::new(&ctx, BufReader::new(&source.file));
     let mut generator = Generator::new(&ctx, false);
@@ -29,16 +30,21 @@ fn main() {
         return;
     }
 
-    eprintln!("{:?}", module);
+    // eprintln!("{:?}", module);
 
     let package = generator.emit_iiv(&[module]);
     if ctx.flush_diagnostics(&source) {
-        eprintln!("there were errors");
+        // eprintln!("there were errors");
         return;
     }
 
     for fun in &package.funcs {
         // eprintln!("{}", fun.borrow());
+        iiv::move_check::copies_to_moves(
+            &mut *fun.borrow_mut(),
+            ctx.builtins.get_copy(),
+            &package.impl_forest,
+        );
         iiv::move_check::check(&*fun.borrow());
         // eprintln!("{}", fun.borrow());
     }

@@ -1,17 +1,11 @@
 use iiv::{
     err,
     fun::Bound,
+    impl_tree::ImplForest,
     pool::List,
-    ty::{PropRef, Type, TypeRef},
+    ty::{PropRef, Type, TypeOverlap, TypeRef},
     Span,
 };
-
-#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
-pub enum TypeOverlap {
-    None,
-    Partial,
-    Complete,
-}
 
 #[derive(Debug)]
 struct Goal<'i> {
@@ -60,7 +54,7 @@ impl<'i> InferenceCtx<'i> {
         });
     }
 
-    pub fn check_bounds(&mut self) {
+    pub fn check_bounds(&mut self, impls: &ImplForest<'i>) {
         for mut goal in std::mem::replace(&mut self.goals, vec![]) {
             goal.bound.ty = self.unwrap(goal.bound.ty);
             goal.bound.tr.1 = self.ty_pool.get_ty_list(self.unwrap_list(goal.bound.tr.1));
@@ -70,15 +64,16 @@ impl<'i> InferenceCtx<'i> {
                 given.ty = self.unwrap(given.ty);
                 given.tr.1 = self.ty_pool.get_ty_list(self.unwrap_list(given.tr.1));
                 goal.bound == given
-            }) {
+            }) && impls.find(goal.bound.ty, goal.bound.tr).is_none()
+            {
                 self.messages
                     .add(err!(&goal.span, "unsatisfied trait bound"))
             }
         }
     }
 
-    pub fn clear(&mut self) {
-        self.check_bounds();
+    pub fn clear(&mut self, impls: &ImplForest<'i>) {
+        self.check_bounds(impls);
         self.vars.clear();
     }
 

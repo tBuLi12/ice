@@ -313,6 +313,7 @@ fn do_request(
             let request = request.params;
             let edits = if let Some(text) = files.get(&request.text_document.uri) {
                 let ctx = iiv::Ctx::new();
+                ctx.init();
                 let mut parser = Parser::new(&ctx, text.as_bytes());
                 let module = parser.parse_program();
                 let edits = fmt::format_module(module);
@@ -332,6 +333,7 @@ fn do_request(
 
 fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {
     let ctx = iiv::Ctx::new();
+    ctx.init();
 
     let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
     let mut generator = Generator::new(&ctx, true);

@@ -1,7 +1,8 @@
 use crate::{
     builder::{self, BlockRef, UnsealedBlock},
     fun::{self, Function},
-    ty::{Type, TypeRef},
+    impl_tree::ImplForest,
+    ty::{TraitRef, Type, TypeRef},
     Ctx, Elem, Instruction, RawValue,
 };
 
@@ -268,6 +269,7 @@ pub fn check<'i>(func: &Function<'i>) {
     let body = match &func.body {
         fun::Body::Sealed(_) => panic!("move check on sealed body"),
         fun::Body::Unsealed(unsealed) => unsealed,
+        _ => return,
     };
 
     let mut states = vec![None; body.len()];
@@ -324,10 +326,16 @@ pub fn check<'i>(func: &Function<'i>) {
     }
 }
 
-pub fn resolve_drops<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
+pub fn resolve_drops<'i>(
+    ctx: &'i Ctx<'i>,
+    func: &mut Function<'i>,
+    impl_forest: &ImplForest<'i>,
+    drop_tr: TraitRef<'i>,
+) {
     let body = match &mut func.body {
-        fun::Body::Sealed(_) => panic!("move check on sealed body"),
+        fun::Body::Sealed(_) => panic!("resolve drops on sealed body"),
         fun::Body::Unsealed(unsealed) => unsealed,
+        _ => return,
     };
 
     let mut states = vec![None; body.len()];
@@ -364,6 +372,8 @@ pub fn resolve_drops<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
         DropResolver {
             state: state.as_ref().unwrap().clone(),
             cursor,
+            impl_forest,
+            drop_tr,
         }
         .resolve();
     }
@@ -518,12 +528,14 @@ fn verify(
     state
 }
 
-struct DropResolver<'f, 'i: 'f> {
+struct DropResolver<'f, 'i: 'f, 'forest> {
     state: VarState,
     cursor: builder::Cursor<'f, 'i>,
+    impl_forest: &'forest ImplForest<'i>,
+    drop_tr: TraitRef<'i>,
 }
 
-impl<'f, 'i: 'f> DropResolver<'f, 'i> {
+impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
     fn invalidate(&mut self, val: RawValue, path: Option<Vec<u8>>, base_ty: TypeRef<'i>) {
         let state = self.state.flags[val.0 as usize].clone();
         let path = if let Some(path) = path {
@@ -534,6 +546,73 @@ impl<'f, 'i: 'f> DropResolver<'f, 'i> {
         };
 
         self.invalidate_if_needed(val, path, base_ty, &state)
+    }
+
+    fn drop(&mut self, val: RawValue, path: Vec<u8>, base_ty: TypeRef<'i>) {
+        let state = self.state.flags[val.0 as usize].clone();
+        self.drop_if_needed(val, path, base_ty, &state);
+    }
+
+    fn call_drop(&mut self, val: RawValue, path: Vec<u8>, ty: TypeRef<'i>) {
+        let Some((drop_impl, ty_args)) = self.impl_forest.find(ty, self.drop_tr) else {
+            return;
+        };
+        let drop_impl = &*drop_impl.borrow();
+        let drop_fn = &drop_impl.functions[0];
+
+        let val_ref = self
+            .cursor
+            .get_prop_ref(crate::Value { ty, raw: val }, path, ty);
+
+        self.cursor.call(drop_fn.fun, &[val_ref], ty_args);
+    }
+
+    fn drop_if_needed(&mut self, val: RawValue, path: Vec<u8>, ty: TypeRef<'i>, state: &State) {
+        self.call_drop(val, path.clone(), ty);
+
+        match (&*ty, state) {
+            (_, State::Dead) => {
+                return;
+            }
+            (Type::Struct(fields), State::Live) => {
+                for (i, field) in fields.iter().enumerate() {
+                    let i = i as u8;
+                    let mut path = path.clone();
+                    path.push(i);
+                    self.drop_if_needed(val, path, field.1, &State::Live);
+                }
+            }
+            (Type::Struct(fields), State::Kindof(field_states)) => {
+                for (i, field) in fields.iter().enumerate() {
+                    let mut path = path.clone();
+                    path.push(i as u8);
+                    self.drop_if_needed(val, path, field.1, &field_states[i]);
+                }
+            }
+            (Type::Variant(elems), state) => {
+                let state = if let State::Kindof(elem_states) = state {
+                    &elem_states[0]
+                } else {
+                    &State::Live
+                };
+
+                let merge_block = self.cursor.split();
+                let discriminant = self.cursor.discriminant(crate::Value { ty, raw: val });
+                let blocks: Vec<_> = elems.iter().map(|_| self.cursor.create_block()).collect();
+                self.cursor.switch(discriminant, &blocks);
+                for (i, (&block, elem)) in blocks.iter().zip(elems.iter()).enumerate() {
+                    self.cursor.select(block);
+                    let i = i as u8;
+                    let mut path = path.clone();
+                    path.push(i);
+                    self.drop_if_needed(val, path, elem.1, state);
+                    self.cursor.jump(merge_block, &[]);
+                }
+                self.cursor.select(merge_block);
+                self.cursor.goto_block_start();
+            }
+            _ => {}
+        }
     }
 
     fn invalidate_if_needed(
@@ -611,9 +690,29 @@ impl<'f, 'i: 'f> DropResolver<'f, 'i> {
                 }
 
                 // not sure
-                Instruction::Assign(_, _, rhs) => {
+                Instruction::Assign(lhs, path, rhs) => {
                     let rhs_ty = self.cursor.type_of(*rhs);
+                    let mut lhs_ty = self.cursor.type_of(*lhs);
+
+                    let mut u8_path = vec![];
+                    for elem in path {
+                        let Elem::Prop(elem) = elem else {
+                            panic!("oof")
+                        };
+                        u8_path.push(elem.0);
+                        match &*lhs_ty {
+                            Type::Struct(props) | Type::Variant(props) => {
+                                lhs_ty = props[elem.0 as usize].1;
+                            }
+                            _ => {
+                                panic!("oof");
+                            }
+                        }
+                    }
+
+                    let lhs = *lhs;
                     self.invalidate(*rhs, None, rhs_ty);
+                    self.drop(lhs, u8_path, lhs_ty);
                 }
 
                 Instruction::GetElemRef(_, _) | Instruction::CopyElem(_, _) => {}
@@ -696,6 +795,39 @@ impl<'f, 'i: 'f> DropResolver<'f, 'i> {
                 }
             };
             self.cursor.advance();
+        }
+    }
+}
+
+pub fn copies_to_moves<'i>(
+    func: &mut Function<'i>,
+    copy_tr: TraitRef<'i>,
+    impl_forest: &ImplForest<'i>,
+) {
+    let body = match &mut func.body {
+        fun::Body::Sealed(_) => panic!("copies to moves on sealed body"),
+        fun::Body::Unsealed(unsealed) => unsealed,
+        _ => return,
+    };
+
+    for block in body {
+        for (inst, idx) in &mut block.instructions {
+            if let Instruction::CopyElem(value, path) = inst {
+                let ty = func.ty_cache[*idx as usize];
+                if impl_forest.find(ty, copy_tr).is_none() {
+                    let path = std::mem::replace(path, vec![]);
+                    let value = *value;
+                    *inst = Instruction::MoveElem(
+                        value,
+                        path.into_iter()
+                            .map(|elem| match elem {
+                                Elem::Prop(prop) => prop.0,
+                                Elem::Index(_) => panic!("invalid idx"),
+                            })
+                            .collect(),
+                    )
+                }
+            }
         }
     }
 }

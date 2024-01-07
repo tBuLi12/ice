@@ -73,44 +73,48 @@ impl<'i, R: io::Read> Parser<'i, R> {
     }
 
     pub fn parse_program(&mut self) -> Module<'i> {
-        let mut funs = vec![];
-        let mut types = vec![];
-        let mut traits = vec![];
+        let mut module = Module {
+            imports: vec![],
+            functions: vec![],
+            types: vec![],
+            traits: vec![],
+            impls: vec![],
+            trait_impls: vec![],
+        };
         loop {
-            match self.parse_function() {
-                Ok(fun) => funs.push(fun),
-                Err(ParseError::NoMatch) => match self.parse_type_decl() {
-                    Ok(type_decl) => types.push(type_decl),
-                    Err(ParseError::NoMatch) => match self.parse_trait_decl() {
-                        Ok(type_decl) => traits.push(type_decl),
-                        Err(ParseError::NoMatch) => break,
-                        Err(ParseError::InvalidSyntax(msg)) => self
-                            .messages
-                            .add(diagnostics::error(&self.current.span(), msg.to_string())),
-                    },
-                    Err(ParseError::InvalidSyntax(msg)) => self
-                        .messages
-                        .add(diagnostics::error(&self.current.span(), msg.to_string())),
-                },
+            match self.parse_declaration_into(&mut module) {
+                Ok(()) => {}
+                Err(ParseError::NoMatch) => break,
                 Err(ParseError::InvalidSyntax(msg)) => self
                     .messages
                     .add(diagnostics::error(&self.current.span(), msg.to_string())),
             }
         }
-
         if !matches!(self.current, Token::Eof(_)) {
             self.messages
                 .add(err!(&self.current.span(), "unexpected token"))
         }
+        module
+    }
 
-        Module {
-            imports: vec![],
-            functions: funs,
-            types,
-            traits,
-            impls: vec![],
-            trait_impls: vec![],
+    fn parse_declaration_into(&mut self, module: &mut Module<'i>) -> Parsed<()> {
+        if let Ok(fun) = self.parse_function().invalid()? {
+            module.functions.push(fun);
+            return Ok(());
         }
+        if let Ok(ty_decl) = self.parse_type_decl().invalid()? {
+            module.types.push(ty_decl);
+            return Ok(());
+        }
+        if let Ok(tr) = self.parse_trait_decl().invalid()? {
+            module.traits.push(tr);
+            return Ok(());
+        }
+        if let Ok(tr_impl) = self.parse_trait_impl().invalid()? {
+            module.trait_impls.push(tr_impl);
+            return Ok(());
+        }
+        Err(ParseError::NoMatch)
     }
 
     fn next_token(&mut self) -> Token<'i> {
@@ -324,6 +328,27 @@ impl<'i, R: io::Read> Parser<'i, R> {
             type_params,
             visibility: Visibility::Public,
             signatures,
+        })
+    }
+
+    fn parse_trait_impl(&mut self) -> Parsed<TraitImpl<'i>> {
+        let span = self.eat_kw(Keyword::Def)?;
+        let type_params = self.parse_type_params()?;
+        let ty = self.parse_ty_name().expected("a type name")?;
+        self.eat_kw(Keyword::As).expected("as")?;
+        let tr = self.parse_ty_name().expected("a trait name")?;
+
+        let ((functions, _), block_span) = self
+            .braces(|p| p.list(Punctuation::Semicolon, |p| p.parse_function()))
+            .expected("signature block")?;
+
+        let span = span.to(block_span);
+        Ok(TraitImpl {
+            span: span.to(block_span),
+            type_params,
+            tr,
+            ty,
+            functions,
         })
     }
 

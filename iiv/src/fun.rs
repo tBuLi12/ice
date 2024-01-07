@@ -8,7 +8,7 @@ use crate::{
     Elem, Instruction,
 };
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Bound<'i> {
     pub ty: TypeRef<'i>,
     pub tr: TraitRef<'i>,
@@ -39,7 +39,7 @@ pub struct Function<'i> {
     pub ty_cache: Vec<TypeRef<'i>>,
 }
 
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
 pub enum Receiver {
     None,
     Immutable,
@@ -47,7 +47,7 @@ pub enum Receiver {
     Move,
 }
 
-#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
 pub struct Method<'i> {
     pub fun: FuncRef<'i>,
     pub receiver: Receiver,
@@ -57,6 +57,9 @@ pub struct Method<'i> {
 pub enum Body<'i> {
     Unsealed(Vec<UnsealedBlock<'i>>),
     Sealed(Vec<Block<'i>>),
+    AutoCopy,
+    BitwiseCopy,
+    None,
 }
 
 impl<'i> Function<'i> {
@@ -88,8 +91,9 @@ impl<'i> Function<'i> {
         self.sig.ty_params.clear();
 
         let body = match &mut self.body {
-            Body::Sealed(_) => panic!("apply_ty_args on sealed body"),
             Body::Unsealed(unsealed) => unsealed,
+            Body::Sealed(_) => panic!("apply_ty_args on sealed body"),
+            _ => return,
         };
 
         for block in body {
@@ -139,6 +143,7 @@ impl<'i> Function<'i> {
         let body = match &mut self.body {
             Body::Sealed(_) => panic!("seal called twice"),
             Body::Unsealed(unsealed) => unsealed,
+            _ => return,
         };
 
         let mut inst_indices = vec![0u16; self.ty_cache.len()];
@@ -288,6 +293,15 @@ impl<'i> Display for Function<'i> {
         writeln!(f, "): {}", self.sig.ret_ty)?;
 
         match &self.body {
+            Body::None => {
+                writeln!(f, "    none")?;
+            }
+            Body::BitwiseCopy => {
+                writeln!(f, "    bitwise copy")?;
+            }
+            Body::AutoCopy => {
+                writeln!(f, "    auto copy")?;
+            }
             Body::Sealed(blocks) => {
                 for (block_index, block) in blocks.iter().enumerate() {
                     writeln!(f, "b{} {}:", block_index, fmt::List(block.params.iter()))?;

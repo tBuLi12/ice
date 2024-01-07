@@ -25,8 +25,8 @@ pub struct BlockRef {
 impl<'f, 'i: 'f> Cursor<'f, 'i> {
     pub fn new(pool: &'i crate::ty::Pool<'i>, func: &'f mut Function<'i>) -> Self {
         let blocks = match &mut func.body {
-            Body::Sealed(_) => panic!("cannot create a cursor to a sealed function"),
             Body::Unsealed(blocks) => blocks,
+            _ => panic!("cannot create a cursor to function without an usealed body"),
         };
 
         Cursor {
@@ -212,20 +212,32 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     }
     // pub fn name(&mut self, value: Value<'i>, ty: TypeId) -> Value<'i> {}
     // pub fn vector(&mut self, values: &[Value<'i>]) -> Value<'i> {}
-    pub fn get_prop(&mut self, value: Value<'i>, prop: u8, ty: TypeRef<'i>) -> Value<'i> {
-        Value {
-            ty,
-            raw: self.push_value_instruction(
-                Instruction::CopyElem(value.raw, vec![Elem::Prop(Prop(prop))]),
-                ty,
-            ),
-        }
-    }
 
     pub fn move_prop(&mut self, value: Value<'i>, prop: u8, prop_ty: TypeRef<'i>) -> Value<'i> {
         Value {
             ty: prop_ty,
             raw: self.push_value_instruction(Instruction::MoveElem(value.raw, vec![prop]), prop_ty),
+        }
+    }
+
+    pub fn copy_prop_deep(
+        &mut self,
+        value: Value<'i>,
+        props: Vec<u8>,
+        prop_ty: TypeRef<'i>,
+    ) -> Value<'i> {
+        Value {
+            ty: prop_ty,
+            raw: self.push_value_instruction(
+                Instruction::CopyElem(
+                    value.raw,
+                    props
+                        .into_iter()
+                        .map(|prop| Elem::Prop(Prop(prop)))
+                        .collect(),
+                ),
+                prop_ty,
+            ),
         }
     }
 
@@ -238,27 +250,6 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         Value {
             ty: prop_ty,
             raw: self.push_value_instruction(Instruction::MoveElem(value.raw, props), prop_ty),
-        }
-    }
-
-    pub fn get_deep_prop(
-        &mut self,
-        value: Value<'i>,
-        props: Vec<u8>,
-        ty: TypeRef<'i>,
-    ) -> Value<'i> {
-        Value {
-            ty,
-            raw: self.push_value_instruction(
-                Instruction::CopyElem(
-                    value.raw,
-                    props
-                        .into_iter()
-                        .map(|prop| Elem::Prop(Prop(prop)))
-                        .collect(),
-                ),
-                ty,
-            ),
         }
     }
 
@@ -367,13 +358,6 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
 
     pub fn drop(&mut self, val: Value<'i>) {
         self.push_instruction(Instruction::Drop(val.raw));
-    }
-
-    pub fn copy(&mut self, val: Value<'i>) -> Value<'i> {
-        Value {
-            ty: val.ty,
-            raw: self.push_value_instruction(Instruction::CopyElem(val.raw, vec![]), val.ty),
-        }
     }
 
     pub fn null(&mut self) -> Value<'i> {

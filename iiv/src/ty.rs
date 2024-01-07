@@ -1,6 +1,7 @@
 use std::{fmt, ops::Deref};
 
 use crate::{
+    fun::Bound,
     pool::{self, List, TraitDeclRef, TyDeclRef},
     str::{Str, StrPool},
 };
@@ -128,6 +129,20 @@ impl<'i> Pool<'i> {
         self.ty_list_pool.get(types)
     }
 
+    pub fn get_trait_method_ty_args(
+        &'i self,
+        this: TypeRef<'i>,
+        trait_args: Vec<TypeRef<'i>>,
+        fun_args: Vec<TypeRef<'i>>,
+    ) -> List<'i, TypeRef<'i>> {
+        self.ty_list_pool.get(
+            std::iter::once(this)
+                .chain(trait_args)
+                .chain(fun_args)
+                .collect(),
+        )
+    }
+
     fn get_ty_set(&'i self, types: Vec<TypeRef<'i>>) -> List<'i, TypeRef<'i>> {
         self.ty_list_pool.get_set(types)
     }
@@ -215,6 +230,16 @@ impl<'i> Pool<'i> {
                 .collect(),
         )
     }
+
+    pub fn resolve_bound(&'i self, mut bound: Bound<'i>, args: &[TypeRef<'i>]) -> Bound<'i> {
+        bound.ty = self.resolve_ty_args(bound.ty, &args);
+        bound.tr.1 = self.resolve_ty_list_args(bound.tr.1, &args);
+        bound
+    }
+
+    // pub fn resolve_trait_args(&'i self, ty: TraitRef<'i>, args: &[TypeRef<'i>]) -> TraitRef<'i> {
+
+    // }
 
     pub fn resolve_ty_args(&'i self, ty: TypeRef<'i>, args: &[TypeRef<'i>]) -> TypeRef<'i> {
         match &*ty {
@@ -352,6 +377,92 @@ impl<'i> fmt::Display for TypeRef<'i> {
             Type::Builtin(BuiltinType::Bool) => write!(f, "bool"),
             Type::Builtin(BuiltinType::Int) => write!(f, "int"),
             Type::Builtin(BuiltinType::Null) => write!(f, "null"),
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum TypeOverlap {
+    None,
+    Partial,
+    Complete,
+}
+
+impl<'i> TypeRef<'i> {
+    pub fn get_intersection(self, other: TypeRef<'i>) -> TypeOverlap {
+        match (&*self, &*other) {
+            (Type::Builtin(types), Type::Builtin(types2)) => {
+                if types == types2 {
+                    TypeOverlap::Complete
+                } else {
+                    TypeOverlap::None
+                }
+            }
+            (Type::Vector(ty), Type::Vector(ty2)) => ty.get_intersection(*ty2),
+            (Type::Tuple(t1), Type::Tuple(t2)) | (Type::Union(t1), Type::Union(t2)) => {
+                if t1.len() != t2.len() {
+                    return TypeOverlap::None;
+                }
+                t1.iter()
+                    .zip(t2.iter())
+                    .map(|(&p1, &p2)| p1.get_intersection(p2))
+                    .fold(TypeOverlap::Complete, std::cmp::min)
+            }
+            (Type::Struct(props), Type::Struct(props2))
+            | (Type::Variant(props), Type::Variant(props2)) => {
+                if props.len() != props2.len() {
+                    return TypeOverlap::None;
+                }
+                props
+                    .iter()
+                    .zip(props2.iter())
+                    .map(|(&p1, &p2)| {
+                        if p1.0 != p2.0 {
+                            return TypeOverlap::None;
+                        }
+                        p1.1.get_intersection(p2.1)
+                    })
+                    .fold(TypeOverlap::Complete, std::cmp::min)
+            }
+            (Type::Ref(ty), Type::Ref(ty2)) => ty.get_intersection(*ty2),
+            (Type::Named(decl1, args1, _), Type::Named(decl2, args2, _)) => {
+                if decl1 != decl2 || args1.len() != args2.len() {
+                    TypeOverlap::None
+                } else {
+                    args1
+                        .iter()
+                        .zip(args2.iter())
+                        .map(|(&t1, &t2)| t1.get_intersection(t2))
+                        .fold(TypeOverlap::Complete, std::cmp::min)
+                }
+            }
+            (Type::Type(s1), Type::Type(s2)) => {
+                if s1 == s2 {
+                    TypeOverlap::Complete
+                } else {
+                    TypeOverlap::None
+                }
+            }
+            (Type::Constant(val), Type::Constant(val2)) => {
+                if val == val2 {
+                    TypeOverlap::Complete
+                } else {
+                    TypeOverlap::Partial
+                }
+            }
+            (_, Type::Constant(_)) | (Type::Constant(_), _) => TypeOverlap::Partial,
+            (_, Type::InferenceVar(_)) | (Type::InferenceVar(_), _) => TypeOverlap::Partial,
+            // the rest is listed explicitly to cause errors when more kinds are added, instead of silently returning None
+            (Type::Invalid, _)
+            | (Type::Tuple(_), _)
+            | (Type::Struct(_), _)
+            | (Type::Vector(_), _)
+            | (Type::Union(_), _)
+            | (Type::Named(_, _, _), _)
+            | (Type::Variant(_), _)
+            | (Type::Ref(_), _)
+            | (Type::Type(_), _)
+            | (Type::Builtin(_), _) => TypeOverlap::None,
         }
     }
 }

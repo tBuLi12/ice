@@ -2,8 +2,9 @@ use std::{cell::UnsafeCell, collections::HashMap};
 
 use iiv::{
     fun::Body,
+    impl_tree::ImplForest,
     pool::{FuncRef, List},
-    ty::TypeRef,
+    ty::{TraitRef, TypeRef},
 };
 
 pub struct Backend<'i> {
@@ -38,9 +39,14 @@ impl<'i> Backend<'i> {
             builtins,
         };
 
-        iiv::move_check::resolve_drops(&self.ctx, &mut *main.borrow_mut());
+        iiv::move_check::resolve_drops(
+            &self.ctx,
+            &mut *main.borrow_mut(),
+            &package.impl_forest,
+            self.ctx.builtins.get_drop(),
+        );
         main.borrow_mut().seal();
-        ir_gen.emit_main(&*main.borrow());
+        ir_gen.emit_main(&*main.borrow(), &package.impl_forest);
 
         eprintln!("dump mod");
         ctx.emit(ir_gen.module, out);
@@ -118,23 +124,33 @@ pub struct IRGen<'ll, 'i> {
 }
 
 impl<'ll, 'i> IRGen<'ll, 'i> {
-    pub fn emit_main(&mut self, func: &iiv::fun::Function<'i>) {
+    pub fn emit_main(&mut self, func: &iiv::fun::Function<'i>, impls: &ImplForest<'i>) {
         let main = self.create_signature(func, self.ctx.type_pool.get_ty_list(vec![]));
-        self.write_body(func, main);
+        self.write_body(func, main, impls);
 
         while let Some((func, ty_args)) = self.work_stack.pop() {
             let llvm_func = self.funcs.get(&(func, ty_args)).unwrap();
 
             let mut fun = func.borrow().clone();
             fun.apply_ty_args(&self.ctx.type_pool, ty_args);
-            iiv::move_check::resolve_drops(&self.ctx, &mut fun);
+            iiv::move_check::resolve_drops(
+                &self.ctx,
+                &mut fun,
+                impls,
+                self.ctx.builtins.get_drop(),
+            );
             fun.seal();
 
-            self.write_body(&fun, *llvm_func);
+            self.write_body(&fun, *llvm_func, impls);
         }
     }
 
-    pub fn write_body(&mut self, func: &iiv::fun::Function<'i>, llvm_func: llvm::Function<'ll>) {
+    pub fn write_body(
+        &mut self,
+        func: &iiv::fun::Function<'i>,
+        llvm_func: llvm::Function<'ll>,
+        impls: &ImplForest<'i>,
+    ) {
         self.phis.clear();
         self.values.clear();
         self.blocks.clear();
@@ -160,7 +176,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         for (i, block) in body.iter().enumerate() {
             let llvm_block = self.blocks[i];
             self.ir.set_insert_point(llvm_block);
-            self.emit_block(block, i);
+            self.emit_block(block, i, impls);
         }
 
         if llvm_func.verify() {
@@ -170,7 +186,12 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         // self.fun_opt_manager.optimize(llvm_func);
     }
 
-    pub fn emit_block(&mut self, block: &iiv::builder::Block<'i>, i: usize) {
+    pub fn emit_block(
+        &mut self,
+        block: &iiv::builder::Block<'i>,
+        i: usize,
+        impls: &ImplForest<'i>,
+    ) {
         // init phis
         {
             let p = &mut self.phis[i];
@@ -235,7 +256,44 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 iiv::Instruction::Lt(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
-                iiv::Instruction::TraitCall(_, _, _, _) => {}
+                iiv::Instruction::TraitCall(tr_decl, idx, args, ty_args) => {
+                    let (this_ty, rest) = ty_args.split_first().unwrap();
+                    let (tr_ty_args, method_ty_args) =
+                        rest.split_at(tr_decl.borrow().ty_params.len());
+                    dbg!(tr_decl);
+                    let (impl_ref, ty_args) = impls
+                        .find(
+                            *this_ty,
+                            TraitRef(
+                                *tr_decl,
+                                self.ctx.type_pool.get_ty_list(tr_ty_args.to_vec()),
+                            ),
+                        )
+                        .unwrap();
+                    let call_ty_args = self.ctx.type_pool.get_ty_list(
+                        ty_args
+                            .iter()
+                            .copied()
+                            .chain(method_ty_args.iter().copied())
+                            .collect(),
+                    );
+
+                    let fun = impl_ref.borrow().functions[*idx as usize].fun;
+
+                    let ret_ty = self
+                        .ctx
+                        .type_pool
+                        .resolve_ty_args(fun.borrow().sig.ret_ty, &call_ty_args);
+                    let mut raw_args = Vec::new();
+
+                    let func = self.get_or_create_fn(fun, call_ty_args);
+
+                    raw_args.extend(args.iter().map(|arg| self.get(*arg)));
+
+                    let call = self.ir.call(func, &raw_args);
+
+                    self.on_the_stack(call, ret_ty);
+                }
                 iiv::Instruction::Call(fun, args, ty_args) => {
                     let ret_ty = self
                         .ctx
