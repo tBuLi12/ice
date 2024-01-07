@@ -72,6 +72,7 @@ pub enum Type<'i> {
     Union(List<'i, TypeRef<'i>>),
     Variant(List<'i, PropRef<'i>>),
     Ref(TypeRef<'i>),
+    Ptr(TypeRef<'i>),
     Named(TyDeclRef<'i>, List<'i, TypeRef<'i>>, TypeRef<'i>),
     Type(ShapeRef<'i>),
     Constant(usize),
@@ -161,6 +162,10 @@ impl<'i> Pool<'i> {
 
     pub fn get_ref(&'i self, elem_ty: TypeRef<'i>) -> TypeRef<'i> {
         TypeRef(self.ty_pool.get(Type::Ref(elem_ty)))
+    }
+
+    pub fn get_ptr(&'i self, elem_ty: TypeRef<'i>) -> TypeRef<'i> {
+        TypeRef(self.ty_pool.get(Type::Ptr(elem_ty)))
     }
 
     pub fn get_union(&'i self, types: Vec<TypeRef<'i>>) -> TypeRef<'i> {
@@ -270,6 +275,7 @@ impl<'i> Pool<'i> {
                     .collect(),
             ),
             Type::Ref(pointee) => self.get_ref(self.resolve_ty_args(*pointee, args)),
+            Type::Ptr(pointee) => self.get_ptr(self.resolve_ty_args(*pointee, args)),
             Type::Named(decl, ty_args, _) => self.get_ty_named(
                 *decl,
                 ty_args
@@ -295,7 +301,7 @@ impl<'i> TypeRef<'i> {
 
     pub fn has_primitive_repr(self) -> bool {
         match *self {
-            Type::Ref(_) | Type::Constant(_) | Type::Builtin(_) => true,
+            Type::Ref(_) | Type::Ptr(_) | Type::Constant(_) | Type::Builtin(_) => true,
             _ => false,
         }
     }
@@ -310,7 +316,7 @@ impl<'i> TypeRef<'i> {
                 }
 
                 Type::Variant(props) | Type::Struct(props) => props.iter().any(|prop| fun(prop.1)),
-                Type::Ref(ty) => fun(*ty),
+                Type::Ref(ty) | Type::Ptr(ty) => fun(*ty),
                 Type::InferenceVar(_) => false,
                 Type::Type(_) => {
                     unimplemented!()
@@ -362,7 +368,8 @@ impl<'i> fmt::Display for TypeRef<'i> {
                 }
                 write!(f, "}}")
             }
-            Type::Ref(pointee) => write!(f, "ref {}", pointee),
+            Type::Ref(pointee) => write!(f, "&{}", pointee),
+            Type::Ptr(pointee) => write!(f, "*{}", pointee),
             Type::Named(decl, args, _) => {
                 write!(
                     f,
@@ -424,7 +431,9 @@ impl<'i> TypeRef<'i> {
                     })
                     .fold(TypeOverlap::Complete, std::cmp::min)
             }
-            (Type::Ref(ty), Type::Ref(ty2)) => ty.get_intersection(*ty2),
+            (Type::Ref(ty), Type::Ref(ty2)) | (Type::Ptr(ty), Type::Ptr(ty2)) => {
+                ty.get_intersection(*ty2)
+            }
             (Type::Named(decl1, args1, _), Type::Named(decl2, args2, _)) => {
                 if decl1 != decl2 || args1.len() != args2.len() {
                     TypeOverlap::None
@@ -461,6 +470,7 @@ impl<'i> TypeRef<'i> {
             | (Type::Named(_, _, _), _)
             | (Type::Variant(_), _)
             | (Type::Ref(_), _)
+            | (Type::Ptr(_), _)
             | (Type::Type(_), _)
             | (Type::Builtin(_), _) => TypeOverlap::None,
         }

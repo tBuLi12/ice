@@ -13,7 +13,7 @@ use iiv::{
     pool::{self, FuncRef, TraitDeclRef, TyDeclRef},
     str::Str,
     ty::{PropRef, TraitRef, Type, TypeOverlap, TypeRef},
-    ty_decl, Ctx, Package, Prop, Span, Value,
+    ty_decl, Ctx, Elem, Package, Prop, Span, Value,
 };
 use ty::InferenceCtx;
 
@@ -62,6 +62,7 @@ pub struct Generator<'i> {
     scopes: Scopes<'i>,
     trait_method_scope: HashMap<Str<'i>, Vec<(TraitDeclRef<'i>, usize)>>,
     ty: &'i iiv::ty::Pool<'i>,
+    ctx: &'i iiv::Ctx<'i>,
     fun_pool: &'i iiv::pool::FunPool<'i>,
     ty_decl_pool: &'i iiv::pool::TyDeclPool<'i>,
     trait_decl_pool: &'i iiv::pool::TraitDeclPool<'i>,
@@ -197,12 +198,13 @@ impl<'i> Generator<'i> {
             },
             trait_method_scope: HashMap::new(),
             ty: &ctx.type_pool,
+            ctx,
             fun_pool: &ctx.fun_pool,
             ty_decl_pool: &ctx.ty_decl_pool,
             trait_decl_pool: &ctx.trait_decl_pool,
             trait_impl_pool: &ctx.trait_impl_pool,
             messages: &ctx.diagnostcs,
-            impl_forest: ImplForest::new(&ctx.type_pool, &ctx.diagnostcs),
+            impl_forest: ImplForest::new(&ctx, &ctx.diagnostcs),
             index: if index_tokens {
                 LspIndex(Some(vec![]))
             } else {
@@ -244,6 +246,14 @@ impl<'i> Generator<'i> {
     pub fn emit_iiv(&mut self, modules: &[Module<'i>]) -> Package<'i> {
         self.define_global(self.ty.str_pool.get("int"), self.ty.get_int().obj());
         self.define_global(self.ty.str_pool.get("bool"), self.ty.get_ty_bool().obj());
+        self.define_global(
+            self.ty.str_pool.get("Drop"),
+            Object::TraitDecl(self.ctx.builtins.get_drop().0),
+        );
+        self.define_global(
+            self.ty.str_pool.get("Copy"),
+            Object::TraitDecl(self.copy_trait.0),
+        );
 
         // types
         let types = &modules[0].types;
@@ -260,11 +270,19 @@ impl<'i> Generator<'i> {
 
             let proto = fun_gen.check_type(&ty_node.proto);
             let ty = ty_decl::TypeDecl {
+                is_copy: ty_node.is_data,
                 proto: fun_gen.inf_ctx.unwrap(proto),
                 ty_params: ty_node.type_params.iter().map(|_| ()).collect(),
                 name: ty_node.name.value,
             };
             fun_gen.end_scope();
+
+            if ty.is_copy && self.impl_forest.find(ty.proto, self.copy_trait).is_none() {
+                self.messages.add(err!(
+                    &ty_node.span,
+                    "declaration is marked as data, but the prototype does not implement Copy"
+                ));
+            }
 
             let ty = self.ty_decl_pool.insert(ty);
 
@@ -303,7 +321,7 @@ impl<'i> Generator<'i> {
                 let mut fun = Function::empty(self.ty, sig.name.value);
                 let mut fun_gen = FunctionGenerator::new(self, &mut fun);
                 fun_gen.begin_scope();
-                fun_gen.set_signature(&sig, bounds.clone(), tr.ty_params.len() + 1, Some(this_ty));
+                fun_gen.set_signature(&sig, bounds.clone(), tr.ty_params.len() + 1, Some(fun_gen.ty.get_ref(this_ty)));
                 fun_gen.end_scope();
                 let fun = self.fun_pool.insert(fun);
                 tr.signatures.push(Method {
@@ -377,7 +395,7 @@ impl<'i> Generator<'i> {
                         &fun_node.signature,
                         bounds.clone(),
                         impl_ty_params.len(),
-                        Some(ty),
+                        Some(fun_gen.ty.get_ref(ty)),
                     );
                     fun_gen.end_scope();
 
@@ -389,7 +407,7 @@ impl<'i> Generator<'i> {
                         });
                         if let Some(method) = method {
                             self.scopes.begin();
-                            let mut method_ty_args = self.ty.get_ty_list(
+                            let method_ty_args: Vec<_> = 
                                 impl_ty_params.iter().copied().chain(
                                     fun_node
                                     .signature
@@ -397,27 +415,22 @@ impl<'i> Generator<'i> {
                                     .iter()
                                     .map(|_| self.scopes.generate_ty_param())
                                 )
-
-                                    .collect()
-                            );
+                                .collect();
                             let tr_fun = &*method.fun.borrow();
+                            let trait_method_ty_args = self.ty.get_ty_list(
+                                std::iter::once(ty).chain(
+                                    tr_ty_args.iter().copied()
+                                ).chain((0..(tr_fun.sig.ty_params.len() - 1 - tr_ty_args.len())).map(|i| {
+                                    method_ty_args.get(i + impl_ty_params.len()).copied().unwrap_or(self.ctx.type_pool.get_ty_invalid())
+                                }))
+                                .collect()
+                            );
                             if (method_ty_args.len() - impl_ty_params.len()) != (tr_fun.sig.ty_params.len() - 1 - tr_ty_args.len()) {
                                 self.messages.add(err!(
                                     &fun_node.signature.name.span,
                                     "trait method declares {} type parameters",
                                     tr_fun.sig.ty_params.len() - 1 - tr_ty_args.len()
                                 ));
-                                method_ty_args = self.ty.get_ty_list(
-                                    (0..(tr_fun.sig.ty_params.len() - 1 - tr_ty_args.len() + impl_ty_params.len()))
-                                        .into_iter()
-                                        .map(|i| {
-                                            method_ty_args
-                                                .get(i)
-                                                .copied()
-                                                .unwrap_or_else(|| self.ty.get_ty_invalid())
-                                        })
-                                        .collect(),
-                                )
                             }
                             if tr_fun.sig.params.len() != fun.sig.params.len() {
                                 self.messages.add(err!(
@@ -434,7 +447,7 @@ impl<'i> Generator<'i> {
                                 .zip(fun.sig.params.iter().skip(1))
                                 .zip(fun_node.signature.params.iter())
                             {
-                                let tr_ty = self.ty.resolve_ty_args(tr_ty, &method_ty_args);
+                                let tr_ty = self.ty.resolve_ty_args(tr_ty, &trait_method_ty_args);
                                 if tr_ty != ty {
                                     self.messages.add(err!(
                                         &param.span(),
@@ -442,8 +455,9 @@ impl<'i> Generator<'i> {
                                     ));
                                 }
                             }
+
                             let tr_ret_ty =
-                                self.ty.resolve_ty_args(tr_fun.sig.ret_ty, &method_ty_args);
+                                self.ty.resolve_ty_args(tr_fun.sig.ret_ty, &trait_method_ty_args);
                             if tr_ret_ty != fun.sig.ret_ty {
                                 self.messages.add(err!(
                                     &fun_node.signature.span,
@@ -457,7 +471,7 @@ impl<'i> Generator<'i> {
                                 .iter()
                                 .copied()
                             {
-                                let tr_bound = self.ty.resolve_bound(tr_bound, &method_ty_args);
+                                let tr_bound = self.ty.resolve_bound(tr_bound, &trait_method_ty_args);
 
                                 if let Some(bound_idx) =
                                     bounds.iter().position(|&bound| bound == tr_bound)
@@ -574,7 +588,7 @@ impl<'i> Generator<'i> {
         Package {
             impl_forest: std::mem::replace(
                 &mut self.impl_forest,
-                ImplForest::new(self.ty, self.messages),
+                ImplForest::new(self.ctx, self.messages),
             ),
             funcs: package_funs,
             main,
@@ -914,7 +928,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     fn check_statement(&mut self, item: &BlockItem<'i>) -> Value<'i> {
         match item {
             BlockItem::Expr(expr) => match self.check(expr, None) {
-                Object::Place(val, offsets) => {
+                Object::Place(val, offsets) | Object::UnsafePlace(val, offsets) => {
                     if offsets.is_empty() {
                         val
                     } else {
@@ -968,13 +982,8 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     self.invalid()
             // }
             Object::Value(val) => val,
-            Object::Place(val, offsets) => {
-                let result = if offsets.is_empty() {
-                    val
-                } else {
-                    self.copy_prop(val, offsets, val.ty)
-                };
-                self.copy(result)
+            Object::Place(val, offsets) | Object::UnsafePlace(val, offsets) => {
+                self.copy_prop(val, offsets, val.ty)
             }
             Object::TypeDecl(ty_decl) => {
                 self.msg(err!(span, "expected a value, found type {}", ty_decl.name));
@@ -1011,7 +1020,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     err!(span, "expected a type, found module");
             //     self.ty.get_ty_invalid()
             // }
-            Object::Value(val) | Object::Place(val, _) => {
+            Object::Value(val) | Object::Place(val, _) | Object::UnsafePlace(val, _) => {
                 // if val.ty == self.ty.get_ty_type() {
                 //     self.ty.get_ty_constant(val.raw)
                 // } else {
@@ -1062,7 +1071,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     err!(span, "expected a type, found module");
             //     self.ty.get_ty_invalid()
             // }
-            Object::Value(val) | Object::Place(val, _) => {
+            Object::Value(val) | Object::Place(val, _) | Object::UnsafePlace(val, _) => {
                 self.msg(err!(
                     span,
                     "expected a trait, found value of type {}",
@@ -1239,6 +1248,20 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
 
     fn _get_prop(&mut self, value: Object<'i>, prop: &Ident<'i>) -> Object<'i> {
         match value {
+            Object::UnsafePlace(mut place, mut offsets) => {
+                match self.lookup_item_on_type(place.ty, prop) {
+                    Item::Field(extra_offsets, ty) => {
+                        offsets.extend(extra_offsets);
+                        place.ty = ty;
+                        Object::UnsafePlace(place, offsets)
+                    }
+                    Item::TraitMethod(_, _) => {
+                        self.msg(err!(&prop.span(), "trait methods may not be invoked on raw pointers"));
+                        Object::Invalid
+                    }
+                    Item::Invalid => Object::Invalid,
+                }
+            }
             Object::Place(mut place, mut offsets) => {
                 match self.lookup_item_on_type(place.ty, prop) {
                     Item::Field(extra_offsets, ty) => {
@@ -1248,7 +1271,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                     }
                     Item::TraitMethod(tr_decl, idx) => Object::TraitMethodDecl(
                         match tr_decl.borrow().signatures[idx].receiver {
-                            Receiver::Immutable => Some(self.copy_prop(place, offsets, place.ty)),
+                            Receiver::Immutable => Some(self.iiv.get_prop_ref(place, offsets, place.ty)),
                             Receiver::Mut => Some(self.iiv.get_prop_ref(place, offsets, place.ty)),
                             Receiver::None => {
                                 self.msg(err!(&prop.span(), "static method called on a value"));
@@ -1274,7 +1297,10 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 }
                 Item::TraitMethod(tr_decl, idx) => Object::TraitMethodDecl(
                     match tr_decl.borrow().signatures[idx].receiver {
-                        Receiver::Immutable => Some(value),
+                        Receiver::Immutable =>{ 
+                            panic!("idk");
+                            Some(value)
+                        },
                         Receiver::Mut => {
                             self.msg(err!(&prop.span(), "mut method called on immutable value"));
                             Some(self.invalid())
@@ -1480,8 +1506,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                             Object::Invalid
                         }
                     }
-                    obj => {
-                        dbg!(obj);
+                    _ => {
                         self.msg(err!(&apply.lhs.span(), "expected a generic declaration"));
                         Object::Invalid
                     }
@@ -1609,6 +1634,10 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                         let r = self.iiv.get_prop_ref(place, offsets, place.ty);
                         r.obj()
                     }
+                    Object::UnsafePlace(place, offsets) => {
+                        let r = self.iiv.get_prop_ptr(place, offsets, place.ty);
+                        r.obj()
+                    }
                     _ => {
                         self.msg(err!(&ref_to.rhs.span(), "expected an assignable l-value"));
                         self.invalid().obj()
@@ -1617,22 +1646,35 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Expr::Deref(deref) => {
                 let checked = self.check(&deref.lhs, None);
-                if let Object::Place(val, mut offsets) = checked {
-                    if let Type::Ref(inner) = &*val.ty {
-                        offsets.push(0);
-                        Object::Place(
-                            Value {
-                                ty: *inner,
-                                raw: val.raw,
-                            },
-                            offsets,
-                        )
-                    } else {
-                        self.msg(err!(
-                            &deref.lhs.span(),
-                            "only references can be derefernced"
-                        ));
-                        self.invalid().obj()
+                if let Object::Place(val, mut offsets) | Object::UnsafePlace(val, mut offsets) = checked {
+                    match &*val.ty {
+                        Type::Ref(inner) => {
+                            offsets.push(0);
+                            Object::Place(
+                                Value {
+                                    ty: *inner,
+                                    raw: val.raw,
+                                },
+                                offsets,
+                            )
+                        }
+                        Type::Ptr(inner) => {
+                            offsets.push(0);
+                            Object::UnsafePlace(
+                                Value {
+                                    ty: *inner,
+                                    raw: val.raw,
+                                },
+                                offsets,
+                            )
+                        }
+                        _ => {
+                            self.msg(err!(
+                                &deref.lhs.span(),
+                                "only references can be derefernced"
+                            ));
+                            self.invalid().obj()
+                        }
                     }
                 } else {
                     self.msg(err!(&deref.lhs.span(), "only l-values can be derefernced"));
@@ -1661,7 +1703,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 let rhs = self.check_val(&assign.rhs);
                 let lhs = self.check(&assign.lhs, None);
                 match lhs {
-                    Object::Place(place, offsets) => {
+                    Object::Place(place, offsets) |  Object::UnsafePlace(place, offsets) => {
                         let rhs = self.ensure_ty(&assign.rhs.span(), place.ty, rhs);
                         let elems = offsets
                             .into_iter()
@@ -1752,6 +1794,14 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 let props = self.resolve_props(props);
                 self.ty.get_struct(props).obj()
             }
+            Expr::RefTy(inner) => {
+                let inner = self.check_type(&inner.rhs);
+                self.ty.get_ref(inner).obj()
+            }
+            Expr::PtrTy(inner) => {
+                let inner = self.check_type(&inner.rhs);
+                self.ty.get_ptr(inner).obj()
+            }
         };
         object
     }
@@ -1760,22 +1810,12 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         self.iiv.drop(val);
     }
 
-    fn copy(&mut self, val: Value<'i>) -> Value<'i> {
-        self.copy_prop(val, vec![], val.ty)
-    }
-
     fn copy_prop(&mut self, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
-        if let Some(_) = self.impl_forest.find(ty, self.copy_trait) {
-            let prop_ref = self.iiv.get_prop_ref(value, props, ty);
-            self.iiv.trait_call(
-                self.copy_trait.0,
-                0,
-                &[prop_ref],
-                self.ty.get_ty_list(vec![ty]),
-            )
-        } else {
-            self.iiv.move_prop_deep(value, props, ty)
-        }
+        self.iiv.copy_prop_deep(
+            value,
+            props.iter().map(|prop| Elem::Prop(Prop(*prop))).collect(),
+            ty,
+        )
     }
 
     fn move_val(&mut self, val: Value<'i>) -> Value<'i> {
@@ -1869,6 +1909,7 @@ enum Object<'i> {
     Invalid,
     Value(Value<'i>),
     Place(Value<'i>, Vec<u8>),
+    UnsafePlace(Value<'i>, Vec<u8>),
     Type(TypeRef<'i>),
     TypeDecl(TyDeclRef<'i>),
     TraitDecl(TraitDeclRef<'i>),

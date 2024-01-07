@@ -476,7 +476,7 @@ impl<'i> Fmt for Expr<'i> {
             Expr::Sub(_) => unimplemented!(),
             Expr::Neg(_) => unimplemented!(),
             Expr::Not(_) => unimplemented!(),
-            Expr::RefTo(ref_to) => {
+            Expr::RefTo(ref_to) | Expr::RefTy(ref_to) | Expr::PtrTy(ref_to) => {
                 let left = ref_to.span.left().to_pos(ref_to.rhs.left_span());
                 ctx.replace(left, "&").then(&ref_to.rhs)
             }

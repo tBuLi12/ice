@@ -210,7 +210,6 @@ impl<'i> Function<'i> {
                     | Instruction::Neg(val)
                     | Instruction::Variant(_, _, val)
                     | Instruction::VariantCast(_, val)
-                    | Instruction::Discriminant(val)
                     | Instruction::Drop(val)
                     | Instruction::CallDrop(val, _)
                     | Instruction::Invalidate(val, _)
@@ -400,6 +399,9 @@ fn print_inst(
             write!(f, "    store %{} ", lhs.0)?;
             for elem in path {
                 match elem {
+                    Elem::Discriminant => {
+                        write!(f, "discriminant ")?;
+                    }
                     Elem::Index(idx) => {
                         write!(f, "%{} ", idx.0)?;
                     }
@@ -420,13 +422,16 @@ fn print_inst(
             i += 1;
         }
         Instruction::Name(ty, value) => {
-            write!(f, "    %{} = named {} %{} ", i, ty, value.0)?;
+            writeln!(f, "    %{} = named {} %{} ", i, ty, value.0)?;
             i += 1;
         }
         Instruction::CopyElem(lhs, path) => {
             write!(f, "    %{} = copy elem %{} ", i, lhs.0)?;
             for elem in path {
                 match elem {
+                    Elem::Discriminant => {
+                        write!(f, "discriminant ")?;
+                    }
                     Elem::Index(idx) => {
                         write!(f, "%{} ", idx.0)?;
                     }
@@ -450,6 +455,9 @@ fn print_inst(
             write!(f, "    %{} = elem ref %{} ", i, lhs.0)?;
             for elem in path {
                 match elem {
+                    Elem::Discriminant => {
+                        write!(f, "discriminant ")?;
+                    }
                     Elem::Index(idx) => {
                         write!(f, "%{} ", idx.0)?;
                     }
@@ -500,10 +508,6 @@ fn print_inst(
             writeln!(f, "    %{} = variant cast {} %{}", i, ty, inner.0)?;
             i += 1;
         }
-        Instruction::Discriminant(value) => {
-            writeln!(f, "    %{} = discriminant %{}", i, value.0)?;
-            i += 1;
-        }
         Instruction::Drop(value) => {
             writeln!(f, "    drop %{}", value.0)?;
         }
@@ -511,6 +515,9 @@ fn print_inst(
             write!(f, "    call drop %{} ", lhs.0)?;
             for elem in path {
                 match elem {
+                    Elem::Discriminant => {
+                        write!(f, "discriminant ")?;
+                    }
                     Elem::Index(idx) => {
                         write!(f, "%{} ", idx.0)?;
                     }

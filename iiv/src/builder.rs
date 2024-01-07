@@ -26,7 +26,10 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     pub fn new(pool: &'i crate::ty::Pool<'i>, func: &'f mut Function<'i>) -> Self {
         let blocks = match &mut func.body {
             Body::Unsealed(blocks) => blocks,
-            _ => panic!("cannot create a cursor to function without an usealed body"),
+            body => panic!(
+                "cannot create a cursor to a function without an usealed body {:?}",
+                body
+            ),
         };
 
         Cursor {
@@ -107,7 +110,10 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         let int = self.ty_pool.get_int();
         Value {
             ty: int,
-            raw: self.push_value_instruction(Instruction::Discriminant(value.raw), int),
+            raw: self.push_value_instruction(
+                Instruction::CopyElem(value.raw, vec![Elem::Discriminant]),
+                int,
+            ),
         }
     }
 
@@ -223,21 +229,12 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
     pub fn copy_prop_deep(
         &mut self,
         value: Value<'i>,
-        props: Vec<u8>,
+        props: Vec<Elem>,
         prop_ty: TypeRef<'i>,
     ) -> Value<'i> {
         Value {
             ty: prop_ty,
-            raw: self.push_value_instruction(
-                Instruction::CopyElem(
-                    value.raw,
-                    props
-                        .into_iter()
-                        .map(|prop| Elem::Prop(Prop(prop)))
-                        .collect(),
-                ),
-                prop_ty,
-            ),
+            raw: self.push_value_instruction(Instruction::CopyElem(value.raw, props), prop_ty),
         }
     }
 
@@ -266,6 +263,23 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
                         .collect(),
                 ),
                 ref_ty,
+            ),
+        }
+    }
+
+    pub fn get_prop_ptr(&mut self, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
+        let ptr_ty = self.ty_pool.get_ptr(ty);
+        Value {
+            ty: ptr_ty,
+            raw: self.push_value_instruction(
+                Instruction::GetElemRef(
+                    value.raw,
+                    props
+                        .into_iter()
+                        .map(|prop| Elem::Prop(Prop(prop)))
+                        .collect(),
+                ),
+                ptr_ty,
             ),
         }
     }
@@ -445,7 +459,6 @@ impl<'i> Instruction<'i> {
             | Instruction::Neg(_)
             | Instruction::Variant(_, _, _)
             | Instruction::VariantCast(_, _)
-            | Instruction::Discriminant(_)
             | Instruction::Ty(_)
             | Instruction::Not(_)
             | Instruction::Tuple(_, _)

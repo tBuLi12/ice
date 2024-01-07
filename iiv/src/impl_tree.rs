@@ -3,10 +3,10 @@ use std::cell::UnsafeCell;
 use crate::{
     diagnostics::Diagnostics,
     err,
-    fun::{Bound, Method},
+    fun::Bound,
     pool::{self, TraitImplRef},
     ty::{TraitRef, Type, TypeOverlap, TypeRef},
-    ty_decl::{self, TraitImpl},
+    ty_decl::TraitImpl,
     Ctx, Span,
 };
 
@@ -86,6 +86,7 @@ impl<'i> ImplForest<'i> {
                 Type::Builtin(_) => Some(bitwise_copy_impl_option),
                 Type::Constant(_) => None,
                 Type::Ref(_) => Some(bitwise_copy_impl_option),
+                Type::Ptr(_) => Some(bitwise_copy_impl_option),
                 Type::Struct(props) => get_copy_impl_for_list(&mut props.iter().map(|prop| prop.1)),
                 Type::Tuple(fields) => get_copy_impl_for_list(&mut fields.iter().copied()),
                 Type::Vector(_) => unimplemented!(),
@@ -93,7 +94,11 @@ impl<'i> ImplForest<'i> {
                 Type::Named(decl, _, proto) => {
                     if decl.is_copy {
                         let proto_impl = self.find(*proto, self.ctx.builtins.get_copy()).unwrap();
-                        Some((proto_impl.0, self.ctx.type_pool.get_ty_list(vec![ty])))
+                        if proto_impl.0 == bitwise_copy_impl {
+                            Some(bitwise_copy_impl_option)
+                        } else {
+                            Some(auto_copy_impl_option)
+                        }
                     } else {
                         None
                     }
@@ -257,6 +262,11 @@ impl<'i> ImplTreeNode<'i> {
     ) -> Overlap {
         let left = &*left.borrow();
         let right = &*right.borrow();
+
+        if left.tr.0 != right.tr.0 {
+            return Overlap::Disjoint;
+        }
+
         let (left_ty_param_map, overlap) = {
             let mut left_ty_param_map = vec![None; left.ty_params.len()];
             let mut right_ty_param_map = vec![None; right.ty_params.len()];
@@ -270,8 +280,8 @@ impl<'i> ImplTreeNode<'i> {
                 overlap = Self::compare_types(
                     &mut left_ty_param_map,
                     &mut right_ty_param_map,
-                    left.ty,
-                    right.ty,
+                    left_ty,
+                    right_ty,
                 )
                 .and(overlap);
             }
@@ -351,6 +361,9 @@ impl<'i> ImplTreeNode<'i> {
             (Type::Ref(ty), Type::Ref(ty2)) => {
                 Self::compare_types(left_ty_param_map, right_ty_param_map, *ty, *ty2)
             }
+            (Type::Ptr(ty), Type::Ptr(ty2)) => {
+                Self::compare_types(left_ty_param_map, right_ty_param_map, *ty, *ty2)
+            }
             (Type::Named(decl1, args1, _), Type::Named(decl2, args2, _)) => {
                 if decl1 != decl2 || args1.len() != args2.len() {
                     return Overlap::Disjoint;
@@ -390,7 +403,7 @@ impl<'i> ImplTreeNode<'i> {
                 };
                 left.and(right)
             }
-            (Type::Constant(val), other) => {
+            (Type::Constant(val), _) => {
                 if let Some(ty) = left_ty_param_map[*val] {
                     match ty.get_intersection(right) {
                         TypeOverlap::Complete => Overlap::Equal,
@@ -425,6 +438,7 @@ impl<'i> ImplTreeNode<'i> {
             | (Type::Named(_, _, _), _)
             | (Type::Variant(_), _)
             | (Type::Ref(_), _)
+            | (Type::Ptr(_), _)
             | (Type::Type(_), _)
             | (Type::Builtin(_), _) => Overlap::Disjoint,
         }
@@ -472,7 +486,9 @@ impl<'i> TraitImpl<'i> {
                         .zip(props2.iter())
                         .all(|(&p1, &p2)| p1.0 == p2.0 && Self::match_ty(args, p1.1, p2.1))
             }
-            (Type::Ref(ty), Type::Ref(ty2)) => Self::match_ty(args, *ty, *ty2),
+            (Type::Ref(ty), Type::Ref(ty2)) | (Type::Ptr(ty), Type::Ptr(ty2)) => {
+                Self::match_ty(args, *ty, *ty2)
+            }
             (Type::Named(decl1, args1, _), Type::Named(decl2, args2, _)) => {
                 decl1 == decl2
                     && args1.len() == args2.len()
@@ -484,7 +500,7 @@ impl<'i> TraitImpl<'i> {
             (Type::Type(s1), Type::Type(s2)) => {
                 unimplemented!()
             }
-            (Type::Constant(val), other) => {
+            (Type::Constant(val), _) => {
                 if let Some(matched) = args[*val] {
                     matched == ty
                 } else {
@@ -504,6 +520,7 @@ impl<'i> TraitImpl<'i> {
             | (Type::Named(_, _, _), _)
             | (Type::Variant(_), _)
             | (Type::Ref(_), _)
+            | (Type::Ptr(_), _)
             | (Type::Type(_), _)
             | (Type::Builtin(_), _) => false,
         }

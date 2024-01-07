@@ -1,9 +1,4 @@
-use std::{
-    cell::{Cell, RefCell, UnsafeCell},
-    fmt::Display,
-    fs::File,
-    io,
-};
+use std::{cell::Cell, fmt::Display, fs::File, io};
 
 use diagnostics::Diagnostics;
 use fun::{Bound, Function, Method, Signature};
@@ -125,6 +120,7 @@ pub struct Label(pub u16);
 pub enum Elem {
     Index(RawValue),
     Prop(Prop),
+    Discriminant,
 }
 
 #[derive(Clone, Debug)]
@@ -163,7 +159,6 @@ pub enum Instruction<'i> {
     Bool(bool),
     Variant(TypeRef<'i>, u64, RawValue),
     VariantCast(TypeRef<'i>, RawValue),
-    Discriminant(RawValue),
     Drop(RawValue),
     CallDrop(RawValue, Vec<Elem>),
     Invalidate(RawValue, Option<Vec<u8>>),
@@ -199,7 +194,6 @@ impl<'i> Instruction<'i> {
             | Instruction::Switch(_, _, _)
             | Instruction::Jump(_, _)
             | Instruction::Return(_)
-            | Instruction::Discriminant(_)
             | Instruction::Drop(_)
             | Instruction::CallDrop(_, _)
             | Instruction::Invalidate(_, _)
@@ -326,7 +320,7 @@ impl<'i> Ctx<'i> {
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
                 ret_ty: self.type_pool.get_null(),
                 trait_bounds: vec![],
-                ty_params: vec![],
+                ty_params: vec![()],
             },
         });
 
@@ -350,7 +344,7 @@ impl<'i> Ctx<'i> {
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
                 ret_ty: this_ty,
                 trait_bounds: vec![],
-                ty_params: vec![],
+                ty_params: vec![()],
             },
         });
 
@@ -378,7 +372,7 @@ impl<'i> Ctx<'i> {
         });
 
         let bitwise_copy_impl_signature = self.fun_pool.insert(Function {
-            body: fun::Body::Unsealed(vec![]),
+            body: fun::Body::BitwiseCopy,
             ty_cache: vec![],
             sig: Signature {
                 name: self.type_pool.str_pool.get("copy"),
@@ -401,10 +395,31 @@ impl<'i> Ctx<'i> {
             ty_params: vec![()],
             ty: this_ty,
         });
-        // bitwise_copy_impl
-        let auto_copy_impl = self
-            .trait_impl_pool
-            .insert(TraitImpl::clone(&*bitwise_copy_impl.borrow()));
+
+        let auto_copy_impl_signature = self.fun_pool.insert(Function {
+            body: fun::Body::AutoCopy,
+            ty_cache: vec![],
+            sig: Signature {
+                name: self.type_pool.str_pool.get("copy"),
+                params: self
+                    .type_pool
+                    .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
+                ret_ty: this_ty,
+                trait_bounds: vec![],
+                ty_params: vec![()],
+            },
+        });
+
+        let auto_copy_impl = self.trait_impl_pool.insert(TraitImpl {
+            functions: vec![Method {
+                receiver: crate::fun::Receiver::Immutable,
+                fun: auto_copy_impl_signature,
+            }],
+            tr: copy,
+            trait_bounds: vec![],
+            ty_params: vec![()],
+            ty: this_ty,
+        });
 
         self.builtins.drop.set(Some(drop));
         self.builtins.copy.set(Some(copy));

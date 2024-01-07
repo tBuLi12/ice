@@ -288,7 +288,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
     }
 
     fn parse_type_decl(&mut self) -> Parsed<TypeDecl<'i>> {
-        let (_is_data, span) = if let Ok(span) = self.eat_kw(Keyword::Data) {
+        let (is_data, span) = if let Ok(span) = self.eat_kw(Keyword::Data) {
             (true, span)
         } else if let Ok(span) = self.eat_kw(Keyword::Type) {
             (false, span)
@@ -306,6 +306,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
             name,
             proto,
             proto_visibility: Visibility::Public,
+            is_data,
             span,
             type_params,
             visibility: Visibility::Public,
@@ -512,6 +513,18 @@ impl<'i, R: io::Read> Parser<'i, R> {
             } else {
                 Ok(expr)
             }
+        } else if let Ok(et) = self.eat_punct(Punctuation::Et) {
+            let inner = self.parse_ty_name().expected("a type name")?;
+            Ok(Expr::RefTy(RefTo {
+                span: et.to(inner.span()),
+                rhs: Box::new(inner),
+            }))
+        } else if let Ok(asterisk) = self.eat_punct(Punctuation::Asterisk) {
+            let inner = self.parse_ty_name().expected("a type name")?;
+            Ok(Expr::PtrTy(RefTo {
+                span: asterisk.to(inner.span()),
+                rhs: Box::new(inner),
+            }))
         } else {
             self.parse_struct_or_variant_ty()
         }

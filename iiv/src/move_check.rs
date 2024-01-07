@@ -1,5 +1,5 @@
 use crate::{
-    builder::{self, BlockRef, UnsealedBlock},
+    builder::{self, BlockRef, Cursor, UnsealedBlock},
     fun::{self, Function},
     impl_tree::ImplForest,
     ty::{TraitRef, Type, TypeRef},
@@ -169,7 +169,7 @@ impl VarState {
                     };
                     state = &mut fields[0];
                 }
-                (_, Type::Ref(_)) => return,
+                (_, Type::Ref(_)) | (_, Type::Ptr(_)) => return,
                 (_, _) => {
                     panic!("OOF {}", ty);
                 }
@@ -210,7 +210,6 @@ impl VarState {
             }
 
             // don't
-            Instruction::Discriminant(_val) => {}
             Instruction::Ty(_) => {}
             Instruction::Null => {}
 
@@ -266,6 +265,7 @@ impl VarState {
 }
 
 pub fn check<'i>(func: &Function<'i>) {
+    eprintln!("{}", func);
     let body = match &func.body {
         fun::Body::Sealed(_) => panic!("move check on sealed body"),
         fun::Body::Unsealed(unsealed) => unsealed,
@@ -451,7 +451,6 @@ fn verify(
             Instruction::MoveElem(val, path) => state.is_partially_valid(*val, path),
 
             // don't
-            Instruction::Discriminant(val) => state.is_valid(*val),
             Instruction::Ty(_) => true,
             Instruction::Null => true,
 
@@ -739,7 +738,6 @@ impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
                 }
 
                 // don't
-                Instruction::Discriminant(_) => {}
                 Instruction::Ty(_) => {}
                 Instruction::Null => {}
 
@@ -822,7 +820,7 @@ pub fn copies_to_moves<'i>(
                         path.into_iter()
                             .map(|elem| match elem {
                                 Elem::Prop(prop) => prop.0,
-                                Elem::Index(_) => panic!("invalid idx"),
+                                Elem::Index(_) | Elem::Discriminant => panic!("invalid move elem"),
                             })
                             .collect(),
                     )
@@ -830,4 +828,62 @@ pub fn copies_to_moves<'i>(
             }
         }
     }
+}
+
+pub fn inject_auto_copy_impl<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
+    let mut cursor = Cursor::new(&ctx.type_pool, func);
+    let value = cursor.params().next().unwrap();
+    let Type::Ref(ty) = &*value.ty else {
+        panic!("copy impl signature must accept a reference!");
+    };
+    let copy = match &**ty {
+        Type::Named(decl, args, proto) => {
+            let copied_proto = cursor.copy_prop_deep(
+                value,
+                vec![Elem::Prop(crate::Prop(0)), Elem::Prop(crate::Prop(0))],
+                *proto,
+            );
+            cursor.named(*ty, copied_proto)
+        }
+        Type::Struct(props) => {
+            let copied_props: Vec<_> = props
+                .iter()
+                .enumerate()
+                .map(|(i, prop)| {
+                    cursor.copy_prop_deep(
+                        value,
+                        vec![Elem::Prop(crate::Prop(0)), Elem::Prop(crate::Prop(i as u8))],
+                        prop.1,
+                    )
+                })
+                .collect();
+            cursor.make_struct(&copied_props, *ty)
+        }
+        Type::Variant(variants) => {
+            let merge_block = cursor.create_block();
+            let discriminant = cursor.copy_prop_deep(
+                value,
+                vec![Elem::Prop(crate::Prop(0)), Elem::Discriminant],
+                ctx.type_pool.get_int(),
+            );
+            let blocks: Vec<_> = variants.iter().map(|_| cursor.create_block()).collect();
+            cursor.switch(discriminant, &blocks);
+            for (i, (&block, elem)) in blocks.iter().zip(variants.iter()).enumerate() {
+                cursor.select(block);
+                let inner_copy = cursor.copy_prop_deep(
+                    value,
+                    vec![Elem::Prop(crate::Prop(0)), Elem::Prop(crate::Prop(i as u8))],
+                    ctx.type_pool.get_int(),
+                );
+                let copy = cursor.variant(*ty, i as u64, inner_copy);
+                cursor.jump(merge_block, &[copy]);
+            }
+            cursor.select(merge_block);
+            cursor.block_param(*ty)
+        }
+        Type::Tuple(_) => unimplemented!(),
+        Type::Union(_) => unimplemented!(),
+        _ => panic!("invalid auto copy impl type"),
+    };
+    cursor.ret(copy);
 }

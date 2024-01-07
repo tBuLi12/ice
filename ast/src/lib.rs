@@ -57,6 +57,7 @@ pub enum Visibility {
 pub struct TypeDecl<'i> {
     pub span: Span,
     pub name: Ident<'i>,
+    pub is_data: bool,
     pub type_params: Vec<TypeParam<'i>>,
     pub visibility: Visibility,
     pub proto_visibility: Visibility,
@@ -664,6 +665,8 @@ spanned_enum! {
         Is(Is<'i>),
         VariantTy(PropsTy<'i>),
         StructTy(PropsTy<'i>),
+        RefTy(RefTo<'i>),
+        PtrTy(RefTo<'i>)
     }
 }
 

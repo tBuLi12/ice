@@ -121,7 +121,9 @@ impl<'i> InferenceCtx<'i> {
                     })
                     .fold(TypeOverlap::Complete, std::cmp::min)
             }
-            (Type::Ref(ty), Type::Ref(ty2)) => self.get_intersection(*ty, *ty2),
+            (Type::Ref(ty), Type::Ref(ty2)) | (Type::Ptr(ty), Type::Ptr(ty2)) => {
+                self.get_intersection(*ty, *ty2)
+            }
             (Type::Named(decl1, args1, _), Type::Named(decl2, args2, _)) => {
                 if decl1 != decl2 || args1.len() != args2.len() {
                     TypeOverlap::None
@@ -158,6 +160,7 @@ impl<'i> InferenceCtx<'i> {
             | (Type::Named(_, _, _), _)
             | (Type::Variant(_), _)
             | (Type::Ref(_), _)
+            | (Type::Ptr(_), _)
             | (Type::Type(_), _)
             | (Type::Builtin(_), _) => TypeOverlap::None,
         }
@@ -190,6 +193,7 @@ impl<'i> InferenceCtx<'i> {
                 self.ty_pool.get_ty_named(*decl, args)
             }
             Type::Ref(ty) => self.ty_pool.get_ref(self.resolve(*ty)),
+            Type::Ptr(ty) => self.ty_pool.get_ptr(self.resolve(*ty)),
             Type::InferenceVar(idx) => {
                 if let Some(ty) = self.vars[*idx] {
                     self.resolve(ty)
@@ -234,6 +238,7 @@ impl<'i> InferenceCtx<'i> {
             Type::Variant(props) => self.ty_pool.get_variant(self.unwrap_prop_list(*props)),
             Type::Struct(props) => self.ty_pool.get_struct(self.unwrap_prop_list(*props)),
             Type::Ref(ty) => self.ty_pool.get_ref(self.unwrap(*ty)),
+            Type::Ptr(ty) => self.ty_pool.get_ptr(self.unwrap(*ty)),
             Type::InferenceVar(idx) => {
                 if let Some(ty) = self.vars[*idx] {
                     self.unwrap(ty)
@@ -287,9 +292,9 @@ impl<'c, 'i> EqAttempt<'c, 'i> {
                         .all(|(&p1, &p2)| p1.0 == p1.0 && self.eq(p1.1, p2.1))
                 }
             }
-            (Type::Ref(ty), Type::Ref(ty2)) | (Type::Vector(ty), Type::Vector(ty2)) => {
-                self.eq(*ty, *ty2)
-            }
+            (Type::Ref(ty), Type::Ref(ty2))
+            | (Type::Vector(ty), Type::Vector(ty2))
+            | (Type::Ptr(ty), Type::Ptr(ty2)) => self.eq(*ty, *ty2),
             (Type::Named(decl1, args1, _), Type::Named(decl2, args2, _)) => {
                 if decl1 != decl2 || args1.len() != args2.len() {
                     false
@@ -347,6 +352,7 @@ impl<'c, 'i> EqAttempt<'c, 'i> {
             | (Type::Variant(_), _)
             | (Type::Named(_, _, _), _)
             | (Type::Ref(_), _)
+            | (Type::Ptr(_), _)
             | (Type::Type(_), _)
             | (Type::Constant(_), _)
             | (Type::Builtin(_), _) => false,

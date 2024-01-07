@@ -706,12 +706,12 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
 
                         self.values.push(target);
                     }
-                    iiv::Instruction::Discriminant(value) => {
-                        let value = self.val(*value);
-                        let discriminant_loc = self.discriminant(value.into());
-                        let discriminant = self.read(discriminant_loc);
-                        self.values.push(discriminant);
-                    }
+                    // iiv::Instruction::Discriminant(value) => {
+                    //     let value = self.val(*value);
+                    //     let discriminant_loc = self.discriminant(value.into());
+                    //     let discriminant = self.read(discriminant_loc);
+                    //     self.values.push(discriminant);
+                    // }
                     iiv::Instruction::Drop(_) => {
                         unimplemented!()
                     }
@@ -781,7 +781,7 @@ impl<'i> LayoutCache<'i> {
                 fields: vec![],
             },
             Type::Constant(_) => PTR_LAYOUT,
-            Type::Ref(_) => PTR_LAYOUT,
+            Type::Ref(_) | Type::Ptr(_) => PTR_LAYOUT,
             Type::Struct(props) => props.iter().fold(Layout::empty(), |layout, prop| {
                 layout.with_field(self.layout_of(prop.1))
             }),
@@ -885,7 +885,7 @@ fn as_ty<'i>(ty: TypeRef<'i>) -> ir::Type {
         Type::Builtin(BuiltinType::Null) => types::I8,
         Type::Struct(_) => types::I64,
         Type::Variant(_) => types::I64,
-        Type::Ref(_) => types::I64,
+        Type::Ref(_) | Type::Ptr(_) => types::I64,
         _ => unimplemented!(),
     }
 }

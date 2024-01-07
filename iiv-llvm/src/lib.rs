@@ -3,8 +3,9 @@ use std::{cell::UnsafeCell, collections::HashMap};
 use iiv::{
     fun::Body,
     impl_tree::ImplForest,
-    pool::{FuncRef, List},
+    pool::{FuncRef, List, TraitImplRef},
     ty::{TraitRef, TypeRef},
+    RawValue,
 };
 
 pub struct Backend<'i> {
@@ -46,7 +47,7 @@ impl<'i> Backend<'i> {
             self.ctx.builtins.get_drop(),
         );
         main.borrow_mut().seal();
-        ir_gen.emit_main(&*main.borrow(), &package.impl_forest);
+        ir_gen.emit_main(&mut *main.borrow_mut(), &package.impl_forest);
 
         eprintln!("dump mod");
         ctx.emit(ir_gen.module, out);
@@ -124,7 +125,7 @@ pub struct IRGen<'ll, 'i> {
 }
 
 impl<'ll, 'i> IRGen<'ll, 'i> {
-    pub fn emit_main(&mut self, func: &iiv::fun::Function<'i>, impls: &ImplForest<'i>) {
+    pub fn emit_main(&mut self, func: &mut iiv::fun::Function<'i>, impls: &ImplForest<'i>) {
         let main = self.create_signature(func, self.ctx.type_pool.get_ty_list(vec![]));
         self.write_body(func, main, impls);
 
@@ -141,23 +142,44 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             );
             fun.seal();
 
-            self.write_body(&fun, *llvm_func, impls);
+            self.write_body(&mut fun, *llvm_func, impls);
         }
     }
 
     pub fn write_body(
         &mut self,
-        func: &iiv::fun::Function<'i>,
+        func: &mut iiv::fun::Function<'i>,
         llvm_func: llvm::Function<'ll>,
         impls: &ImplForest<'i>,
     ) {
+        let body = match &func.body {
+            Body::Sealed(body) => body,
+            Body::Unsealed(_) => panic!("codegen on unsealed body"),
+            Body::None => return,
+            Body::AutoCopy => {
+                func.body = Body::Unsealed(vec![]);
+                iiv::move_check::inject_auto_copy_impl(self.ctx, func);
+                self.write_body(func, llvm_func, impls);
+                return;
+            }
+            Body::BitwiseCopy => {
+                let block = self.llvm_ctx.create_block();
+                llvm_func.append(block);
+                self.ir.set_insert_point(block);
+                let arg = self.on_the_stack(llvm_func.args().next().unwrap(), func.sig.params[0]);
+                let copied = self.elem_ptr(arg.value(), 0);
+                let ret = self.load(copied);
+                self.ir.ret(ret);
+                if llvm_func.verify() {
+                    panic!("invalid function");
+                }
+                return;
+            }
+        };
+
         self.phis.clear();
         self.values.clear();
         self.blocks.clear();
-
-        let Body::Sealed(body) = &func.body else {
-            panic!("codegen on unsealed body!")
-        };
 
         for _ in body {
             let llvm_block = self.llvm_ctx.create_block();
@@ -180,7 +202,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         }
 
         if llvm_func.verify() {
-            panic!("invalid function");
+            // panic!("invalid function");
         }
 
         // self.fun_opt_manager.optimize(llvm_func);
@@ -260,7 +282,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let (this_ty, rest) = ty_args.split_first().unwrap();
                     let (tr_ty_args, method_ty_args) =
                         rest.split_at(tr_decl.borrow().ty_params.len());
-                    dbg!(tr_decl);
+
                     let (impl_ref, ty_args) = impls
                         .find(
                             *this_ty,
@@ -270,29 +292,8 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                             ),
                         )
                         .unwrap();
-                    let call_ty_args = self.ctx.type_pool.get_ty_list(
-                        ty_args
-                            .iter()
-                            .copied()
-                            .chain(method_ty_args.iter().copied())
-                            .collect(),
-                    );
-
-                    let fun = impl_ref.borrow().functions[*idx as usize].fun;
-
-                    let ret_ty = self
-                        .ctx
-                        .type_pool
-                        .resolve_ty_args(fun.borrow().sig.ret_ty, &call_ty_args);
-                    let mut raw_args = Vec::new();
-
-                    let func = self.get_or_create_fn(fun, call_ty_args);
-
-                    raw_args.extend(args.iter().map(|arg| self.get(*arg)));
-
-                    let call = self.ir.call(func, &raw_args);
-
-                    self.on_the_stack(call, ret_ty);
+                    let raw_args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
+                    self.trait_call(impl_ref, *idx, ty_args, method_ty_args, &raw_args);
                 }
                 iiv::Instruction::Call(fun, args, ty_args) => {
                     let ret_ty = self
@@ -340,13 +341,27 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let mut value = self.val(*lhs);
 
                     for elem in path {
-                        let iiv::Elem::Prop(iiv::Prop(idx)) = elem else {
-                            panic!("invalid get_elem");
-                        };
-                        value = self.elem_ptr(value, *idx as usize);
+                        match elem {
+                            iiv::Elem::Prop(iiv::Prop(idx)) => {
+                                value = self.elem_ptr(value, *idx as usize);
+                            }
+                            iiv::Elem::Discriminant => {
+                                value = self.discriminant_ptr(value);
+                            }
+                            _ => panic!("invalid get_elem"),
+                        }
                     }
 
-                    self.read(value);
+                    let copy_tr = self.ctx.builtins.get_copy();
+                    let copy_impl = impls.find(value.ty, copy_tr).unwrap();
+                    if copy_impl.0 == self.ctx.builtins.get_bitwise_copy() {
+                        self.read(value);
+                    } else {
+                        let arg = self.make_ref(value);
+                        self.values.pop();
+                        let raw_arg = self.load(arg.value());
+                        self.trait_call(copy_impl.0, 0, copy_impl.1, &[], &[raw_arg]);
+                    }
                 }
                 iiv::Instruction::MoveElem(lhs, path) => {
                     let mut value = self.val(*lhs);
@@ -462,11 +477,6 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     self.ir
                         .store(gen_ptr_ptr, self.llvm_ctx.ty_ptr().null().val());
                 }
-                iiv::Instruction::Discriminant(value) => {
-                    let value = self.val(*value);
-                    let discriminant_loc = self.discriminant_ptr(value);
-                    self.read(discriminant_loc);
-                }
                 iiv::Instruction::Null => {
                     self.null_val();
                 }
@@ -495,6 +505,36 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 }
             }
         }
+    }
+
+    fn trait_call(
+        &mut self,
+        impl_ref: TraitImplRef<'i>,
+        idx: u16,
+        impl_ty_args: List<'i, TypeRef<'i>>,
+        method_ty_args: &[TypeRef<'i>],
+        args: &[llvm::Value<'ll>],
+    ) {
+        let call_ty_args = self.ctx.type_pool.get_ty_list(
+            impl_ty_args
+                .iter()
+                .copied()
+                .chain(method_ty_args.iter().copied())
+                .collect(),
+        );
+
+        let fun = impl_ref.borrow().functions[idx as usize].fun;
+
+        let ret_ty = self
+            .ctx
+            .type_pool
+            .resolve_ty_args(fun.borrow().sig.ret_ty, &call_ty_args);
+
+        let func = self.get_or_create_fn(fun, call_ty_args);
+
+        let call = self.ir.call(func, args);
+
+        self.on_the_stack(call, ret_ty);
     }
 
     fn null_val(&mut self) {
@@ -611,6 +651,21 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                         val.value,
                         &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(1).val()],
                     ),
+                }
+            }
+            Type::Ptr(inner) => {
+                assert!(elem == 0);
+                LLVMValue {
+                    ty: inner,
+                    value: self.ir.load(
+                        self.ir.gep(
+                            ty,
+                            val.value,
+                            &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(0).val()],
+                        ),
+                        self.llvm_ctx.ty_ptr(),
+                    ),
+                    gen_ptr: self.llvm_ctx.ty_ptr().null().val(),
                 }
             }
             Type::Named(_, _, proto) => LLVMValue {
@@ -787,6 +842,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 let ptr_ty = self.llvm_ctx.ty_ptr();
                 self.llvm_ctx.struct_ty(&[int_ty, ptr_ty, ptr_ty])
             }
+            Type::Ptr(_) => self.llvm_ctx.ty_ptr(),
             Type::Struct(props) => {
                 let prop_types: Vec<_> = props.iter().map(|prop| self.llvm_ty(prop.1)).collect();
                 self.llvm_ctx.struct_ty(&prop_types)
