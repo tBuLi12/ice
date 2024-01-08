@@ -441,8 +441,9 @@ fn verify(
                     *val,
                     &path
                         .iter()
-                        .map(|elem| match elem {
-                            Elem::Prop(prop) => prop.0,
+                        .filter_map(|elem| match elem {
+                            Elem::Prop(prop) => Some(prop.0),
+                            Elem::Discriminant => None,
                             _ => panic!("OOF"),
                         })
                         .collect::<Vec<_>>(),
@@ -699,19 +700,11 @@ impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
                             panic!("oof")
                         };
                         u8_path.push(elem.0);
-                        match &*lhs_ty {
-                            Type::Struct(props) | Type::Variant(props) => {
-                                lhs_ty = props[elem.0 as usize].1;
-                            }
-                            _ => {
-                                panic!("oof");
-                            }
-                        }
                     }
 
                     let lhs = *lhs;
                     self.invalidate(*rhs, None, rhs_ty);
-                    self.drop(lhs, u8_path, lhs_ty);
+                    self.drop(lhs, u8_path, rhs_ty);
                 }
 
                 Instruction::GetElemRef(_, _) | Instruction::CopyElem(_, _) => {}

@@ -8,7 +8,7 @@ use iiv::{
     builder::BlockRef,
     diagnostics::{self},
     err,
-    fun::{Bound, Function, Method, Receiver},
+    fun::{Bound, Function, Method, Receiver, Body},
     impl_tree::ImplForest,
     pool::{self, FuncRef, TraitDeclRef, TyDeclRef},
     str::Str,
@@ -578,9 +578,13 @@ impl<'i> Generator<'i> {
 
         for (&fun, fun_node) in package_funs.iter().zip(funcs) {
             let mut fun = fun.borrow_mut();
-            eprintln!("emitting {}", fun.sig.name);
-            let gen = FunctionGenerator::new(self, &mut *fun);
-            gen.emit_function_body(fun_node, Receiver::None);
+            if fun_node.body.is_some() {
+                eprintln!("emitting {}", fun.sig.name);
+                let gen = FunctionGenerator::new(self, &mut *fun);
+                gen.emit_function_body(fun_node, Receiver::None);
+            } else {
+                fun.body = Body::None;
+            }
         }
 
         for (&trait_impl, impl_node) in package_trait_impls.iter().zip(trait_impls) {
@@ -588,8 +592,12 @@ impl<'i> Generator<'i> {
 
             for (method, fun_node) in trait_impl.functions.iter().zip(&impl_node.functions) {
                 let mut fun = method.fun.borrow_mut();
-                let gen = FunctionGenerator::new(self, &mut *fun);
-                gen.emit_function_body(fun_node, Receiver::Immutable);
+                if fun_node.body.is_some() {
+                    let gen = FunctionGenerator::new(self, &mut *fun);
+                    gen.emit_function_body(fun_node, Receiver::Immutable);
+                } else {
+                    self.messages.add(err!(&fun_node.span(), "implementation functions must have a body"));
+                }
             }
         }
 
@@ -699,8 +707,8 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         self.ret_type = Some(ret_ty);
 
         self.iiv.create_block();
-        let body = self.check_val(&fun_node.body);
-        let body = self.ensure_ty(&fun_node.body.span(), ret_ty, body);
+        let body = self.check_val(&fun_node.body.as_ref().unwrap());
+        let body = self.ensure_ty(&fun_node.body.as_ref().unwrap().span(), ret_ty, body);
         let body = self.move_val(body);
         self.end_scope();
         self.iiv.ret(body);
@@ -1469,15 +1477,18 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 let body = self.iiv.create_block();
                 let after = self.iiv.create_block();
 
-                let _scopes = self.check_condition(&while_expr.condition, after);
+                let scopes = self.check_condition(&while_expr.condition, after);
 
                 self.iiv.jump(body, &[]);
                 self.iiv.select(body);
                 self.check_val(&*while_expr.body);
+                for _ in 0..scopes {
+                    self.end_scope();
+                }
+                self.iiv.jump(cond_block, &[]);
 
                 self.iiv.select(after);
-                self.null().obj();
-                unimplemented!();
+                self.null().obj()
             }
             Expr::Match(_match) => unimplemented!(),
             Expr::TyArgApply(apply) => {

@@ -93,7 +93,7 @@ pub struct Signature<'i> {
 #[derive(Debug)]
 pub struct Function<'i> {
     pub signature: Signature<'i>,
-    pub body: Expr<'i>,
+    pub body: Option<Expr<'i>>,
 }
 
 #[derive(Debug)]
@@ -765,7 +765,7 @@ spanned_impls! {
     Parameter : name - ty,
     TypeDecl,
     Signature,
-    Function: signature - body,
+    Function: signature - ?body signature,
     TraitBound: ty - tr,
     Promotion,
     Impl,

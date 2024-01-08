@@ -727,18 +727,22 @@ impl Edits {
             ty: CtxType::Inline,
         };
 
-        let sig_to_body = fun.signature.right_span().to_pos(fun.body.left_span());
-        let state = ctx.edits.save_state();
-        let ctx = ctx
-            .then(&fun.signature)
-            .replace(sig_to_body, " -> ")
-            .then(&fun.body);
-        if ctx.offset > MAX_LINE_LEN {
-            ctx.edits.restore_state(state);
-            ctx.then(&fun.signature)
-                .replace(sig_to_body, " ")
-                .set_ty(CtxType::BlockItem)
-                .then(&fun.body);
+        if let Some(body) = &fun.body {
+            let sig_to_body = fun.signature.right_span().to_pos(body.left_span());
+            let state = ctx.edits.save_state();
+            let ctx = ctx
+                .then(&fun.signature)
+                .replace(sig_to_body, " -> ")
+                .then(body);
+            if ctx.offset > MAX_LINE_LEN {
+                ctx.edits.restore_state(state);
+                ctx.then(&fun.signature)
+                    .replace(sig_to_body, " ")
+                    .set_ty(CtxType::BlockItem)
+                    .then(body);
+            }
+        } else {
+            ctx.then(&fun.signature);
         }
     }
 }

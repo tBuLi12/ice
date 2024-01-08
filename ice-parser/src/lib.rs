@@ -256,9 +256,9 @@ impl<'i, R: io::Read> Parser<'i, R> {
     fn parse_function(&mut self) -> Parsed<Function<'i>> {
         let signature = self.parse_signature()?;
         let body = if self.eat_punct(Punctuation::ThinArrow).is_ok() {
-            self.parse_expr().expected("an expression")?
+            Some(self.parse_expr().expected("an expression")?)
         } else {
-            self.parse_block().expected("-> or a block")?
+            self.parse_block().invalid()?.ok()
         };
 
         Ok(Function { signature, body })
@@ -683,6 +683,17 @@ impl<'i, R: io::Read> Parser<'i, R> {
         }))
     }
 
+    fn parse_while(&mut self) -> Parsed<Expr<'i>> {
+        let while_span = self.eat_kw(Keyword::While)?;
+        let (condition, _) = self.parens(|p| p.parse_expr()).expected("a condition")?;
+        let body = self.parse_expr().expected("an expression")?;
+        Ok(Expr::While(While {
+            span: while_span.to(body.span()),
+            condition: Box::new(condition),
+            body: Box::new(body),
+        }))
+    }
+
     fn parse_variant_lit(&mut self) -> Parsed<Expr<'i>> {
         let span = self.eat_punct(Punctuation::Period)?;
         let name = self.ident().expected("variant name")?;
@@ -723,7 +734,9 @@ impl<'i, R: io::Read> Parser<'i, R> {
             .invalid()?
             .or_else(|_| self.parse_ref_to())
             .invalid()?
-            .or_else(|_| self.parse_if())?;
+            .or_else(|_| self.parse_if())
+            .invalid()?
+            .or_else(|_| self.parse_while())?;
 
         expr = self.parse_rhs(expr)?;
 
