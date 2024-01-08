@@ -26,6 +26,7 @@ impl<'i> Debug for Bound<'i> {
 #[derive(Debug, Clone)]
 pub struct Signature<'i> {
     pub name: Str<'i>,
+    pub name_base: Str<'i>,
     pub params: pool::List<'i, TypeRef<'i>>,
     pub ty_params: Vec<()>,
     pub trait_bounds: Vec<Bound<'i>>,
@@ -67,10 +68,11 @@ pub enum Body<'i> {
 }
 
 impl<'i> Function<'i> {
-    pub fn empty(ty_pool: &'i crate::ty::Pool<'i>, name: Str<'i>) -> Self {
+    pub fn empty(ty_pool: &'i crate::ty::Pool<'i>, name_base: Str<'i>, name: Str<'i>) -> Self {
         Function {
             sig: Signature {
                 name,
+                name_base,
                 params: ty_pool.get_ty_list(vec![]),
                 ty_params: vec![],
                 trait_bounds: vec![],

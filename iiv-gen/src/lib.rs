@@ -228,7 +228,7 @@ impl<'i> Generator<'i> {
                 .iter()
                 .map(|param| {
                     let ty = self.scopes.new_ty_param(&param.name);
-                    let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""));
+                    let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
                     let mut fun_gen = FunctionGenerator::new(self, &mut fun);
                     for tr_expr in &param.trait_bounds {
                         if let Some(mut tr) = fun_gen.check_trait(tr_expr) {
@@ -276,7 +276,7 @@ impl<'i> Generator<'i> {
         let mut package_types = vec![];
 
         for ty_node in types {
-            let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""));
+            let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
             let mut fun_gen = FunctionGenerator::new(self, &mut fun);
 
             fun_gen.begin_scope();
@@ -334,7 +334,7 @@ impl<'i> Generator<'i> {
             );
 
             for sig in &trait_node.signatures {
-                let mut fun = Function::empty(self.ty, sig.name.value);
+                let mut fun = Function::empty(self.ty, sig.name.value, tr.name);
                 let mut fun_gen = FunctionGenerator::new(self, &mut fun);
                 fun_gen.begin_scope();
                 fun_gen.set_signature(&sig, bounds.clone(), tr.ty_params.len() + 1, Some(fun_gen.ty.get_ref(this_ty)));
@@ -370,7 +370,7 @@ impl<'i> Generator<'i> {
             let (own_bounds, impl_ty_params) = self.resolve_ty_param_list(&impl_node.type_params);
 
             let (ty, tr) = {
-                let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""));
+                let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
                 let mut fun_gen = FunctionGenerator::new(self, &mut fun);
                 let ty = fun_gen.check_type(&impl_node.ty);
                 fun_gen.scopes.this_ty = Some(ty);
@@ -403,7 +403,7 @@ impl<'i> Generator<'i> {
                 .functions
                 .iter()
                 .map(|fun_node| {
-                    let mut fun = Function::empty(self.ty, fun_node.signature.name.value);
+                    let mut fun = Function::empty(self.ty, fun_node.signature.name.value, self.ty.str_pool.get(&format!("{}.{}", tr.map(|tr| tr.0.borrow().name).unwrap_or(self.ty.str_pool.get("?")), ty)));
                     let mut fun_gen = FunctionGenerator::new(self, &mut fun);
 
                     fun_gen.begin_scope();
@@ -558,7 +558,7 @@ impl<'i> Generator<'i> {
         let funcs = &modules[0].functions;
         let mut package_funs = vec![];
         for fun_node in funcs {
-            let mut fun = Function::empty(self.ty, fun_node.signature.name.value);
+            let mut fun = Function::empty(self.ty, fun_node.signature.name.value, self.ty.str_pool.get(""));
 
             let mut fun_gen = FunctionGenerator::new(self, &mut fun);
 

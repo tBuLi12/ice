@@ -339,6 +339,7 @@ impl<'i> Ctx<'i> {
                 ty_cache: vec![],
                 sig: Signature {
                     name: self.type_pool.str_pool.get("memAlloc"),
+                    name_base: self.type_pool.str_pool.get(""),
                     params: self.type_pool.get_ty_list(vec![self.type_pool.get_int()]),
                     ret_ty: self.type_pool.get_ptr(this_ty),
                     trait_bounds: vec![],
@@ -351,6 +352,7 @@ impl<'i> Ctx<'i> {
                 ty_cache: vec![],
                 sig: Signature {
                     name: self.type_pool.str_pool.get("memFree"),
+                    name_base: self.type_pool.str_pool.get(""),
                     params: self
                         .type_pool
                         .get_ty_list(vec![self.type_pool.get_ptr(this_ty)]),
@@ -365,6 +367,7 @@ impl<'i> Ctx<'i> {
                 ty_cache: vec![],
                 sig: Signature {
                     name: self.type_pool.str_pool.get("ptrWrite"),
+                    name_base: self.type_pool.str_pool.get(""),
                     params: self
                         .type_pool
                         .get_ty_list(vec![self.type_pool.get_ptr(this_ty), this_ty]),
@@ -379,6 +382,7 @@ impl<'i> Ctx<'i> {
                 ty_cache: vec![],
                 sig: Signature {
                     name: self.type_pool.str_pool.get("ptrAdd"),
+                    name_base: self.type_pool.str_pool.get(""),
                     params: self.type_pool.get_ty_list(vec![
                         self.type_pool.get_ptr(this_ty),
                         self.type_pool.get_int(),
@@ -400,6 +404,7 @@ impl<'i> Ctx<'i> {
             ty_cache: vec![],
             sig: Signature {
                 name: self.type_pool.str_pool.get("drop"),
+                name_base: self.type_pool.str_pool.get("Drop."),
                 params: self
                     .type_pool
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
@@ -424,6 +429,7 @@ impl<'i> Ctx<'i> {
             ty_cache: vec![],
             sig: Signature {
                 name: self.type_pool.str_pool.get("copy"),
+                name_base: self.type_pool.str_pool.get("Copy."),
                 params: self
                     .type_pool
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
@@ -461,6 +467,7 @@ impl<'i> Ctx<'i> {
             ty_cache: vec![],
             sig: Signature {
                 name: self.type_pool.str_pool.get("copy"),
+                name_base: self.type_pool.str_pool.get("Copy."),
                 params: self
                     .type_pool
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
@@ -486,6 +493,7 @@ impl<'i> Ctx<'i> {
             ty_cache: vec![],
             sig: Signature {
                 name: self.type_pool.str_pool.get("copy"),
+                name_base: self.type_pool.str_pool.get("Copy."),
                 params: self
                     .type_pool
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
