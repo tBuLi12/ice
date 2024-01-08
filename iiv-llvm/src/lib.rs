@@ -90,6 +90,8 @@ struct Builtints<'ll> {
     rt_validate: llvm::Function<'ll>,
     rt_init: llvm::Function<'ll>,
     rt_gen_alloc: llvm::Function<'ll>,
+    rt_malloc: llvm::Function<'ll>,
+    rt_free: llvm::Function<'ll>,
 }
 
 impl<'ll> Builtints<'ll> {
@@ -99,12 +101,16 @@ impl<'ll> Builtints<'ll> {
             module.create_func("rt_validate", &[ctx.ty_ptr(), ctx.ty_int()], ctx.ty_void());
         let rt_init = module.create_func("rt_init", &[], ctx.ty_void());
         let rt_gen_alloc = module.create_func("rt_gen_alloc", &[ctx.ty_ptr()], ctx.ty_void());
+        let rt_malloc = module.create_func("rt_malloc", &[ctx.ty_int()], ctx.ty_ptr());
+        let rt_free = module.create_func("rt_free", &[ctx.ty_ptr()], ctx.ty_void());
 
         Builtints {
             rt_invalidate,
             rt_validate,
             rt_init,
             rt_gen_alloc,
+            rt_free,
+            rt_malloc,
         }
     }
 }
@@ -160,6 +166,56 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 func.body = Body::Unsealed(vec![]);
                 iiv::move_check::inject_auto_copy_impl(self.ctx, func);
                 self.write_body(func, llvm_func, impls);
+                return;
+            }
+            Body::MemAlloc(ty) => {
+                let ty = *ty;
+                func.body = Body::Unsealed(vec![]);
+                let block = self.llvm_ctx.create_block();
+                llvm_func.append(block);
+                let count = llvm_func.args().next().unwrap();
+                self.ir.set_insert_point(block);
+                let size = self.module.alloc_size_of(self.llvm_ty(ty));
+                let size = self.ir.mul(self.llvm_ctx.int(size as u32).val(), count);
+                let ptr = self.ir.call(self.builtins.rt_malloc, &[size]);
+                self.ir.ret(ptr);
+                return;
+            }
+            Body::MemFree => {
+                func.body = Body::Unsealed(vec![]);
+                let block = self.llvm_ctx.create_block();
+                llvm_func.append(block);
+                let ptr = llvm_func.args().next().unwrap();
+                self.ir.set_insert_point(block);
+                self.ir.call(self.builtins.rt_free, &[ptr]);
+                self.ir.ret_void();
+                return;
+            }
+            Body::PtrAdd => {
+                func.body = Body::Unsealed(vec![]);
+                let block = self.llvm_ctx.create_block();
+                llvm_func.append(block);
+                self.ir.set_insert_point(block);
+                let mut args = llvm_func.args();
+                let ptr = args.next().unwrap();
+                let offset = args.next().unwrap();
+                let iiv::ty::Type::Ptr(inner) = &*func.sig.params[0] else {
+                    panic!("invalid ptr_add arg");
+                };
+                let offset_ptr = self.ir.gep(self.llvm_ty(*inner), ptr, &[offset]);
+                self.ir.ret(offset_ptr);
+                return;
+            }
+            Body::PtrWrite => {
+                func.body = Body::Unsealed(vec![]);
+                let block = self.llvm_ctx.create_block();
+                llvm_func.append(block);
+                self.ir.set_insert_point(block);
+                let mut args = llvm_func.args();
+                let ptr = args.next().unwrap();
+                let value = args.next().unwrap();
+                self.ir.store(ptr, value);
+                self.ir.ret_void();
                 return;
             }
             Body::BitwiseCopy => {

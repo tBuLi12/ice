@@ -107,6 +107,11 @@ extern "C" {
         lhs: *mut ValueData,
         rhs: *mut ValueData,
     ) -> *mut ValueData;
+    fn builderMul(
+        builder: *mut IRBuilderData,
+        lhs: *mut ValueData,
+        rhs: *mut ValueData,
+    ) -> *mut ValueData;
     fn builderEq(
         builder: *mut IRBuilderData,
         lhs: *mut ValueData,
@@ -480,6 +485,13 @@ impl<'ll> IRBuilder<'ll> {
         }
     }
 
+    pub fn mul(&self, lhs: Value<'ll>, rhs: Value<'ll>) -> Value<'ll> {
+        Value {
+            _marker: PhantomData,
+            ptr: unsafe { builderMul(self.ptr, lhs.ptr, rhs.ptr) },
+        }
+    }
+
     pub fn eq(&self, lhs: Value<'ll>, rhs: Value<'ll>) -> Value<'ll> {
         Value {
             _marker: PhantomData,
@@ -534,6 +546,10 @@ impl<'ll> IRBuilder<'ll> {
 
     pub fn ret(&self, value: Value<'ll>) {
         unsafe { builderRet(self.ptr, value.ptr) }
+    }
+
+    pub fn ret_void(&self) {
+        unsafe { builderRet(self.ptr, ptr::null_mut()) }
     }
 
     pub fn gep(&self, ty: Type<'ll>, base: Value<'ll>, offsets: &[Value<'ll>]) -> Value<'ll> {

@@ -269,6 +269,10 @@ pub struct Builtints<'i> {
     pub copy: Cell<Option<TraitRef<'i>>>,
     pub bitwise_copy_impl: Cell<Option<TraitImplRef<'i>>>,
     pub auto_copy_impl: Cell<Option<TraitImplRef<'i>>>,
+    pub ptr_write: Cell<Option<FuncRef<'i>>>,
+    pub ptr_add: Cell<Option<FuncRef<'i>>>,
+    pub mem_alloc: Cell<Option<FuncRef<'i>>>,
+    pub mem_free: Cell<Option<FuncRef<'i>>>,
 }
 
 impl<'i> Builtints<'i> {
@@ -287,6 +291,22 @@ impl<'i> Builtints<'i> {
     pub fn get_auto_copy(&self) -> TraitImplRef<'i> {
         self.auto_copy_impl.get().unwrap()
     }
+
+    pub fn get_ptr_write(&self) -> FuncRef<'i> {
+        self.ptr_write.get().unwrap()
+    }
+
+    pub fn get_ptr_add(&self) -> FuncRef<'i> {
+        self.ptr_add.get().unwrap()
+    }
+
+    pub fn get_mem_alloc(&self) -> FuncRef<'i> {
+        self.mem_alloc.get().unwrap()
+    }
+
+    pub fn get_mem_free(&self) -> FuncRef<'i> {
+        self.mem_free.get().unwrap()
+    }
 }
 
 impl<'i> Ctx<'i> {
@@ -303,12 +323,77 @@ impl<'i> Ctx<'i> {
                 copy: Cell::new(None),
                 bitwise_copy_impl: Cell::new(None),
                 auto_copy_impl: Cell::new(None),
+                mem_alloc: Cell::new(None),
+                mem_free: Cell::new(None),
+                ptr_add: Cell::new(None),
+                ptr_write: Cell::new(None),
             },
         }
     }
 
     pub fn init(&'i self) {
         let this_ty = self.type_pool.get_ty_constant(0);
+        {
+            let mem_alloc = self.fun_pool.insert(Function {
+                body: fun::Body::MemAlloc(this_ty),
+                ty_cache: vec![],
+                sig: Signature {
+                    name: self.type_pool.str_pool.get("memAlloc"),
+                    params: self.type_pool.get_ty_list(vec![self.type_pool.get_int()]),
+                    ret_ty: self.type_pool.get_ptr(this_ty),
+                    trait_bounds: vec![],
+                    ty_params: vec![()],
+                },
+            });
+
+            let mem_free = self.fun_pool.insert(Function {
+                body: fun::Body::MemFree,
+                ty_cache: vec![],
+                sig: Signature {
+                    name: self.type_pool.str_pool.get("memFree"),
+                    params: self
+                        .type_pool
+                        .get_ty_list(vec![self.type_pool.get_ptr(this_ty)]),
+                    ret_ty: self.type_pool.get_null(),
+                    trait_bounds: vec![],
+                    ty_params: vec![()],
+                },
+            });
+
+            let ptr_write = self.fun_pool.insert(Function {
+                body: fun::Body::PtrWrite,
+                ty_cache: vec![],
+                sig: Signature {
+                    name: self.type_pool.str_pool.get("ptrWrite"),
+                    params: self
+                        .type_pool
+                        .get_ty_list(vec![self.type_pool.get_ptr(this_ty), this_ty]),
+                    ret_ty: self.type_pool.get_null(),
+                    trait_bounds: vec![],
+                    ty_params: vec![()],
+                },
+            });
+
+            let ptr_add = self.fun_pool.insert(Function {
+                body: fun::Body::PtrAdd,
+                ty_cache: vec![],
+                sig: Signature {
+                    name: self.type_pool.str_pool.get("ptrAdd"),
+                    params: self.type_pool.get_ty_list(vec![
+                        self.type_pool.get_ptr(this_ty),
+                        self.type_pool.get_int(),
+                    ]),
+                    ret_ty: self.type_pool.get_ptr(this_ty),
+                    trait_bounds: vec![],
+                    ty_params: vec![()],
+                },
+            });
+
+            self.builtins.mem_alloc.set(Some(mem_alloc));
+            self.builtins.mem_free.set(Some(mem_free));
+            self.builtins.ptr_add.set(Some(ptr_add));
+            self.builtins.ptr_write.set(Some(ptr_write));
+        }
 
         let drop_signature = self.fun_pool.insert(Function {
             body: fun::Body::Unsealed(vec![]),

@@ -232,6 +232,14 @@ extern "C" llvm::Value* builderAdd(
     ) {
         return builder->CreateAdd(lhs, rhs);
     }
+    
+extern "C" llvm::Value* builderMul(
+        llvm::IRBuilder<>* builder,
+        llvm::Value* lhs,
+        llvm::Value* rhs
+    ) {
+        return builder->CreateMul(lhs, rhs);
+    }
 extern "C" llvm::Value* builderEq(
         llvm::IRBuilder<>* builder,
         llvm::Value* lhs,

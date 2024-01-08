@@ -59,6 +59,10 @@ pub enum Body<'i> {
     Sealed(Vec<Block<'i>>),
     AutoCopy,
     BitwiseCopy,
+    MemFree,
+    MemAlloc(TypeRef<'i>),
+    PtrAdd,
+    PtrWrite,
     None,
 }
 
@@ -93,6 +97,10 @@ impl<'i> Function<'i> {
         let body = match &mut self.body {
             Body::Unsealed(unsealed) => unsealed,
             Body::Sealed(_) => panic!("apply_ty_args on sealed body"),
+            Body::MemAlloc(ty) => {
+                *ty = ty_pool.resolve_ty_args(*ty, &args);
+                return;
+            }
             _ => return,
         };
 
@@ -300,6 +308,18 @@ impl<'i> Display for Function<'i> {
             }
             Body::AutoCopy => {
                 writeln!(f, "    auto copy")?;
+            }
+            Body::PtrAdd => {
+                writeln!(f, "    ptr add")?;
+            }
+            Body::PtrWrite => {
+                writeln!(f, "    ptr write")?;
+            }
+            Body::MemAlloc(_) => {
+                writeln!(f, "    mem alloc")?;
+            }
+            Body::MemFree => {
+                writeln!(f, "    mem free")?;
             }
             Body::Sealed(blocks) => {
                 for (block_index, block) in blocks.iter().enumerate() {

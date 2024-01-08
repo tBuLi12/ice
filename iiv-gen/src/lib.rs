@@ -254,6 +254,22 @@ impl<'i> Generator<'i> {
             self.ty.str_pool.get("Copy"),
             Object::TraitDecl(self.copy_trait.0),
         );
+        self.define_global(
+            self.ty.str_pool.get("memAlloc"),
+            Object::FunDecl(self.ctx.builtins.get_mem_alloc()),
+        );
+        self.define_global(
+            self.ty.str_pool.get("memFree"),
+            Object::FunDecl(self.ctx.builtins.get_mem_free()),
+        );
+        self.define_global(
+            self.ty.str_pool.get("ptrAdd"),
+            Object::FunDecl(self.ctx.builtins.get_ptr_add()),
+        );
+        self.define_global(
+            self.ty.str_pool.get("ptrWrite"),
+            Object::FunDecl(self.ctx.builtins.get_ptr_write()),
+        );
 
         // types
         let types = &modules[0].types;
