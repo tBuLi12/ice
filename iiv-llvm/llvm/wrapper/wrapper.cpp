@@ -59,7 +59,34 @@ extern "C" int32_t getTargetMachine(llvm::LLVMContext* ctx, llvm::TargetMachine*
 }
 
 extern "C" int32_t emitModule(llvm::Module* llvmModule, llvm::TargetMachine* targetMachine, char const* name, uint32_t name_len) {
-    // llvmModule->print(llvm::errs(), nullptr);
+    {
+        llvm::LoopAnalysisManager LAM;
+        llvm::FunctionAnalysisManager FAM;
+        llvm::CGSCCAnalysisManager CGAM;
+        llvm::ModuleAnalysisManager MAM;
+
+        // Create the new pass manager builder.
+        // Take a look at the PassBuilder constructor parameters for more
+        // customization, e.g. specifying a TargetMachine or various debugging
+        // options.
+        llvm::PassBuilder PB;
+
+        // Register all the basic analyses with the managers.
+        PB.registerModuleAnalyses(MAM);
+        PB.registerCGSCCAnalyses(CGAM);
+        PB.registerFunctionAnalyses(FAM);
+        PB.registerLoopAnalyses(LAM);
+        PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+        // Create the pass manager.
+        // This one corresponds to a typical -O2 optimization pipeline.
+        llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+
+        // Optimize the IR!
+        MPM.run(*llvmModule, MAM);
+    }
+    
+    llvmModule->print(llvm::errs(), nullptr);
     
     llvm::legacy::PassManager passManager{};
 
