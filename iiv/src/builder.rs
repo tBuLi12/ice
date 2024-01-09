@@ -99,6 +99,13 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         }
     }
 
+    pub fn mul(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
+        Value {
+            ty: lhs.ty,
+            raw: self.push_value_instruction(Instruction::Mul(lhs.raw, rhs.raw), lhs.ty),
+        }
+    }
+
     pub fn variant(&mut self, ty: TypeRef<'i>, idx: u64, value: Value<'i>) -> Value<'i> {
         Value {
             ty,
@@ -135,11 +142,47 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
             raw: self.push_value_instruction(Instruction::Eq(lhs.raw, rhs.raw), bool),
         }
     }
-    // pub fn neq(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
-    // pub fn gt(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
-    // pub fn lt(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
-    // pub fn gt_eq(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
-    // pub fn lt_eq(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
+
+    pub fn not_equals(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
+        let bool = self.ty_pool.get_ty_bool();
+        Value {
+            ty: bool,
+            raw: self.push_value_instruction(Instruction::Neq(lhs.raw, rhs.raw), bool),
+        }
+    }
+
+    pub fn greater(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
+        let bool = self.ty_pool.get_ty_bool();
+        Value {
+            ty: bool,
+            raw: self.push_value_instruction(Instruction::Gt(lhs.raw, rhs.raw), bool),
+        }
+    }
+
+    pub fn less(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
+        let bool = self.ty_pool.get_ty_bool();
+        Value {
+            ty: bool,
+            raw: self.push_value_instruction(Instruction::Lt(lhs.raw, rhs.raw), bool),
+        }
+    }
+
+    pub fn greater_eq(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
+        let bool = self.ty_pool.get_ty_bool();
+        Value {
+            ty: bool,
+            raw: self.push_value_instruction(Instruction::GtEq(lhs.raw, rhs.raw), bool),
+        }
+    }
+
+    pub fn less_eq(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {
+        let bool = self.ty_pool.get_ty_bool();
+        Value {
+            ty: bool,
+            raw: self.push_value_instruction(Instruction::LtEq(lhs.raw, rhs.raw), bool),
+        }
+    }
+
     // pub fn push(&mut self, lhs: Value<'i>, rhs: Value<'i>) -> Value<'i> {}
 
     pub fn block_param(&mut self, ty: TypeRef<'i>) -> Value<'i> {

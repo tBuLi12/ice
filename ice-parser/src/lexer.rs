@@ -50,6 +50,12 @@ pub enum Punctuation {
     Minus,
     Eq,
     DoubleEq,
+    NotEq,
+    Less,
+    Bang,
+    LessEq,
+    Greater,
+    GreaterEq,
     Pipe,
     Et,
 }
@@ -229,6 +235,15 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             },
             '=' => Eq {
                 '=' => DoubleEq,
+            },
+            '!' => Bang {
+                '=' => NotEq,
+            },
+            '<' => Less {
+                '=' => LessEq,
+            },
+            '>' => Greater {
+                '=' => GreaterEq,
             },
         };
         if punct.is_none() {

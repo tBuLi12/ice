@@ -334,7 +334,7 @@ impl<'i> Generator<'i> {
             );
 
             for sig in &trait_node.signatures {
-                let mut fun = Function::empty(self.ty, sig.name.value, tr.name);
+                let mut fun = Function::empty(self.ty, tr.name, sig.name.value);
                 let mut fun_gen = FunctionGenerator::new(self, &mut fun);
                 fun_gen.begin_scope();
                 fun_gen.set_signature(&sig, bounds.clone(), tr.ty_params.len() + 1, Some(fun_gen.ty.get_ref(this_ty)));
@@ -403,7 +403,7 @@ impl<'i> Generator<'i> {
                 .functions
                 .iter()
                 .map(|fun_node| {
-                    let mut fun = Function::empty(self.ty, fun_node.signature.name.value, self.ty.str_pool.get(&format!("{}.{}", tr.map(|tr| tr.0.borrow().name).unwrap_or(self.ty.str_pool.get("?")), ty)));
+                    let mut fun = Function::empty(self.ty, self.ty.str_pool.get(&format!("{}.{}", tr.map(|tr| tr.0.borrow().name).unwrap_or(self.ty.str_pool.get("?")), ty)), fun_node.signature.name.value);
                     let mut fun_gen = FunctionGenerator::new(self, &mut fun);
 
                     fun_gen.begin_scope();
@@ -558,7 +558,7 @@ impl<'i> Generator<'i> {
         let funcs = &modules[0].functions;
         let mut package_funs = vec![];
         for fun_node in funcs {
-            let mut fun = Function::empty(self.ty, fun_node.signature.name.value, self.ty.str_pool.get(""));
+            let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), fun_node.signature.name.value);
 
             let mut fun_gen = FunctionGenerator::new(self, &mut fun);
 
@@ -953,11 +953,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         match item {
             BlockItem::Expr(expr) => match self.check(expr, None) {
                 Object::Place(val, offsets) | Object::UnsafePlace(val, offsets) => {
-                    if offsets.is_empty() {
-                        val
-                    } else {
-                        self.copy_prop(val, offsets, val.ty)
-                    }
+                    self.copy_prop(&expr.span(), val, offsets, val.ty)
                 }
                 Object::Value(val) => val,
                 Object::Condition(_) => panic!("unexpected condtion!"),
@@ -1007,7 +1003,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             // }
             Object::Value(val) => val,
             Object::Place(val, offsets) | Object::UnsafePlace(val, offsets) => {
-                self.copy_prop(val, offsets, val.ty)
+                self.copy_prop(span, val, offsets, val.ty)
             }
             Object::TypeDecl(ty_decl) => {
                 self.msg(err!(span, "expected a value, found type {}", ty_decl.name));
@@ -1135,7 +1131,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     }
 
     fn create_ty_arg_list(&mut self, len: usize) -> pool::List<'i, TypeRef<'i>> {
-        self.ty.get_ty_list(vec![self.inf_ctx.new_var(); len])
+        self.ty.get_ty_list((0..len).into_iter().map(|_| self.inf_ctx.new_var()).collect())
     }
 
     fn get_callable(&mut self, obj: Object<'i>) -> Callable<'i> {
@@ -1315,7 +1311,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Object::Value(value) => match self.lookup_item_on_type(value.ty, prop) {
                 Item::Field(offsets, ty) => {
-                    let prop = self.copy_prop(value, offsets, ty).obj();
+                    let prop = self.iiv.move_prop_deep(value, offsets, ty).obj();
                     self.drop(value);
                     prop
                 }
@@ -1380,6 +1376,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                     let result = if block.has_trailing_expression {
                         last_result
                     } else {
+                        self.drop(last_result);
                         self.null()
                     };
                     let result = self.move_val(result);
@@ -1443,9 +1440,9 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
 
                 let scopes = self.check_condition(&*if_expr.condition, no_block);
 
-                let yes_block = self.iiv.get_current_block();
                 let yes = self.check_val(&if_expr.yes);
                 let yes = self.move_val(yes);
+                let yes_block = self.iiv.get_current_block();
 
                 for _ in 0..scopes {
                     self.end_scope();
@@ -1472,16 +1469,15 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Expr::While(while_expr) => {
                 let cond_block = self.iiv.create_block();
+                self.iiv.jump(cond_block, &[]);
                 self.iiv.select(cond_block);
 
-                let body = self.iiv.create_block();
                 let after = self.iiv.create_block();
 
                 let scopes = self.check_condition(&while_expr.condition, after);
 
-                self.iiv.jump(body, &[]);
-                self.iiv.select(body);
-                self.check_val(&*while_expr.body);
+                let body = self.check_val(&*while_expr.body);
+                self.drop(body);
                 for _ in 0..scopes {
                     self.end_scope();
                 }
@@ -1711,21 +1707,61 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             Expr::Add(add) => {
                 let lhs = self.check_val(&add.lhs);
                 let rhs = self.check_val(&add.rhs);
+                let lhs = self.ensure_ty(&add.lhs.span(), self.ty.get_int(), lhs);
+                let rhs = self.ensure_ty(&add.rhs.span(), self.ty.get_int(), rhs);
                 self.iiv.add(lhs, rhs).obj()
             }
-            Expr::Mul(_mul) => unimplemented!(),
+            Expr::Mul(mul) => {
+                let lhs = self.check_val(&mul.lhs);
+                let rhs = self.check_val(&mul.rhs);
+                let lhs = self.ensure_ty(&mul.lhs.span(), self.ty.get_int(), lhs);
+                let rhs = self.ensure_ty(&mul.rhs.span(), self.ty.get_int(), rhs);
+                self.iiv.mul(lhs, rhs).obj()
+            },
             Expr::Eq(equals) => {
                 let lhs = self.check_val(&equals.lhs);
                 let rhs = self.check_val(&equals.rhs);
+                let lhs = self.ensure_ty(&equals.lhs.span(), self.ty.get_int(), lhs);
+                let rhs = self.ensure_ty(&equals.rhs.span(), self.ty.get_int(), rhs);
                 self.iiv.equals(lhs, rhs).obj()
             }
-            Expr::Neq(_not_equals) => unimplemented!(),
+            Expr::Neq(not_equals) => {
+                let lhs = self.check_val(&not_equals.lhs);
+                let rhs = self.check_val(&not_equals.rhs);
+                let lhs = self.ensure_ty(&not_equals.lhs.span(), self.ty.get_int(), lhs);
+                let rhs = self.ensure_ty(&not_equals.rhs.span(), self.ty.get_int(), rhs);
+                self.iiv.not_equals(lhs, rhs).obj()
+            }
             Expr::And(_and) => unimplemented!(),
             Expr::Or(_or) => unimplemented!(),
-            Expr::Geq(_greater_eq) => unimplemented!(),
-            Expr::Leq(_less_eq) => unimplemented!(),
-            Expr::Lt(_less) => unimplemented!(),
-            Expr::Gt(_greater) => unimplemented!(),
+            Expr::Geq(greater_eq) => {
+                let lhs = self.check_val(&greater_eq.lhs);
+                let rhs = self.check_val(&greater_eq.rhs);
+                let lhs = self.ensure_ty(&greater_eq.lhs.span(), self.ty.get_int(), lhs);
+                let rhs = self.ensure_ty(&greater_eq.rhs.span(), self.ty.get_int(), rhs);
+                self.iiv.greater_eq(lhs, rhs).obj()
+            }
+            Expr::Leq(less_eq) => {
+                let lhs = self.check_val(&less_eq.lhs);
+                let rhs = self.check_val(&less_eq.rhs);
+                let lhs = self.ensure_ty(&less_eq.lhs.span(), self.ty.get_int(), lhs);
+                let rhs = self.ensure_ty(&less_eq.rhs.span(), self.ty.get_int(), rhs);
+                self.iiv.less_eq(lhs, rhs).obj()
+            }
+            Expr::Lt(less) => {
+                let lhs = self.check_val(&less.lhs);
+                let rhs = self.check_val(&less.rhs);
+                let lhs = self.ensure_ty(&less.lhs.span(), self.ty.get_int(), lhs);
+                let rhs = self.ensure_ty(&less.rhs.span(), self.ty.get_int(), rhs);
+                self.iiv.less(lhs, rhs).obj()
+            }
+            Expr::Gt(greater) => {
+                let lhs = self.check_val(&greater.lhs);
+                let rhs = self.check_val(&greater.rhs);
+                let lhs = self.ensure_ty(&greater.lhs.span(), self.ty.get_int(), lhs);
+                let rhs = self.ensure_ty(&greater.rhs.span(), self.ty.get_int(), rhs);
+                self.iiv.greater(lhs, rhs).obj()
+            }
             Expr::Assign(assign) => {
                 let rhs = self.check_val(&assign.rhs);
                 let lhs = self.check(&assign.lhs, None);
@@ -1837,7 +1873,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         self.iiv.drop(val);
     }
 
-    fn copy_prop(&mut self, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
+    fn copy_prop(&mut self, span: &Span, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
         self.iiv.copy_prop_deep(
             value,
             props.iter().map(|prop| Elem::Prop(Prop(*prop))).collect(),

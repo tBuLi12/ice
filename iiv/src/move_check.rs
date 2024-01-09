@@ -29,11 +29,12 @@ impl State {
 
     fn merge(&mut self, other: Self) -> bool {
         match (self, other) {
+            (State::Dead, State::Dead) | (State::Live, State::Live) => false,
             (this, State::Dead) => {
                 *this = State::Dead;
                 true
             }
-            (State::Dead, _) | (State::Live, State::Live) => false,
+            (State::Dead, _) => false,
             (State::Kindof(_), State::Live) => false,
             (this @ State::Live, other @ State::Kindof(_)) => {
                 *this = other;
@@ -125,6 +126,9 @@ impl VarState {
                         unreachable!()
                     };
                     state = &mut fields[0];
+                }
+                Type::Ptr(_) => {
+                    break;
                 }
                 _ => {
                     panic!("OOF {}", ty);
@@ -299,9 +303,11 @@ pub fn check<'i>(func: &Function<'i>) {
         }
     }
 
-    for block in &states {
+    for (idx, block) in states.iter().enumerate() {
         let mut i = 0;
-
+        if block.is_none() {
+            panic!("unreachable block: b{}", idx)
+        }
         for flag in &block.as_ref().unwrap().flags {
             print_state(flag, i, 1);
             i += 1;
@@ -517,6 +523,7 @@ fn verify(
                 i += 1;
             }
             i = 0;
+            eprintln!("successor: b{}", successor);
             for state in &states[successor].as_ref().unwrap().flags {
                 print_state(&state, i, 0);
                 i += 1;
@@ -711,7 +718,7 @@ impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
 
                 Instruction::MoveElem(val, path) => {
                     let mut ty = self.cursor.type_of(*val);
-                    let mut invalidation_path = None;
+                    let mut invalidation_path = Some(None);
                     for (i, elem) in path.iter().enumerate() {
                         match &*ty {
                             Type::Struct(props) => {
@@ -719,15 +726,20 @@ impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
                             }
                             Type::Variant(elems) => {
                                 ty = elems[*elem as usize].1;
-                                invalidation_path = Some(&path[..i]);
+                                invalidation_path = Some(Some(&path[..i]));
+                            }
+                            Type::Ptr(_) => {
+                                invalidation_path = None;
+                                break;
                             }
                             _ => {
                                 panic!("oof");
                             }
                         }
                     }
-
-                    self.invalidate(*val, invalidation_path.map(|path| path.to_vec()), ty);
+                    if let Some(opt_path) = invalidation_path {
+                        self.invalidate(*val, opt_path.map(|path| path.to_vec()), ty);
+                    }
                 }
 
                 // don't
@@ -779,6 +791,7 @@ impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
                     self.cursor.delete_inst();
                     let ty = self.cursor.type_of(val);
                     self.invalidate(val, None, ty);
+                    self.drop(val, vec![], ty);
                     continue;
                 }
                 Instruction::Invalidate(_, _) | Instruction::CallDrop(_, _) => {

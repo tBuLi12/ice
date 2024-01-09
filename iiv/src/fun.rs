@@ -121,27 +121,32 @@ impl<'i> Function<'i> {
     fn add_successors<'a>(
         blocks: &'a [UnsealedBlock<'i>],
         block: &'a UnsealedBlock<'i>,
-        add: &mut impl FnMut(usize),
+        add: &mut impl FnMut(usize) -> bool,
     ) {
+        eprintln!("add successors! {:p}", block);
         match block.instructions.last() {
             Some((Instruction::Jump(label, _args), _)) => {
                 let new_block = &blocks[label.0 as usize];
-                add(label.0 as usize);
-                Self::add_successors(blocks, new_block, add);
+                if add(label.0 as usize) {
+                    Self::add_successors(blocks, new_block, add);
+                }
             }
             Some((Instruction::Branch(_, yes_label, no_label, _), _)) => {
                 let new_block = &blocks[yes_label.0 as usize];
-                add(yes_label.0 as usize);
-                Self::add_successors(blocks, new_block, add);
+                if add(yes_label.0 as usize) {
+                    Self::add_successors(blocks, new_block, add);
+                }
                 let new_block = &blocks[no_label.0 as usize];
-                add(no_label.0 as usize);
-                Self::add_successors(blocks, new_block, add);
+                if add(no_label.0 as usize) {
+                    Self::add_successors(blocks, new_block, add);
+                }
             }
             Some((Instruction::Switch(_, labels, _), _)) => {
                 for label in labels {
                     let new_block = &blocks[label.0 as usize];
-                    add(label.0 as usize);
-                    Self::add_successors(blocks, new_block, add);
+                    if add(label.0 as usize) {
+                        Self::add_successors(blocks, new_block, add);
+                    }
                 }
             }
             Some((Instruction::Return(_), _)) => {}
@@ -162,10 +167,13 @@ impl<'i> Function<'i> {
 
         let mut new_block_order = vec![0];
 
-        Self::add_successors(body, &body[0], &mut |idx| {
+        Self::add_successors(body, &body[0], &mut |idx| -> bool {
             if block_indices[idx].is_none() {
                 block_indices[idx] = Some(new_block_order.len());
                 new_block_order.push(idx);
+                true
+            } else {
+                false
             }
         });
 
@@ -373,7 +381,10 @@ fn print_inst(
             i += 1;
         }
         Instruction::Sub(_lhs, _rhs) => unimplemented!(),
-        Instruction::Mul(_lhs, _rhs) => unimplemented!(),
+        Instruction::Mul(lhs, rhs) => {
+            writeln!(f, "    %{} = %{} * %{}", i, lhs.0, rhs.0)?;
+            i += 1;
+        }
         Instruction::Div(_lhs, _rhs) => unimplemented!(),
         Instruction::Not(_value) => unimplemented!(),
         Instruction::Neg(_value) => unimplemented!(),
@@ -381,11 +392,26 @@ fn print_inst(
             writeln!(f, "    %{} = %{} == %{}", i, lhs.0, rhs.0)?;
             i += 1;
         }
-        Instruction::Neq(_lhs, _rhs) => unimplemented!(),
-        Instruction::Gt(_lhs, _rhs) => unimplemented!(),
-        Instruction::Lt(_lhs, _rhs) => unimplemented!(),
-        Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
-        Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
+        Instruction::Neq(lhs, rhs) => {
+            writeln!(f, "    %{} = %{} != %{}", i, lhs.0, rhs.0)?;
+            i += 1;
+        }
+        Instruction::Gt(lhs, rhs) => {
+            writeln!(f, "    %{} = %{} > %{}", i, lhs.0, rhs.0)?;
+            i += 1;
+        }
+        Instruction::Lt(lhs, rhs) => {
+            writeln!(f, "    %{} = %{} < %{}", i, lhs.0, rhs.0)?;
+            i += 1;
+        }
+        Instruction::GtEq(lhs, rhs) => {
+            writeln!(f, "    %{} = %{} >= %{}", i, lhs.0, rhs.0)?;
+            i += 1;
+        }
+        Instruction::LtEq(lhs, rhs) => {
+            writeln!(f, "    %{} = %{} <= %{}", i, lhs.0, rhs.0)?;
+            i += 1;
+        }
         Instruction::Call(fun, args, ty_args) => {
             write!(
                 f,

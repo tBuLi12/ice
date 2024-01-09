@@ -117,6 +117,31 @@ extern "C" {
         lhs: *mut ValueData,
         rhs: *mut ValueData,
     ) -> *mut ValueData;
+    fn builderNeq(
+        builder: *mut IRBuilderData,
+        lhs: *mut ValueData,
+        rhs: *mut ValueData,
+    ) -> *mut ValueData;
+    fn builderGt(
+        builder: *mut IRBuilderData,
+        lhs: *mut ValueData,
+        rhs: *mut ValueData,
+    ) -> *mut ValueData;
+    fn builderLt(
+        builder: *mut IRBuilderData,
+        lhs: *mut ValueData,
+        rhs: *mut ValueData,
+    ) -> *mut ValueData;
+    fn builderGtEq(
+        builder: *mut IRBuilderData,
+        lhs: *mut ValueData,
+        rhs: *mut ValueData,
+    ) -> *mut ValueData;
+    fn builderLtEq(
+        builder: *mut IRBuilderData,
+        lhs: *mut ValueData,
+        rhs: *mut ValueData,
+    ) -> *mut ValueData;
     fn builderCall(
         builder: *mut IRBuilderData,
         func: *mut FunctionData,
@@ -496,6 +521,41 @@ impl<'ll> IRBuilder<'ll> {
         Value {
             _marker: PhantomData,
             ptr: unsafe { builderEq(self.ptr, lhs.ptr, rhs.ptr) },
+        }
+    }
+
+    pub fn not(&self, lhs: Value<'ll>, rhs: Value<'ll>) -> Value<'ll> {
+        Value {
+            _marker: PhantomData,
+            ptr: unsafe { builderNeq(self.ptr, lhs.ptr, rhs.ptr) },
+        }
+    }
+
+    pub fn gt_eq(&self, lhs: Value<'ll>, rhs: Value<'ll>) -> Value<'ll> {
+        Value {
+            _marker: PhantomData,
+            ptr: unsafe { builderGtEq(self.ptr, lhs.ptr, rhs.ptr) },
+        }
+    }
+
+    pub fn lt_eq(&self, lhs: Value<'ll>, rhs: Value<'ll>) -> Value<'ll> {
+        Value {
+            _marker: PhantomData,
+            ptr: unsafe { builderLtEq(self.ptr, lhs.ptr, rhs.ptr) },
+        }
+    }
+
+    pub fn lt(&self, lhs: Value<'ll>, rhs: Value<'ll>) -> Value<'ll> {
+        Value {
+            _marker: PhantomData,
+            ptr: unsafe { builderLt(self.ptr, lhs.ptr, rhs.ptr) },
+        }
+    }
+
+    pub fn gt(&self, lhs: Value<'ll>, rhs: Value<'ll>) -> Value<'ll> {
+        Value {
+            _marker: PhantomData,
+            ptr: unsafe { builderGt(self.ptr, lhs.ptr, rhs.ptr) },
         }
     }
 

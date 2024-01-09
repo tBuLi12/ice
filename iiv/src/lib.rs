@@ -205,7 +205,6 @@ impl<'i> Instruction<'i> {
                 *ty_args = ty_pool.get_ty_list(new_args);
             }
             Instruction::TraitCall(_, _, _, ty_args) => {
-                eprintln!("visiting trait call {}", fmt::List(ty_args.iter()));
                 let mut new_args = ty_args.to_vec();
                 new_args.iter_mut().for_each(fun);
                 *ty_args = ty_pool.get_ty_list(new_args);

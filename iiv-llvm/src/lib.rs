@@ -136,17 +136,22 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         self.write_body(func, main, impls);
 
         while let Some((func, ty_args)) = self.work_stack.pop() {
+            eprintln!("writing body for {}", func.borrow().sig.name);
+
             let llvm_func = self.funcs.get(&(func, ty_args)).unwrap();
 
             let mut fun = func.borrow().clone();
             fun.apply_ty_args(&self.ctx.type_pool, ty_args);
+            eprintln!("resolved {}", func.borrow().sig.name);
             iiv::move_check::resolve_drops(
                 &self.ctx,
                 &mut fun,
                 impls,
                 self.ctx.builtins.get_drop(),
             );
+            eprintln!("drops done {}", func.borrow().sig.name);
             fun.seal();
+            eprintln!("sealed {}", func.borrow().sig.name);
 
             self.write_body(&mut fun, *llvm_func, impls);
         }
@@ -202,6 +207,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 let iiv::ty::Type::Ptr(inner) = &*func.sig.params[0] else {
                     panic!("invalid ptr_add arg");
                 };
+                eprintln!("gep 1");
                 let offset_ptr = self.ir.gep(self.llvm_ty(*inner), ptr, &[offset]);
                 self.ir.ret(offset_ptr);
                 return;
@@ -320,7 +326,12 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     self.on_the_stack(self.ir.add(lhs, rhs), ty);
                 }
                 iiv::Instruction::Sub(_lhs, _rhs) => unimplemented!(),
-                iiv::Instruction::Mul(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::Mul(lhs, rhs) => {
+                    let ty = self.val(*lhs).ty;
+                    let lhs = self.get(*lhs);
+                    let rhs = self.get(*rhs);
+                    self.on_the_stack(self.ir.mul(lhs, rhs), ty);
+                }
                 iiv::Instruction::Div(_lhs, _rhs) => unimplemented!(),
                 iiv::Instruction::Not(_value) => unimplemented!(),
                 iiv::Instruction::Neg(_value) => unimplemented!(),
@@ -329,11 +340,31 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let rhs = self.get(*rhs);
                     self.on_the_stack(self.ir.eq(lhs, rhs), self.ctx.type_pool.get_ty_bool());
                 }
-                iiv::Instruction::Neq(_lhs, _rhs) => unimplemented!(),
-                iiv::Instruction::Gt(_lhs, _rhs) => unimplemented!(),
-                iiv::Instruction::Lt(_lhs, _rhs) => unimplemented!(),
-                iiv::Instruction::GtEq(_lhs, _rhs) => unimplemented!(),
-                iiv::Instruction::LtEq(_lhs, _rhs) => unimplemented!(),
+                iiv::Instruction::Neq(lhs, rhs) => {
+                    let lhs = self.get(*lhs);
+                    let rhs = self.get(*rhs);
+                    self.on_the_stack(self.ir.add(lhs, rhs), self.ctx.type_pool.get_ty_bool());
+                }
+                iiv::Instruction::Gt(lhs, rhs) => {
+                    let lhs = self.get(*lhs);
+                    let rhs = self.get(*rhs);
+                    self.on_the_stack(self.ir.add(lhs, rhs), self.ctx.type_pool.get_ty_bool());
+                }
+                iiv::Instruction::Lt(lhs, rhs) => {
+                    let lhs = self.get(*lhs);
+                    let rhs = self.get(*rhs);
+                    self.on_the_stack(self.ir.add(lhs, rhs), self.ctx.type_pool.get_ty_bool());
+                }
+                iiv::Instruction::GtEq(lhs, rhs) => {
+                    let lhs = self.get(*lhs);
+                    let rhs = self.get(*rhs);
+                    self.on_the_stack(self.ir.add(lhs, rhs), self.ctx.type_pool.get_ty_bool());
+                }
+                iiv::Instruction::LtEq(lhs, rhs) => {
+                    let lhs = self.get(*lhs);
+                    let rhs = self.get(*rhs);
+                    self.on_the_stack(self.ir.add(lhs, rhs), self.ctx.type_pool.get_ty_bool());
+                }
                 iiv::Instruction::TraitCall(tr_decl, idx, args, ty_args) => {
                     let (this_ty, rest) = ty_args.split_first().unwrap();
                     let (tr_ty_args, method_ty_args) =
@@ -711,16 +742,10 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             }
             Type::Ptr(inner) => {
                 assert!(elem == 0);
+                eprintln!("gep 2");
                 LLVMValue {
                     ty: inner,
-                    value: self.ir.load(
-                        self.ir.gep(
-                            ty,
-                            val.value,
-                            &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(0).val()],
-                        ),
-                        self.llvm_ctx.ty_ptr(),
-                    ),
+                    value: self.ir.load(val.value, self.llvm_ctx.ty_ptr()),
                     gen_ptr: self.llvm_ctx.ty_ptr().null().val(),
                 }
             }

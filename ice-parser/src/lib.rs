@@ -561,7 +561,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
                     );
                     Ok(StrucOrBlock::Struct(props))
                 } else {
-                    let first_expr = p.parse_rhs(Expr::Variable(ident))?;
+                    let first_expr = p.parse_primary_rhs(Expr::Variable(ident))?;
                     let semi = p.eat_punct(Punctuation::Semicolon).is_ok();
                     let (mut exprs, trailing_semi) =
                         p.list(Punctuation::Semicolon, |p| p.parse_block_item())?;
@@ -600,21 +600,93 @@ impl<'i, R: io::Read> Parser<'i, R> {
             .map(|((args, _), span)| (span, args))
     }
 
-    fn parse_rhs(&mut self, mut lhs: Expr<'i>) -> Parsed<Expr<'i>> {
-        let mut lhs = loop {
-            if self.eat_punct(Punctuation::Plus).is_ok() {
-                let rhs = self.parse_expr().expected("an expression")?;
-                lhs = Expr::Add(Add {
+    fn parse_multipications(&mut self) -> Parsed<Expr<'i>> {
+        let mut lhs = self.parse_primary_expr()?;
+
+        while self.eat_punct(Punctuation::Asterisk).is_ok() {
+            let rhs = self.parse_primary_expr().expected("an expression")?;
+            lhs = Expr::Mul(Mul {
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_additions(&mut self) -> Parsed<Expr<'i>> {
+        let mut lhs = self.parse_multipications()?;
+
+        while self.eat_punct(Punctuation::Plus).is_ok() {
+            let rhs = self.parse_multipications().expected("an expression")?;
+            lhs = Expr::Add(Add {
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_expr(&mut self) -> Parsed<Expr<'i>> {
+        let mut lhs = self.parse_additions()?;
+
+        loop {
+            lhs = if self.eat_punct(Punctuation::DoubleEq).is_ok() {
+                let rhs = self.parse_additions().expected("an expression")?;
+                Expr::Eq(Equals {
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
                 })
-            } else if self.eat_punct(Punctuation::DoubleEq).is_ok() {
-                let rhs = self.parse_expr().expected("an expression")?;
-                lhs = Expr::Eq(Equals {
+            } else if self.eat_punct(Punctuation::NotEq).is_ok() {
+                let rhs = self.parse_additions().expected("an expression")?;
+                Expr::Neq(NotEquals {
                     lhs: Box::new(lhs),
                     rhs: Box::new(rhs),
                 })
-            } else if let Ok(((args, _), span)) = self
+            } else if self.eat_punct(Punctuation::Less).is_ok() {
+                let rhs = self.parse_additions().expected("an expression")?;
+                Expr::Lt(Less {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            } else if self.eat_punct(Punctuation::Greater).is_ok() {
+                let rhs = self.parse_additions().expected("an expression")?;
+                Expr::Gt(Greater {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            } else if self.eat_punct(Punctuation::LessEq).is_ok() {
+                let rhs = self.parse_additions().expected("an expression")?;
+                Expr::Leq(LessEq {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            } else if self.eat_punct(Punctuation::GreaterEq).is_ok() {
+                let rhs = self.parse_additions().expected("an expression")?;
+                Expr::Geq(GreaterEq {
+                    lhs: Box::new(lhs),
+                    rhs: Box::new(rhs),
+                })
+            } else {
+                break;
+            };
+        }
+
+        if self.eat_punct(Punctuation::Eq).is_ok() {
+            let rhs = self.parse_expr().expected("an expression")?;
+            lhs = Expr::Assign(Assign {
+                lhs: Box::new(lhs),
+                rhs: Box::new(rhs),
+            });
+        }
+
+        Ok(lhs)
+    }
+
+    fn parse_primary_rhs(&mut self, mut lhs: Expr<'i>) -> Parsed<Expr<'i>> {
+        let lhs = loop {
+            if let Ok(((args, _), span)) = self
                 .parens(|p| p.list(Punctuation::Comma, |p| p.parse_expr()))
                 .invalid()?
             {
@@ -653,14 +725,6 @@ impl<'i, R: io::Read> Parser<'i, R> {
                 break lhs;
             }
         };
-
-        while self.eat_punct(Punctuation::Eq).is_ok() {
-            let rhs = self.parse_expr().expected("an expression")?;
-            lhs = Expr::Assign(Assign {
-                lhs: Box::new(lhs),
-                rhs: Box::new(rhs),
-            });
-        }
 
         Ok(lhs)
     }
@@ -721,7 +785,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
         }))
     }
 
-    fn parse_expr(&mut self) -> Parsed<Expr<'i>> {
+    fn parse_primary_expr(&mut self) -> Parsed<Expr<'i>> {
         let mut expr = self
             .ident()
             .map(Expr::Variable)
@@ -738,7 +802,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
             .invalid()?
             .or_else(|_| self.parse_while())?;
 
-        expr = self.parse_rhs(expr)?;
+        expr = self.parse_primary_rhs(expr)?;
 
         Ok(expr)
     }

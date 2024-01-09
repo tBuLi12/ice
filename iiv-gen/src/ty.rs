@@ -73,6 +73,8 @@ impl<'i> InferenceCtx<'i> {
     }
 
     pub fn clear(&mut self, impls: &ImplForest<'i>) {
+        eprintln!("CLEAR!");
+
         self.check_bounds(impls);
         self.vars.clear();
     }
@@ -264,6 +266,12 @@ impl<'i> InferenceCtx<'i> {
 }
 
 impl<'c, 'i> EqAttempt<'c, 'i> {
+    pub fn new_var(&mut self) -> TypeRef<'i> {
+        let var = self.ctx.ty_pool.get_ty_inference_var(self.vars.len());
+        self.vars.push(None);
+        var
+    }
+
     pub fn eq(&mut self, t1: TypeRef<'i>, t2: TypeRef<'i>) -> bool {
         if t1 == t2 {
             return true;
@@ -322,20 +330,23 @@ impl<'c, 'i> EqAttempt<'c, 'i> {
                             true
                         }
                         (None, None) => {
-                            let common = self.ctx.new_var();
+                            let common = self.new_var();
                             self.vars[*idx] = Some(common);
                             self.vars[*idx2] = Some(common);
                             true
                         }
                     }
             }
-            (Type::InferenceVar(idx), _) => match self.vars[*idx] {
-                Some(ty) => self.eq(ty, t2),
-                None => {
-                    self.set(*idx, t2);
-                    true
+            (Type::InferenceVar(idx), _) => {
+                eprintln!("resolving {} to {:?}", idx, self.vars[*idx]);
+                match self.vars[*idx] {
+                    Some(ty) => self.eq(ty, t2),
+                    None => {
+                        self.set(*idx, t2);
+                        true
+                    }
                 }
-            },
+            }
             (_, Type::InferenceVar(idx)) => match self.vars[*idx] {
                 Some(ty) => self.eq(ty, t1),
                 None => {

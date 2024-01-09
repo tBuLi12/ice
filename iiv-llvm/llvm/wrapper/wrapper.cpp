@@ -59,7 +59,7 @@ extern "C" int32_t getTargetMachine(llvm::LLVMContext* ctx, llvm::TargetMachine*
 }
 
 extern "C" int32_t emitModule(llvm::Module* llvmModule, llvm::TargetMachine* targetMachine, char const* name, uint32_t name_len) {
-    llvmModule->print(llvm::errs(), nullptr);
+    // llvmModule->print(llvm::errs(), nullptr);
     
     llvm::legacy::PassManager passManager{};
 
@@ -247,6 +247,41 @@ extern "C" llvm::Value* builderEq(
     ) {
         return builder->CreateICmpEQ(lhs, rhs);
     }
+extern "C" llvm::Value* builderNeq(
+    llvm::IRBuilder<>* builder,
+    llvm::Value* lhs,
+    llvm::Value* rhs
+) {
+    return builder->CreateICmpNE(lhs, rhs);
+}
+extern "C" llvm::Value* builderGt(
+    llvm::IRBuilder<>* builder,
+    llvm::Value* lhs,
+    llvm::Value* rhs
+) {
+    return builder->CreateICmpSGT(lhs, rhs);
+}
+extern "C" llvm::Value* builderLt(
+    llvm::IRBuilder<>* builder,
+    llvm::Value* lhs,
+    llvm::Value* rhs
+) {
+    return builder->CreateICmpSLT(lhs, rhs);
+}
+extern "C" llvm::Value* builderLtEq(
+    llvm::IRBuilder<>* builder,
+    llvm::Value* lhs,
+    llvm::Value* rhs
+) {
+    return builder->CreateICmpSLE(lhs, rhs);
+}
+extern "C" llvm::Value* builderGtEq(
+    llvm::IRBuilder<>* builder,
+    llvm::Value* lhs,
+    llvm::Value* rhs
+) {
+    return builder->CreateICmpSGE(lhs, rhs);
+}
 extern "C" llvm::Value* builderCall(
         llvm::IRBuilder<>* builder,
         llvm::Function* func,
