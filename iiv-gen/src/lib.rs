@@ -8,7 +8,7 @@ use iiv::{
     builder::BlockRef,
     diagnostics::{self},
     err,
-    fun::{Bound, Function, Method, Receiver, Body},
+    fun::{Bound, Function, Method, Receiver, Body, SourceMap},
     impl_tree::ImplForest,
     pool::{self, FuncRef, TraitDeclRef, TyDeclRef},
     str::Str,
@@ -229,7 +229,7 @@ impl<'i> Generator<'i> {
                 .map(|param| {
                     let ty = self.scopes.new_ty_param(&param.name);
                     let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
-                    let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+                    let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
                     for tr_expr in &param.trait_bounds {
                         if let Some(mut tr) = fun_gen.check_trait(tr_expr) {
                             tr.1 = fun_gen.ty.get_ty_list(fun_gen.inf_ctx.unwrap_list(tr.1));
@@ -277,7 +277,7 @@ impl<'i> Generator<'i> {
 
         for ty_node in types {
             let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
-            let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+            let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
 
             fun_gen.begin_scope();
             for param in &ty_node.type_params {
@@ -335,7 +335,7 @@ impl<'i> Generator<'i> {
 
             for sig in &trait_node.signatures {
                 let mut fun = Function::empty(self.ty, tr.name, sig.name.value);
-                let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+                let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
                 fun_gen.begin_scope();
                 fun_gen.set_signature(&sig, bounds.clone(), tr.ty_params.len() + 1, Some(fun_gen.ty.get_ref(this_ty)));
                 fun_gen.end_scope();
@@ -371,7 +371,7 @@ impl<'i> Generator<'i> {
 
             let (ty, tr) = {
                 let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
-                let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+                let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
                 let ty = fun_gen.check_type(&impl_node.ty);
                 fun_gen.scopes.this_ty = Some(ty);
                 let tr = fun_gen.check_trait(&impl_node.tr);
@@ -404,7 +404,7 @@ impl<'i> Generator<'i> {
                 .iter()
                 .map(|fun_node| {
                     let mut fun = Function::empty(self.ty, self.ty.str_pool.get(&format!("{}.{}", tr.map(|tr| tr.0.borrow().name).unwrap_or(self.ty.str_pool.get("?")), ty)), fun_node.signature.name.value);
-                    let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+                    let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
 
                     fun_gen.begin_scope();
                     fun_gen.set_signature(
@@ -560,7 +560,7 @@ impl<'i> Generator<'i> {
         for fun_node in funcs {
             let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), fun_node.signature.name.value);
 
-            let mut fun_gen = FunctionGenerator::new(self, &mut fun);
+            let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
 
             fun_gen.begin_scope();
             fun_gen.set_signature(&fun_node.signature, vec![], 0, None);
@@ -576,12 +576,14 @@ impl<'i> Generator<'i> {
             package_funs.push(fun);
         }
 
-        for (&fun, fun_node) in package_funs.iter().zip(funcs) {
-            let mut fun = fun.borrow_mut();
+        for (&fun_ref, fun_node) in package_funs.iter().zip(funcs) {
+            let mut fun = fun_ref.borrow_mut();
+            let mut src = SourceMap(vec![]);
             if fun_node.body.is_some() {
                 eprintln!("emitting {}", fun.sig.name);
-                let gen = FunctionGenerator::new(self, &mut *fun);
+                let gen = FunctionGenerator::new(self, &mut *fun, Some(&mut src));
                 gen.emit_function_body(fun_node, Receiver::None);
+                self.ctx.fun_pool.set_source_map(fun_ref, src);
             } else {
                 fun.body = Body::None;
             }
@@ -591,11 +593,13 @@ impl<'i> Generator<'i> {
             let trait_impl = trait_impl.borrow();
 
             for (method, fun_node) in trait_impl.functions.iter().zip(&impl_node.functions) {
-                let mut fun = method.fun.borrow_mut();
+            let mut src = SourceMap(vec![]);
+            let mut fun = method.fun.borrow_mut();
                 if fun_node.body.is_some() {
-                    let gen = FunctionGenerator::new(self, &mut *fun);
+                    let gen = FunctionGenerator::new(self, &mut *fun, Some(&mut src));
                     gen.emit_function_body(fun_node, Receiver::Immutable);
-                } else {
+                    self.ctx.fun_pool.set_source_map(method.fun, src);
+            } else {
                     self.messages.add(err!(&fun_node.span(), "implementation functions must have a body"));
                 }
             }
@@ -621,7 +625,7 @@ impl<'i> Generator<'i> {
 }
 
 impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
-    pub fn new(parent: &'g mut Generator<'i>, func: &'f mut Function<'i>) -> Self {
+    pub fn new(parent: &'g mut Generator<'i>, func: &'f mut Function<'i>, src: Option<&'f mut SourceMap>) -> Self {
         Self {
             trait_method_scope: &parent.trait_method_scope,
             scopes: &mut parent.scopes,
@@ -631,7 +635,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             impl_forest: &mut parent.impl_forest,
             constant_depth: 0,
             ret_type: None,
-            iiv: iiv::builder::Cursor::new(parent.ty, func),
+            iiv: iiv::builder::Cursor::new(parent.ty, func, src),
             inf_ctx: InferenceCtx::new(parent.ty, parent.messages),
             copy_trait: parent.copy_trait,
         }
@@ -707,11 +711,12 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         self.ret_type = Some(ret_ty);
 
         self.iiv.create_block();
-        let body = self.check_val(&fun_node.body.as_ref().unwrap());
-        let body = self.ensure_ty(&fun_node.body.as_ref().unwrap().span(), ret_ty, body);
+        let body_node = fun_node.body.as_ref().unwrap();
+        let body = self.check_val(body_node);
+        let body = self.ensure_ty(&body_node.span(), ret_ty, body);
         let body = self.move_val(body);
         self.end_scope();
-        self.iiv.ret(body);
+        self.iiv.at(body_node.span()).ret(body);
 
         for ty in self.iiv.ty_cache_mut().iter_mut() {
             *ty = self.inf_ctx.unwrap(*ty);
@@ -772,7 +777,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                             .is_some()
                     }) {
                         eq.commit(span);
-                        return self.iiv.variant_cast(ty, value);
+                        return self.iiv.at(*span).variant_cast(ty, value);
                     };
                 }
                 _ => {
@@ -890,14 +895,14 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                         }
                     });
                     if let Some(i) = i {
-                        let discriminant = self.iiv.discriminant(value);
+                        let discriminant = self.iiv.at(pattern.span()).discriminant(value);
                         let expected = self.iiv.int_lit(i as u32);
                         let cond = self.iiv.equals(discriminant, expected);
                         let next_block = self.iiv.create_block();
                         let no_match = no_match_block.unwrap();
                         self.iiv.branch(cond, next_block, no_match);
                         self.iiv.select(next_block);
-                        let inner = self.iiv.move_prop(value, i as u8, elems[i].1);
+                        let inner = self.iiv.at(pattern.span()).copy_prop_deep(value, vec![Elem::Prop(iiv::Prop(i as u8))], elems[i].1);
                         if let Some(inner_patter) = &vairant.inner {
                             self.bind(&inner_patter, inner, no_match_block, match_block);
                         } else {
@@ -926,7 +931,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 if let Type::Struct(_) = *value.ty {
                     for (name, prop_pattern) in &struct_pattern.inner {
                         if let Some((props, ty)) = self.lookup_field_on_type(value.ty, name) {
-                            let prop = self.iiv.move_prop_deep(value, props, ty);
+                            let prop = self.iiv.at(prop_pattern.span()).move_prop_deep(value, props, ty);
                             self.bind(prop_pattern, prop, no_match_block, match_block);
                         } else {
                             self.msg(err!(

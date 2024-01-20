@@ -1,9 +1,12 @@
 use crate::{
     builder::{self, BlockRef, Cursor, UnsealedBlock},
+    diagnostics::{error, Diagnostics},
+    err,
     fun::{self, Function},
     impl_tree::ImplForest,
+    pool::FuncRef,
     ty::{TraitRef, Type, TypeRef},
-    Ctx, Elem, Instruction, RawValue,
+    Ctx, Elem, Instruction, RawValue, Span,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,7 +96,7 @@ impl VarState {
         }
     }
 
-    fn partial_unset(&mut self, val: RawValue, mut ty: TypeRef<'_>, path: &[u8]) {
+    fn partial_unset(&mut self, val: RawValue, mut ty: TypeRef<'_>, path: &[u8]) -> bool {
         let mut state = &mut self.flags[val.0 as usize];
         for &elem in path {
             match &*ty {
@@ -128,7 +131,10 @@ impl VarState {
                     state = &mut fields[0];
                 }
                 Type::Ptr(_) => {
-                    break;
+                    return true;
+                }
+                Type::Ref(_) => {
+                    return false;
                 }
                 _ => {
                     panic!("OOF {}", ty);
@@ -137,6 +143,7 @@ impl VarState {
         }
         *state = State::Dead;
         self.flags[val.0 as usize].collapse();
+        true
     }
 
     fn partial_set(&mut self, val: RawValue, mut ty: TypeRef<'_>, path: &[Elem]) {
@@ -183,7 +190,8 @@ impl VarState {
         self.flags[val.0 as usize].collapse();
     }
 
-    fn process_inst(&mut self, inst: &Instruction<'_>, idx: usize, ty_idx: &[TypeRef<'_>]) {
+    fn process_inst(&mut self, inst: &Instruction<'_>, idx: usize, ty_idx: &[TypeRef<'_>]) -> bool {
+        let mut ok = true;
         match inst {
             Instruction::Int(_) | Instruction::Bool(_) => {}
             Instruction::Add(lhs, rhs)
@@ -210,7 +218,7 @@ impl VarState {
 
             Instruction::MoveElem(val, elems) => {
                 let ty = ty_idx[val.0 as usize];
-                self.partial_unset(*val, ty, &elems);
+                ok = self.partial_unset(*val, ty, &elems);
             }
 
             // don't
@@ -257,6 +265,7 @@ impl VarState {
         if inst.creates_value() {
             self.set(idx);
         }
+        ok
     }
 
     fn merge(&mut self, other: Self) -> bool {
@@ -268,7 +277,8 @@ impl VarState {
     }
 }
 
-pub fn check<'i>(func: &Function<'i>) {
+pub fn check<'i>(ctx: &'i Ctx<'i>, func_ref: FuncRef<'i>) {
+    let func = &*func_ref.borrow();
     eprintln!("{}", func);
     let body = match &func.body {
         fun::Body::Sealed(_) => panic!("move check on sealed body"),
@@ -313,12 +323,15 @@ pub fn check<'i>(func: &Function<'i>) {
             i += 1;
         }
     }
-    for (block, state) in body.iter().zip(states.iter()) {
+    let source_map = ctx.fun_pool.get_source_map(func_ref);
+    for (i, (block, state)) in body.iter().zip(states.iter()).enumerate() {
         let after = verify(
+            &ctx.diagnostcs,
             block,
             state.as_ref().unwrap().clone(),
             &states,
             &func.ty_cache,
+            &source_map.borrow().0[i],
         );
 
         if let Some((Instruction::Return(_), _)) = block.instructions.last() {
@@ -372,7 +385,7 @@ pub fn resolve_drops<'i>(
     }
 
     for (i, state) in states.iter().enumerate() {
-        let mut cursor = builder::Cursor::new(&ctx.type_pool, func);
+        let mut cursor = builder::Cursor::new(&ctx.type_pool, func, None);
         cursor.select(BlockRef { idx: i });
         cursor.goto_block_start();
         DropResolver {
@@ -416,16 +429,18 @@ fn process(block: &UnsealedBlock<'_>, mut state: VarState, ty_idx: &[TypeRef<'_>
 }
 
 fn verify(
+    messages: &Diagnostics,
     block: &UnsealedBlock<'_>,
     mut state: VarState,
     states: &[Option<VarState>],
     ty_idx: &[TypeRef<'_>],
+    source_map: &[Span],
 ) -> VarState {
     for (_, idx) in &block.params {
         state.set(*idx as usize);
     }
 
-    for (inst, idx) in &block.instructions {
+    for (i, (inst, idx)) in block.instructions.iter().enumerate() {
         let valid = match inst {
             Instruction::Int(_) | Instruction::Bool(_) => true,
             Instruction::Add(lhs, rhs)
@@ -501,18 +516,17 @@ fn verify(
             }
         };
         if !valid {
-            if inst.creates_value() {
-                eprintln!("use after move -> %{} = {:?}", idx, inst);
-            } else {
-                eprintln!("use after move -> {:?}", inst);
-            }
-            panic!("use after move.");
+            let span = source_map[i];
+            messages.add(err!(&span, "value used after move"));
         }
         if inst.creates_value() && !state.is_dead(*idx as usize) {
             eprintln!("reinit of undropped value -> %{} = {:?}", idx, inst);
             panic!("invalid reinit");
         }
-        state.process_inst(inst, *idx as usize, ty_idx);
+        if !state.process_inst(inst, *idx as usize, ty_idx) {
+            let span = source_map[i];
+            messages.add(err!(&span, "cannot move from behind a reference"));
+        }
     }
 
     for successor in block.successors() {
@@ -728,7 +742,7 @@ impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
                                 ty = elems[*elem as usize].1;
                                 invalidation_path = Some(Some(&path[..i]));
                             }
-                            Type::Ptr(_) => {
+                            Type::Ptr(_) | Type::Ref(_) => {
                                 invalidation_path = None;
                                 break;
                             }
@@ -837,7 +851,7 @@ pub fn copies_to_moves<'i>(
 }
 
 pub fn inject_auto_copy_impl<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>) {
-    let mut cursor = Cursor::new(&ctx.type_pool, func);
+    let mut cursor = Cursor::new(&ctx.type_pool, func, None);
     let value = cursor.params().next().unwrap();
     let Type::Ref(ty) = &*value.ty else {
         panic!("copy impl signature must accept a reference!");

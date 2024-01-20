@@ -1,8 +1,8 @@
 use crate::{
-    fun::{self, Body, Bound, Function, Signature},
+    fun::{self, Body, Bound, Function, Signature, SourceMap},
     pool::{self, FuncRef, TraitDeclRef},
     ty::TypeRef,
-    Elem, Instruction, Label, Prop, RawValue, Value,
+    Elem, Instruction, Label, Prop, RawValue, Span, Value,
 };
 
 #[derive(Clone, Debug)]
@@ -23,7 +23,11 @@ pub struct BlockRef {
 }
 
 impl<'f, 'i: 'f> Cursor<'f, 'i> {
-    pub fn new(pool: &'i crate::ty::Pool<'i>, func: &'f mut Function<'i>) -> Self {
+    pub fn new(
+        pool: &'i crate::ty::Pool<'i>,
+        func: &'f mut Function<'i>,
+        src: Option<&'f mut SourceMap>,
+    ) -> Self {
         let blocks = match &mut func.body {
             Body::Unsealed(blocks) => blocks,
             body => panic!(
@@ -35,7 +39,9 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         Cursor {
             sig: &mut func.sig,
             ty_pool: pool,
+            source_map: src,
             body: blocks,
+            current_span: None,
             current_block: 0,
             current_inst: 0,
             types: &mut func.ty_cache,
@@ -75,11 +81,24 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         RawValue(id as u16)
     }
 
+    pub fn at(&mut self, span: Span) -> &mut Self {
+        self.current_span = Some(span);
+        self
+    }
+
+    fn add_to_source_map(&mut self, block_idx: usize, inst_idx: usize) {
+        if let Some(source_map) = &mut self.source_map {
+            let span = std::mem::replace(&mut self.current_span, None).unwrap_or(Span::null());
+            source_map.0[block_idx].insert(inst_idx, span);
+        }
+    }
+
     fn push_value_instruction(&mut self, inst: Instruction<'i>, ty: TypeRef<'i>) -> RawValue {
         let id = self.next_id();
         self.body[self.current_block]
             .instructions
             .insert(self.current_inst, (inst, id.0));
+        self.add_to_source_map(self.current_block, self.current_inst);
         self.current_inst += 1;
         self.types.push(ty);
         id
@@ -89,6 +108,7 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         self.body[self.current_block]
             .instructions
             .insert(self.current_inst, (inst, 0));
+        self.add_to_source_map(self.current_block, self.current_inst);
         self.current_inst += 1;
     }
 
@@ -400,6 +420,9 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
             instructions: vec![],
             params: vec![],
         });
+        if let Some(source_map) = &mut self.source_map {
+            source_map.0.push(vec![]);
+        }
         BlockRef { idx }
     }
 
@@ -541,6 +564,8 @@ impl<'i> UnsealedBlock<'i> {
 pub struct Cursor<'f, 'i: 'f> {
     sig: &'f mut fun::Signature<'i>,
     body: &'f mut Vec<UnsealedBlock<'i>>,
+    source_map: Option<&'f mut SourceMap>,
+    current_span: Option<Span>,
     ty_pool: &'i crate::ty::Pool<'i>,
     types: &'f mut Vec<TypeRef<'i>>,
     current_block: usize,

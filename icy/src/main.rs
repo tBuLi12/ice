@@ -34,7 +34,6 @@ fn main() {
 
     let package = generator.emit_iiv(&[module]);
     if ctx.flush_diagnostics(&source) {
-        // eprintln!("there were errors");
         return;
     }
 
@@ -45,8 +44,12 @@ fn main() {
             ctx.builtins.get_copy(),
             &package.impl_forest,
         );
-        iiv::move_check::check(&*fun.borrow());
+        iiv::move_check::check(&ctx, *fun);
         // eprintln!("{}", fun.borrow());
+    }
+
+    if ctx.flush_diagnostics(&source) {
+        return;
     }
 
     backend.transform(&package, "out.o");

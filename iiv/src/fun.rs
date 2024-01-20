@@ -5,7 +5,7 @@ use crate::{
     pool::{self, FuncRef},
     str::Str,
     ty::{TraitRef, TypeRef},
-    Elem, Instruction,
+    Elem, Instruction, Span,
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -53,6 +53,8 @@ pub struct Method<'i> {
     pub fun: FuncRef<'i>,
     pub receiver: Receiver,
 }
+
+pub struct SourceMap(pub Vec<Vec<Span>>);
 
 #[derive(Debug, Clone)]
 pub enum Body<'i> {

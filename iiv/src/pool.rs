@@ -10,7 +10,7 @@ use std::{
 };
 
 use crate::{
-    fun,
+    fun::{self, SourceMap},
     ty_decl::{self, TypeDecl},
 };
 
@@ -36,6 +36,53 @@ impl<T> PinnedVec<T> {
             bufs: vec![Self::get_new_box(Self::INITIAL_SIZE)],
             next_idx: 0,
         }
+    }
+
+    fn index_of(&self, item: *const T) -> usize {
+        let (size, offset) = self
+            .bufs
+            .iter()
+            .rev()
+            .find_map(|buf| {
+                let range = buf.as_ptr_range();
+                let raw_ref = item as *const _;
+                if range.contains(&raw_ref) {
+                    Some((buf.len(), unsafe { raw_ref.offset_from(range.start) }))
+                } else {
+                    None
+                }
+            })
+            .unwrap();
+
+        size - PinnedVec::<T>::INITIAL_SIZE + offset as usize
+    }
+
+    fn resize_with(&mut self, new_len: usize, mut fun: impl FnMut() -> T) {
+        while self.len() < new_len {
+            self.next().write(fun());
+        }
+    }
+
+    fn at(&self, idx: usize) -> &T {
+        let mut idx = idx;
+        let item = self.bufs[..(self.bufs.len() - 1)]
+            .iter()
+            .find_map(|buf| {
+                if idx >= buf.len() {
+                    idx -= buf.len();
+                    None
+                } else {
+                    Some(unsafe { buf[idx].assume_init_ref() })
+                }
+            })
+            .unwrap_or_else(|| {
+                if idx < self.next_idx {
+                    unsafe { self.bufs.last().unwrap()[idx].assume_init_ref() }
+                } else {
+                    panic!("index out of bounds")
+                }
+            });
+        item
     }
 
     fn len(&self) -> usize {
@@ -117,23 +164,7 @@ impl<'i, T: Hash + Eq + Debug> RawPool<'i, T> {
     }
 
     fn index_of(&'i self, value: Ref<'i, T>) -> usize {
-        let (size, offset) = self
-            .storage
-            .bufs
-            .iter()
-            .rev()
-            .find_map(|buf| {
-                let range = buf.as_ptr_range();
-                let raw_ref = value.0 as *const _ as *const _;
-                if range.contains(&raw_ref) {
-                    Some((buf.len(), unsafe { raw_ref.offset_from(range.start) }))
-                } else {
-                    None
-                }
-            })
-            .unwrap();
-
-        size - PinnedVec::<T>::INITIAL_SIZE + offset as usize
+        self.storage.index_of(value.0)
     }
 
     fn len(&'i self) -> usize {
@@ -317,6 +348,7 @@ impl<'i> Hash for FuncRef<'i> {
 
 struct RawFunPool<'i> {
     storage: PinnedVec<RefCell<fun::Function<'i>>>,
+    source_maps: PinnedVec<RefCell<SourceMap>>,
 }
 
 impl<'i> Deref for FuncRef<'i> {
@@ -330,12 +362,27 @@ impl<'i> RawFunPool<'i> {
     pub fn new() -> Self {
         RawFunPool {
             storage: PinnedVec::new(),
+            source_maps: PinnedVec::new(),
         }
     }
 
     pub fn insert(&'i mut self, fun: fun::Function<'i>) -> FuncRef<'i> {
         let fun = FuncRef(Ref(self.storage.next().write(RefCell::new(fun))));
         fun
+    }
+
+    pub fn set_source_map(&'i mut self, fun: FuncRef<'i>, source_map: SourceMap) {
+        let idx = self.storage.index_of(fun.0 .0);
+        if self.source_maps.len() <= idx {
+            self.source_maps
+                .resize_with(idx + 1, || RefCell::new(SourceMap(vec![])))
+        }
+        self.source_maps.at(idx).replace(source_map);
+    }
+
+    pub fn get_source_map(&'i mut self, fun: FuncRef<'i>) -> &'i RefCell<SourceMap> {
+        let idx = self.storage.index_of(fun.0 .0);
+        self.source_maps.at(idx)
     }
 }
 
@@ -349,6 +396,16 @@ impl<'i> FunPool<'i> {
     pub fn insert(&'i self, fun: fun::Function<'i>) -> FuncRef<'i> {
         let inner = unsafe { &mut *self.0.get() };
         inner.insert(fun)
+    }
+
+    pub fn set_source_map(&'i self, fun: FuncRef<'i>, source_map: SourceMap) {
+        let inner = unsafe { &mut *self.0.get() };
+        inner.set_source_map(fun, source_map)
+    }
+
+    pub fn get_source_map(&'i self, fun: FuncRef<'i>) -> &'i RefCell<SourceMap> {
+        let inner = unsafe { &mut *self.0.get() };
+        inner.get_source_map(fun)
     }
 }
 
