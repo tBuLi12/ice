@@ -342,7 +342,7 @@ impl<'i> Generator<'i> {
                 let fun = self.fun_pool.insert(fun);
                 tr.signatures.push(Method {
                     fun,
-                    receiver: Receiver::Immutable,
+                    receiver: if sig.is_mut { Receiver::Immutable } else { Receiver::Mut },
                 });
             }
 
@@ -415,6 +415,7 @@ impl<'i> Generator<'i> {
                     );
                     fun_gen.end_scope();
 
+                    let mut receiver = Receiver::Immutable;
                     if let Some(tr) = tr {
                         let tr_ty_args = tr.1;
                         let tr = &*tr.0.borrow();
@@ -507,6 +508,7 @@ impl<'i> Generator<'i> {
                                 ))
                             }
                             self.scopes.end();
+                            receiver = method.receiver;
                         } else {
                             self.messages.add(err!(
                                 &fun_node.signature.name.span,
@@ -521,7 +523,7 @@ impl<'i> Generator<'i> {
                     self.scopes.end();
                     Method {
                         fun,
-                        receiver: Receiver::Immutable,
+                        receiver,
                     }
                 })
                 .collect();
@@ -597,7 +599,7 @@ impl<'i> Generator<'i> {
             let mut fun = method.fun.borrow_mut();
                 if fun_node.body.is_some() {
                     let gen = FunctionGenerator::new(self, &mut *fun, Some(&mut src));
-                    gen.emit_function_body(fun_node, Receiver::Immutable);
+                    gen.emit_function_body(fun_node, method.receiver);
                     self.ctx.fun_pool.set_source_map(method.fun, src);
             } else {
                     self.messages.add(err!(&fun_node.span(), "implementation functions must have a body"));
@@ -696,11 +698,8 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         let mut params = self.iiv.params();
 
         match receiver {
-            Receiver::Immutable => {
-                self.scopes.this = params.next();
-            }
             Receiver::None => {}
-            _ => panic!("unsupported receiver"),
+            _ => self.scopes.this = params.next(),
         }
 
         for (param, ast_param) in params.zip(&fun_node.signature.params) {
@@ -779,6 +778,9 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                         eq.commit(span);
                         return self.iiv.at(*span).variant_cast(ty, value);
                     };
+                }
+                (Type::Ref(inner), Type::Ptr(inner2)) if inner == inner2 => {
+                    return self.iiv.at(*span).ref_to_ptr(value, *inner)
                 }
                 _ => {
                     self.msg(err!(span, "expected type {}, got {} instead", ty, value.ty));
@@ -1296,13 +1298,12 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                     }
                     Item::TraitMethod(tr_decl, idx) => Object::TraitMethodDecl(
                         match tr_decl.borrow().signatures[idx].receiver {
-                            Receiver::Immutable => Some(self.iiv.get_prop_ref(place, offsets, place.ty)),
+                            Receiver::Immutable => Some(self.iiv.copy_prop_deep(place, offsets.iter().map(|i| iiv::Elem::Prop(iiv::Prop(*i))).collect(), place.ty)),
                             Receiver::Mut => Some(self.iiv.get_prop_ref(place, offsets, place.ty)),
                             Receiver::None => {
                                 self.msg(err!(&prop.span(), "static method called on a value"));
                                 None
                             }
-                            _ => unimplemented!(),
                         },
                         place.ty,
                         TraitRef(
@@ -1323,7 +1324,6 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 Item::TraitMethod(tr_decl, idx) => Object::TraitMethodDecl(
                     match tr_decl.borrow().signatures[idx].receiver {
                         Receiver::Immutable =>{ 
-                            panic!("idk");
                             Some(value)
                         },
                         Receiver::Mut => {
@@ -1334,7 +1334,6 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                             self.msg(err!(&prop.span(), "static method called on a value"));
                             None
                         }
-                        _ => unimplemented!(),
                     },
                     value.ty,
                     TraitRef(

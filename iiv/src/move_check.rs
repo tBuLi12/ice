@@ -232,6 +232,7 @@ impl VarState {
             | Instruction::Variant(_, _, val)
             | Instruction::VariantCast(_, val)
             | Instruction::Drop(val)
+            | Instruction::RefToPtr(val)
             | Instruction::Not(val) => {
                 self.unset(*val);
             }
@@ -482,6 +483,7 @@ fn verify(
             | Instruction::Neg(val)
             | Instruction::Variant(_, _, val)
             | Instruction::VariantCast(_, val)
+            | Instruction::RefToPtr(val)
             | Instruction::Not(val) => state.is_valid(*val),
 
             Instruction::Drop(_val) => true,
@@ -766,6 +768,7 @@ impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
                 | Instruction::Neg(val)
                 | Instruction::Variant(_, _, val)
                 | Instruction::VariantCast(_, val)
+                | Instruction::RefToPtr(val)
                 | Instruction::Not(val) => {
                     let ty = self.cursor.type_of(*val);
                     self.invalidate(*val, None, ty);

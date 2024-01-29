@@ -489,6 +489,7 @@ impl<'i, 'b, 't, 'fb> FunctionTransformer<'i, 'b, 't, 'fb> {
                     iiv::Instruction::Mul(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::Div(_lhs, _rhs) => unimplemented!(),
                     iiv::Instruction::Not(_value) => unimplemented!(),
+                    iiv::Instruction::RefToPtr(_value) => unimplemented!(),
                     iiv::Instruction::Neg(_value) => unimplemented!(),
                     iiv::Instruction::Eq(lhs, rhs) => {
                         let lhs = self.get(*lhs);

@@ -313,6 +313,13 @@ impl<'f, 'i: 'f> Cursor<'f, 'i> {
         }
     }
 
+    pub fn ref_to_ptr(&mut self, value: Value<'i>, ty: TypeRef<'i>) -> Value<'i> {
+        Value {
+            ty,
+            raw: self.push_value_instruction(Instruction::RefToPtr(value.raw), ty),
+        }
+    }
+
     pub fn get_prop_ref(&mut self, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
         let ref_ty = self.ty_pool.get_ref(ty);
         Value {
@@ -531,6 +538,7 @@ impl<'i> Instruction<'i> {
             | Instruction::Call(_, _, _)
             | Instruction::TraitCall(_, _, _, _)
             | Instruction::Null
+            | Instruction::RefToPtr(_)
             | Instruction::LtEq(_, _) => true,
 
             Instruction::Jump(_, _)

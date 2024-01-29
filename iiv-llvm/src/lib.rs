@@ -1,10 +1,11 @@
+use core::panic;
 use std::{cell::UnsafeCell, collections::HashMap};
 
 use iiv::{
     fun::Body,
     impl_tree::ImplForest,
     pool::{FuncRef, List, TraitImplRef},
-    ty::{TraitRef, TypeRef},
+    ty::{self, TraitRef, TypeRef},
     RawValue,
 };
 
@@ -563,6 +564,21 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                             .gep(self.llvm_ty(target.ty), target.value, &[zero, zero]);
                     self.ir
                         .store(gen_ptr_ptr, self.llvm_ctx.ty_ptr().null().val());
+                }
+                iiv::Instruction::RefToPtr(val) => {
+                    let val = self.val(*val);
+                    let ty::Type::Ref(inner) = &*val.ty else {
+                        panic!("invalid ref to ptr");
+                    };
+                    let ptr = self.ir.load(
+                        self.ir.gep(
+                            self.llvm_ty(val.ty),
+                            val.value,
+                            &[self.llvm_ctx.int(0).val(), self.llvm_ctx.int(2).val()],
+                        ),
+                        self.llvm_ctx.ty_ptr(),
+                    );
+                    self.on_the_stack(ptr, self.ctx.type_pool.get_ptr(*inner));
                 }
                 iiv::Instruction::Null => {
                     self.null_val();

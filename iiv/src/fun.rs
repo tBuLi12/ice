@@ -45,7 +45,6 @@ pub enum Receiver {
     None,
     Immutable,
     Mut,
-    Move,
 }
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
@@ -231,6 +230,7 @@ impl<'i> Function<'i> {
                     | Instruction::Variant(_, _, val)
                     | Instruction::VariantCast(_, val)
                     | Instruction::Drop(val)
+                    | Instruction::RefToPtr(val)
                     | Instruction::CallDrop(val, _)
                     | Instruction::Invalidate(val, _)
                     | Instruction::Not(val) => {
@@ -556,6 +556,11 @@ fn print_inst(
         }
         Instruction::VariantCast(ty, inner) => {
             writeln!(f, "    %{} = variant cast {} %{}", i, ty, inner.0)?;
+            i += 1;
+        }
+
+        Instruction::RefToPtr(val) => {
+            writeln!(f, "    %{} = ref to ptr %{}", i, val.0)?;
             i += 1;
         }
         Instruction::Drop(value) => {

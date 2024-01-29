@@ -159,6 +159,7 @@ pub enum Instruction<'i> {
     Bool(bool),
     Variant(TypeRef<'i>, u64, RawValue),
     VariantCast(TypeRef<'i>, RawValue),
+    RefToPtr(RawValue),
     Drop(RawValue),
     CallDrop(RawValue, Vec<Elem>),
     Invalidate(RawValue, Option<Vec<u8>>),
@@ -195,6 +196,7 @@ impl<'i> Instruction<'i> {
             | Instruction::Jump(_, _)
             | Instruction::Return(_)
             | Instruction::Drop(_)
+            | Instruction::RefToPtr(_)
             | Instruction::CallDrop(_, _)
             | Instruction::Invalidate(_, _)
             | Instruction::Null => {}
