@@ -45,11 +45,53 @@ impl<'i> ImplForest<'i> {
         &self,
         ty: TypeRef<'i>,
         tr: TraitRef<'i>,
+        local_bounds: &[Bound<'i>],
+        checking: &mut Vec<Bound<'i>>,
     ) -> Option<(TraitImplRef<'i>, pool::List<'i, TypeRef<'i>>)> {
         self.roots
             .iter()
-            .find_map(|root| root.find(ty, tr))
+            .find_map(|root| root.find(ty, tr, self.ctx, local_bounds, self, checking))
             .map(|(impl_ref, args)| (impl_ref, self.ctx.type_pool.get_ty_list(args)))
+    }
+
+    fn is_satisfied_given(
+        &self,
+        ty: TypeRef<'i>,
+        tr: TraitRef<'i>,
+        local_bounds: &[Bound<'i>],
+        checking: &mut Vec<Bound<'i>>,
+    ) -> bool {
+        if local_bounds
+            .iter()
+            .find(|bound| **bound == Bound { ty, tr })
+            .is_some()
+        {
+            return true;
+        }
+
+        if checking
+            .iter()
+            .find(|bound| **bound == Bound { ty, tr })
+            .is_some()
+        {
+            return false;
+        }
+        checking.push(Bound { ty, tr });
+        let was_found = self
+            .find_with_givens(ty, tr, local_bounds, checking)
+            .is_some();
+        checking.pop();
+        was_found
+    }
+
+    pub fn is_satisfied(
+        &self,
+        ty: TypeRef<'i>,
+        tr: TraitRef<'i>,
+        local_bounds: &[Bound<'i>],
+    ) -> bool {
+        let mut checking = vec![];
+        self.is_satisfied_given(ty, tr, local_bounds, &mut checking)
     }
 
     pub fn find(
@@ -57,61 +99,74 @@ impl<'i> ImplForest<'i> {
         ty: TypeRef<'i>,
         tr: TraitRef<'i>,
     ) -> Option<(TraitImplRef<'i>, pool::List<'i, TypeRef<'i>>)> {
-        let found = self.find_explicit(ty, tr);
+        let mut checking = vec![];
+        self.find_with_givens(ty, tr, &[], &mut checking)
+    }
 
-        if found.is_none() && tr == self.ctx.builtins.get_copy() {
-            let bitwise_copy_impl = self.ctx.builtins.get_bitwise_copy();
-            let auto_copy_impl = self.ctx.builtins.get_bitwise_copy();
-            let auto_copy_impl_option = (auto_copy_impl, self.ctx.type_pool.get_ty_list(vec![ty]));
-            let bitwise_copy_impl_option =
-                (bitwise_copy_impl, self.ctx.type_pool.get_ty_list(vec![ty]));
+    fn find_with_givens(
+        &self,
+        ty: TypeRef<'i>,
+        tr: TraitRef<'i>,
+        local_bounds: &[Bound<'i>],
+        checking: &mut Vec<Bound<'i>>,
+    ) -> Option<(TraitImplRef<'i>, pool::List<'i, TypeRef<'i>>)> {
+        if let Some(found) = self.find_explicit(ty, tr, local_bounds, checking) {
+            return Some(found);
+        }
 
-            let get_copy_impl_for_list = |types: &mut dyn Iterator<Item = TypeRef<'i>>| {
-                types
-                    .map(|prop| self.find(prop, self.ctx.builtins.get_copy()))
-                    .collect::<Option<Vec<_>>>()
-                    .map(|impls| {
-                        if impls
-                            .iter()
-                            .all(|(impl_ref, _)| *impl_ref == bitwise_copy_impl)
-                        {
-                            bitwise_copy_impl_option
-                        } else {
-                            auto_copy_impl_option
-                        }
-                    })
-            };
+        if tr != self.ctx.builtins.get_copy() {
+            return None;
+        }
 
-            match &*ty {
-                Type::Builtin(_) => Some(bitwise_copy_impl_option),
-                Type::Constant(_) => None,
-                Type::Ref(_) => Some(bitwise_copy_impl_option),
-                Type::Ptr(_) => Some(bitwise_copy_impl_option),
-                Type::Struct(props) => get_copy_impl_for_list(&mut props.iter().map(|prop| prop.1)),
-                Type::Tuple(fields) => get_copy_impl_for_list(&mut fields.iter().copied()),
-                Type::Vector(_) => unimplemented!(),
-                Type::Union(_) => unimplemented!(),
-                Type::Named(decl, _, proto) => {
-                    if decl.is_copy {
-                        let proto_impl = self.find(*proto, self.ctx.builtins.get_copy()).unwrap();
-                        if proto_impl.0 == bitwise_copy_impl {
-                            Some(bitwise_copy_impl_option)
-                        } else {
-                            Some(auto_copy_impl_option)
-                        }
+        let bitwise_copy_impl = self.ctx.builtins.get_bitwise_copy();
+        let auto_copy_impl = self.ctx.builtins.get_bitwise_copy();
+        let auto_copy_impl_option = (auto_copy_impl, self.ctx.type_pool.get_ty_list(vec![ty]));
+        let bitwise_copy_impl_option =
+            (bitwise_copy_impl, self.ctx.type_pool.get_ty_list(vec![ty]));
+
+        let get_copy_impl_for_list = |types: &mut dyn Iterator<Item = TypeRef<'i>>| {
+            types
+                .map(|prop| self.find(prop, self.ctx.builtins.get_copy()))
+                .collect::<Option<Vec<_>>>()
+                .map(|impls| {
+                    if impls
+                        .iter()
+                        .all(|(impl_ref, _)| *impl_ref == bitwise_copy_impl)
+                    {
+                        bitwise_copy_impl_option
                     } else {
-                        None
+                        auto_copy_impl_option
                     }
+                })
+        };
+
+        match &*ty {
+            Type::Builtin(_) => Some(bitwise_copy_impl_option),
+            Type::Constant(_) => None,
+            Type::Ref(_) => Some(bitwise_copy_impl_option),
+            Type::Ptr(_) => Some(bitwise_copy_impl_option),
+            Type::Struct(props) => get_copy_impl_for_list(&mut props.iter().map(|prop| prop.1)),
+            Type::Tuple(fields) => get_copy_impl_for_list(&mut fields.iter().copied()),
+            Type::Vector(_) => unimplemented!(),
+            Type::Union(_) => unimplemented!(),
+            Type::Named(decl, _, proto) => {
+                if decl.is_copy {
+                    let proto_impl = self.find(*proto, self.ctx.builtins.get_copy()).unwrap();
+                    if proto_impl.0 == bitwise_copy_impl {
+                        Some(bitwise_copy_impl_option)
+                    } else {
+                        Some(auto_copy_impl_option)
+                    }
+                } else {
+                    None
                 }
-                Type::Variant(variants) => {
-                    get_copy_impl_for_list(&mut variants.iter().map(|prop| prop.1))
-                }
-                Type::Invalid => Some(bitwise_copy_impl_option),
-                Type::Type(_) => unimplemented!(),
-                Type::InferenceVar(_) => panic!("invalid bound target - inf variable"),
             }
-        } else {
-            found
+            Type::Variant(variants) => {
+                get_copy_impl_for_list(&mut variants.iter().map(|prop| prop.1))
+            }
+            Type::Invalid => Some(bitwise_copy_impl_option),
+            Type::Type(_) => unimplemented!(),
+            Type::InferenceVar(_) => panic!("invalid bound target - inf variable"),
         }
     }
 
@@ -126,7 +181,7 @@ impl<'i> ImplForest<'i> {
         ) {
             NewImplResult::Added => {}
             NewImplResult::Ambiguous => self.messages.add(err!(span, "ambiguous implementation")),
-            NewImplResult::Duplicate => self.messages.add(err!(span, "ambiguous implementation")),
+            NewImplResult::Duplicate => self.messages.add(err!(span, "duplicate implementation")),
             NewImplResult::NotAdded | NewImplResult::ReplacedSelf => unreachable!(),
         }
     }
@@ -179,10 +234,18 @@ impl<'i> ImplTreeNode<'i> {
         &self,
         ty: TypeRef<'i>,
         tr: TraitRef<'i>,
+        ctx: &'i Ctx<'i>,
+        local_bounds: &[Bound<'i>],
+        forest: &ImplForest<'i>,
+        checking: &mut Vec<Bound<'i>>,
     ) -> Option<(TraitImplRef<'i>, Vec<TypeRef<'i>>)> {
-        if let Some(args) = self.impl_ref.borrow().try_match(ty, tr) {
+        if let Some(args) =
+            self.impl_ref
+                .borrow()
+                .try_match(ty, tr, ctx, local_bounds, forest, checking)
+        {
             for child in &self.children {
-                if let Some(args) = child.find(ty, tr) {
+                if let Some(args) = child.find(ty, tr, ctx, local_bounds, forest, checking) {
                     return Some(args);
                 }
             }
@@ -446,14 +509,31 @@ impl<'i> ImplTreeNode<'i> {
 }
 
 impl<'i> TraitImpl<'i> {
-    pub fn try_match(&self, ty: TypeRef<'i>, tr: TraitRef<'i>) -> Option<Vec<TypeRef<'i>>> {
+    pub fn satisfies(
+        &self,
+        ty: TypeRef<'i>,
+        tr: TraitRef<'i>,
+        givens: &[Bound<'i>],
+        forest: &ImplForest<'i>,
+    ) {
+    }
+
+    pub fn try_match(
+        &self,
+        ty: TypeRef<'i>,
+        tr: TraitRef<'i>,
+        ctx: &'i Ctx<'i>,
+        local_bounds: &[Bound<'i>],
+        forest: &ImplForest<'i>,
+        checking: &mut Vec<Bound<'i>>,
+    ) -> Option<Vec<TypeRef<'i>>> {
         if tr.0 != self.tr.0 {
             return None;
         }
 
         let mut args = vec![None; self.ty_params.len()];
 
-        if Self::match_ty(&mut args, self.ty, ty)
+        if !Self::match_ty(&mut args, self.ty, ty)
             && self
                 .tr
                 .1
@@ -461,10 +541,20 @@ impl<'i> TraitImpl<'i> {
                 .zip(tr.1.iter())
                 .all(|(&matched, &ty)| Self::match_ty(&mut args, matched, ty))
         {
-            Some(args.into_iter().map(Option::unwrap).collect())
-        } else {
-            None
+            return None;
         }
+
+        let args: Vec<_> = args.into_iter().map(Option::unwrap).collect();
+        if self
+            .trait_bounds
+            .iter()
+            .map(|bound| ctx.type_pool.resolve_bound(*bound, &args))
+            .all(|bound| forest.is_satisfied_given(bound.ty, bound.tr, local_bounds, checking))
+        {
+            return None;
+        }
+
+        Some(args)
     }
 
     fn match_ty(args: &mut [Option<TypeRef<'i>>], matched: TypeRef<'i>, ty: TypeRef<'i>) -> bool {

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, iter};
 
 use ast::{
     BindPattern, BindingType, BlockItem, Expr, Ident, Module, NarrowTypePattern, Pattern,
@@ -383,11 +383,25 @@ impl<'i> Generator<'i> {
                 (ty, tr)
             };
 
+            if let Some(tr) = tr {
+                let mut present: Vec<_> = impl_ty_params.iter().map(|_| false).collect();
+                iter::once(ty).chain(tr.1.iter().copied()).for_each(|ty| {
+                    ty.visit(|ty| {
+                        if let Type::Constant(i) = &*ty {
+                            present[*i] = true;                    
+                        }
+                    })
+                });
+                if present.into_iter().any(|used| !used) {
+                    self.messages.add(err!(&impl_node.span, "unused type parameters"));
+                }
+            }
+
             self.scopes.this_ty = Some(ty);
 
             let bounds = tr
                 .map(|tr| {
-                    std::iter::once(Bound { ty, tr })
+                    iter::once(Bound { ty, tr })
                         .chain(
                             tr.0.borrow()
                                 .trait_bounds
@@ -435,7 +449,7 @@ impl<'i> Generator<'i> {
                                 .collect();
                             let tr_fun = &*method.fun.borrow();
                             let trait_method_ty_args = self.ty.get_ty_list(
-                                std::iter::once(ty).chain(
+                                iter::once(ty).chain(
                                     tr_ty_args.iter().copied()
                                 ).chain((0..(tr_fun.sig.ty_params.len() - 1 - tr_ty_args.len())).map(|i| {
                                     method_ty_args.get(i + impl_ty_params.len()).copied().unwrap_or(self.ctx.type_pool.get_ty_invalid())
@@ -1168,7 +1182,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             },
             Object::TraitMethodDecl(this, ty, tr, idx) => {
                 let ty_args = self.ty.get_ty_list(
-                    std::iter::once(ty)
+                    iter::once(ty)
                         .chain(tr.1.iter().copied())
                         .chain(
                             tr.0.borrow().signatures[idx]
