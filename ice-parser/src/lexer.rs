@@ -1,11 +1,13 @@
 use std::io;
 
 use ast::{Ident, Int, StringLit};
-use iiv::{err, str::StrPool, Span};
+use iiv::{err, str::StrPool, CursorPosition, LeftSpan, Span};
 
 pub struct Lexer<'i, R> {
     str_pool: &'i StrPool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
+    pub cursor_position: Option<CursorPosition>,
+    pub completion_token: Option<Token<'i>>,
     source: io::Bytes<R>,
     current: Option<char>,
     offset: u32,
@@ -95,6 +97,8 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             offset: 0,
             column: 0,
             line: 0,
+            cursor_position: None,
+            completion_token: None,
         }
     }
 
@@ -102,17 +106,41 @@ impl<'i, R: io::Read> Lexer<'i, R> {
         loop {
             match self.current {
                 Some(c) if c.is_whitespace() => {
+                    let update = if let Some(CursorPosition { line, column }) = self.cursor_position
+                    {
+                        line == self.line && column == self.column
+                    } else {
+                        false
+                    };
                     self.read_char();
+                    if update {
+                        self.cursor_position = Some(CursorPosition {
+                            line: self.line,
+                            column: self.column,
+                        });
+                    }
                 }
                 _ => break,
             }
         }
 
-        self.read_ident_or_keyword()
+        let token = self
+            .read_ident_or_keyword()
             .or_else(|| self.read_punctuation())
             .or_else(|| self.read_numeric_literal())
             .or_else(|| self.read_string_literal())
-            .unwrap_or(Token::Eof(self.current_span()))
+            .unwrap_or(Token::Eof(self.current_span()));
+        if let Some(CursorPosition { line, column }) = self.cursor_position {
+            let span = token.span();
+            if (span.first_line < line
+                || span.first_line == line && span.begin_highlight_offset <= column)
+                && (span.last_line > line
+                    || span.last_line == line && span.end_highlight_offset >= column)
+            {
+                self.completion_token = Some(token);
+            }
+        }
+        token
     }
 
     fn current_span(&self) -> Span {

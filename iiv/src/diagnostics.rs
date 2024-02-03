@@ -6,7 +6,7 @@ use std::{
 use crate::{FileSource, Source, Span};
 
 #[derive(Debug)]
-enum Level {
+pub enum Level {
     Error,
     _Warn,
     _Note,
@@ -14,10 +14,10 @@ enum Level {
 
 #[derive(Debug)]
 pub struct Diagnostic {
-    message: String,
-    span: Span,
+    pub message: String,
+    pub span: Span,
     #[allow(dead_code)]
-    level: Level,
+    pub level: Level,
 }
 
 pub fn error(span: &Span, message: String) -> Diagnostic {
@@ -161,6 +161,11 @@ impl Diagnostics {
     pub fn ok(&self) -> bool {
         let messages = unsafe { &*self.0.get() };
         messages.is_empty()
+    }
+
+    pub fn take_all(&self) -> Vec<Diagnostic> {
+        let messages = unsafe { &mut *self.0.get() };
+        std::mem::replace(messages, vec![])
     }
 
     pub fn print_all(&self, source: &impl Source) -> bool {

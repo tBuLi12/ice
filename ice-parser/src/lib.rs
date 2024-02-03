@@ -1,7 +1,7 @@
 use std::{io, mem};
 
 use ast::*;
-use iiv::{diagnostics, err, Ctx, Span};
+use iiv::{diagnostics, err, Ctx, CursorPosition, LeftSpan, Span};
 use lexer::{Keyword, Lexer, Punctuation, Token};
 
 mod lexer;
@@ -70,6 +70,14 @@ impl<'i, R: io::Read> Parser<'i, R> {
         };
         parser.next_token();
         parser
+    }
+
+    pub fn set_cursor(&mut self, line: u32, column: u32) {
+        self.lexer.cursor_position = Some(CursorPosition { line, column });
+    }
+
+    pub fn get_completion_token(&self) -> Option<Token<'i>> {
+        self.lexer.completion_token
     }
 
     pub fn parse_program(&mut self) -> Module<'i> {

@@ -1,13 +1,19 @@
+use fmt::TextRange;
 use ice_parser::Parser;
-use iiv::Source;
+use iiv::{CursorPosition, Source};
 use iiv_gen::{Generator, TokenType};
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DocumentFormattingParams, InitializeParams, InitializeResult, OneOf, Position, Range,
-    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
-    SemanticTokensResult, SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo,
-    TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url, WorkDoneProgressOptions,
+    Command, CompletionItem, CompletionItemKind, CompletionList, CompletionOptions,
+    CompletionParams, CompletionResponse, Diagnostic, DiagnosticOptions,
+    DiagnosticServerCapabilities, DiagnosticSeverity, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentDiagnosticParams,
+    DocumentDiagnosticReport, DocumentFormattingParams, FullDocumentDiagnosticReport,
+    InitializeParams, InitializeResult, OneOf, Position, Range, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentIdentifier,
+    TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
+    WorkDoneProgressOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -26,9 +32,11 @@ struct StrSource<'s> {
 impl<'s> Source for StrSource<'s> {
     type Reader<'this> = Cursor<&'this [u8]>     where
     Self: 'this;
+
     fn name(&self) -> &str {
         &self.name
     }
+
     fn reader(&self) -> Self::Reader<'_> {
         Cursor::new(self.text.as_bytes())
     }
@@ -220,7 +228,18 @@ fn handle_initial_request(body: String, writer: &mut impl Write) -> Result<(), B
                     text_document_sync: Some(TextDocumentSyncCapability::Kind(
                         TextDocumentSyncKind::FULL,
                     )),
-                    document_formatting_provider: Some(OneOf::Left(true)),
+                    // document_formatting_provider: Some(OneOf::Left(true)),
+                    document_formatting_provider: None,
+                    diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
+                        DiagnosticOptions {
+                            inter_file_dependencies: false,
+                            workspace_diagnostics: false,
+                            ..Default::default()
+                        },
+                    )),
+                    completion_provider: Some(CompletionOptions {
+                        ..Default::default()
+                    }),
                     // hover_provider: Some(HoverProviderCapability::Simple(true)),
                     // {
 
@@ -288,17 +307,7 @@ fn do_request(
             let request = request.params;
 
             if let Some(text) = files.get(&request.text_document.uri) {
-                let source = StrSource {
-                    name: request
-                        .text_document
-                        .uri
-                        .path_segments()
-                        .map(|segments| segments.last())
-                        .flatten()
-                        .unwrap_or("<unknown file>")
-                        .to_string(),
-                    text,
-                };
+                let source = source_from_text_document(request.text_document, text);
 
                 let result = SemanticTokensResult::Tokens(SemanticTokens {
                     result_id: None,
@@ -324,11 +333,124 @@ fn do_request(
             };
             write_response(edits, id, writer)?;
         }
+        "textDocument/completion" => {
+            let request: Params<CompletionParams> =
+                serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
+            let position = request.params.text_document_position.position;
+            let items = if let Some(text) =
+                files.get(&request.params.text_document_position.text_document.uri)
+            {
+                let source = source_from_text_document(
+                    request.params.text_document_position.text_document,
+                    text,
+                );
+                completion(&source, position)
+            } else {
+                vec![]
+            };
+            let response = CompletionResponse::List(CompletionList {
+                is_incomplete: false,
+                items,
+            });
+            write_response(response, id, writer)?;
+        }
+        "textDocument/diagnostic" => {
+            let request: Params<DocumentDiagnosticParams> =
+                serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
+
+            let diagnostics = if let Some(text) = files.get(&request.params.text_document.uri) {
+                let source = source_from_text_document(request.params.text_document, text);
+                diagnostics(&source)
+            } else {
+                vec![]
+            };
+            let response =
+                DocumentDiagnosticReport::Full(lsp_types::RelatedFullDocumentDiagnosticReport {
+                    related_documents: None,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: None,
+                        items: diagnostics,
+                    },
+                });
+            write_response(response, id, writer)?;
+        }
         "exit" => std::process::exit(0),
         _ => return Err(err("invalid request")),
     }
 
     Ok(())
+}
+
+fn source_from_text_document(document: TextDocumentIdentifier, text: &str) -> StrSource<'_> {
+    StrSource {
+        name: document
+            .uri
+            .path_segments()
+            .map(|segments| segments.last())
+            .flatten()
+            .unwrap_or("<unknown file>")
+            .to_string(),
+        text,
+    }
+}
+
+fn completion(source: &impl Source, position: Position) -> Vec<CompletionItem> {
+    let ctx = iiv::Ctx::new();
+    ctx.init();
+    let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
+    let mut generator = Generator::new(&ctx, true);
+    parser.set_cursor(position.line, position.character);
+
+    let module = parser.parse_program();
+    generator.completion_token = parser.get_completion_token().map(|token| {
+        let span = token.span();
+        CursorPosition {
+            line: span.first_line,
+            column: span.begin_highlight_offset,
+        }
+    });
+
+    let _ = generator.emit_iiv(&[module]);
+
+    dbg!(&generator.completion_items);
+
+    generator
+        .completion_items
+        .into_iter()
+        .map(|item| CompletionItem {
+            label: item.text.to_string(),
+            kind: Some(match item.ty {
+                iiv_gen::CompletionType::Function => CompletionItemKind::FUNCTION,
+                iiv_gen::CompletionType::Property => CompletionItemKind::PROPERTY,
+                iiv_gen::CompletionType::Variable => CompletionItemKind::VARIABLE,
+                iiv_gen::CompletionType::Type => CompletionItemKind::CLASS,
+            }),
+            ..Default::default()
+        })
+        .collect()
+}
+
+fn diagnostics(source: &impl Source) -> Vec<Diagnostic> {
+    let ctx = iiv::Ctx::new();
+    ctx.init();
+    let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
+    let mut generator = Generator::new(&ctx, true);
+
+    let module = parser.parse_program();
+
+    let _ = generator.emit_iiv(&[module]);
+
+    ctx.diagnostcs
+        .take_all()
+        .into_iter()
+        .map(|diagnostic| Diagnostic {
+            range: TextRange::range(diagnostic.span),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: diagnostic.message,
+            source: Some("ice-lsp".to_string()),
+            ..Default::default()
+        })
+        .collect()
 }
 
 fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {

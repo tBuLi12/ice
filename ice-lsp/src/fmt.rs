@@ -11,7 +11,7 @@ enum Declaration<'i> {
     Trait(ast::TraitDecl<'i>),
 }
 
-trait TextRange: Sized + Copy {
+pub trait TextRange: Sized + Copy {
     type Left: TextPosition;
     type Right: TextPosition;
 

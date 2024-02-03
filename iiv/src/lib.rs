@@ -19,6 +19,11 @@ pub mod str;
 pub mod ty;
 pub mod ty_decl;
 
+pub struct CursorPosition {
+    pub line: u32,
+    pub column: u32,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Span {
     pub first_line: u32,

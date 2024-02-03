@@ -1,4 +1,4 @@
-use std::{collections::HashMap, iter};
+use std::{collections::HashMap, iter, sync::Arc};
 
 use ast::{
     BindPattern, BindingType, BlockItem, Expr, Ident, Module, NarrowTypePattern, Pattern,
@@ -13,7 +13,7 @@ use iiv::{
     pool::{self, FuncRef, TraitDeclRef, TyDeclRef},
     str::Str,
     ty::{PropRef, TraitRef, Type, TypeOverlap, TypeRef},
-    ty_decl, Ctx, Elem, Package, Prop, Span, Value,
+    ty_decl, Ctx, Elem, Package, Prop, Span, Value, CursorPosition,
 };
 use ty::InferenceCtx;
 
@@ -27,6 +27,20 @@ pub enum TokenType {
     Variant,
     Property,
     Function,
+}
+
+#[derive(Debug)]
+pub enum CompletionType {
+    Function,
+    Property,
+    Type,
+    Variable,
+}
+
+#[derive(Debug)]
+pub struct CompletionItem<'i> {
+    pub text: Str<'i>,
+    pub ty: CompletionType,
 }
 
 pub struct LspIndex(pub Option<Vec<(Span, TokenType)>>);
@@ -59,6 +73,8 @@ impl LspIndex {
 
 pub struct Generator<'i> {
     pub index: LspIndex,
+    pub completion_token: Option<CursorPosition>,
+    pub completion_items: Vec<CompletionItem<'i>>,
     scopes: Scopes<'i>,
     trait_method_scope: HashMap<Str<'i>, Vec<(TraitDeclRef<'i>, usize)>>,
     ty: &'i iiv::ty::Pool<'i>,
@@ -179,6 +195,8 @@ pub struct FunctionGenerator<'f, 'i, 'g> {
     iiv: iiv::builder::Cursor<'f, 'i>,
     inf_ctx: InferenceCtx<'i>,
     copy_trait: TraitRef<'i>,
+    pub completion_token: &'g mut Option<CursorPosition>,
+    pub completion_items: &'g mut Vec<CompletionItem<'i>>,
 }
 
 impl<'i> Generator<'i> {
@@ -196,6 +214,8 @@ impl<'i> Generator<'i> {
                 this_ty: None,
                 this: None,
             },
+            completion_token: None,
+            completion_items: vec![],
             trait_method_scope: HashMap::new(),
             ty: &ctx.type_pool,
             ctx,
@@ -213,7 +233,7 @@ impl<'i> Generator<'i> {
             copy_trait: ctx.builtins.get_copy(),
         }
     }
-
+    
     fn define_global(&mut self, name: Str<'i>, obj: Object<'i>) {
         self.scopes.inner[0].index.insert(name, obj);
     }
@@ -654,6 +674,8 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             iiv: iiv::builder::Cursor::new(parent.ty, func, src),
             inf_ctx: InferenceCtx::new(parent.ty, parent.messages),
             copy_trait: parent.copy_trait,
+            completion_token: &mut parent.completion_token,
+            completion_items: &mut parent.completion_items,
         }
     }
 
@@ -746,6 +768,58 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         }
         self.inf_ctx.clear(&mut self.impl_forest);
         self.scopes.this = None;
+    }
+
+    fn do_completion_for(&self, node: &impl Spanned) -> bool {
+        let span = node.span();
+        if let Some(CursorPosition { line, column }) = *self.completion_token {
+            eprintln!("cmp: {}:{} {}:{}", span.first_line, span.begin_highlight_offset, line, column);
+            span.first_line == line && span.begin_highlight_offset == column
+        } else {
+            eprintln!("no completion token");
+            false
+        }
+    }
+    
+    fn complete_expression(&mut self, expr: &ast::Expr<'i>) {
+        if !self.do_completion_for(expr) {
+            return;
+        }    
+
+        *self.completion_items = self.scopes.inner.iter().flat_map(|scope| scope.index.iter().map(|(name, obj)| {
+            let ty = match obj {
+                Object::Value(_) 
+                | Object::Place(_, _) 
+                | Object::UnsafePlace(_, _) => CompletionType::Variable,
+                Object::Type(_) 
+                | Object::TypeDecl(_) 
+                | Object::TraitDecl(_) => CompletionType::Type,
+                Object::Fun(_, _) 
+                | Object::TraitMethodDecl(_, _, _, _) 
+                | Object::TraitMethod(_, _, _, _) 
+                | Object::FunDecl(_) => CompletionType::Function,
+                _ => CompletionType::Variable,
+            };
+            CompletionItem { text: *name, ty }
+        })).collect();     
+        
+        *self.completion_token = None;
+    }
+
+    fn complete_property(&mut self, prop: &Ident<'i>, ty: TypeRef<'i>) {
+        if !self.do_completion_for(prop) {
+            return;
+        }
+        match &*ty {
+            Type::Struct(props) => {
+                self.completion_items.extend(props.iter().map(|prop| CompletionItem { text: prop.0, ty: CompletionType::Property }));
+            }
+            Type::Variant(props) => {
+                self.completion_items.extend(props.iter().map(|prop| CompletionItem { text: prop.0, ty: CompletionType::Property }));
+            }
+            Type::Named(_, _, proto) => self.complete_property(prop, *proto),
+            _ => {}
+        }
     }
 
     fn check_val(&mut self, expr: &Expr<'i>) -> Value<'i> {
@@ -1381,6 +1455,8 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     }
 
     fn check(&mut self, expr: &Expr<'i>, false_block: Option<BlockRef>) -> Object<'i> {
+        self.complete_expression(expr);
+        
         let object = match expr {
             Expr::Variable(ident) => self.resolve(ident),
             Expr::Block(block) => {
@@ -1664,6 +1740,9 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Expr::Prop(prop) => {
                 let lhs = self.check(&prop.lhs, false_block);
+                if let Object::Value(val) | Object::Place(val, _) | Object::UnsafePlace(val, _) = lhs {
+                    self.complete_property(&prop.prop, val.ty);
+                }
                 self.get_prop(lhs, &prop.prop)
             }
             Expr::Field(_field) => unimplemented!(),
