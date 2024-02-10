@@ -14,8 +14,14 @@ struct Goal<'i> {
     givens: Vec<Bound<'i>>,
 }
 
+#[derive(Clone)]
+enum InferenceVar<'i> {
+    UnknownAt(Span),
+    Known(TypeRef<'i>),
+}
+
 pub struct InferenceCtx<'i> {
-    vars: Vec<Option<TypeRef<'i>>>,
+    vars: Vec<InferenceVar<'i>>,
     goals: Vec<Goal<'i>>,
     ty_pool: &'i iiv::ty::Pool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
@@ -23,7 +29,7 @@ pub struct InferenceCtx<'i> {
 
 pub struct EqAttempt<'c, 'i> {
     ctx: &'c mut InferenceCtx<'i>,
-    vars: Vec<Option<TypeRef<'i>>>,
+    vars: Vec<InferenceVar<'i>>,
     error: bool,
 }
 
@@ -40,9 +46,9 @@ impl<'i> InferenceCtx<'i> {
         }
     }
 
-    pub fn new_var(&mut self) -> TypeRef<'i> {
+    pub fn new_var(&mut self, span: Span) -> TypeRef<'i> {
         let var = self.ty_pool.get_ty_inference_var(self.vars.len());
-        self.vars.push(None);
+        self.vars.push(InferenceVar::UnknownAt(span));
         var
     }
 
@@ -59,22 +65,18 @@ impl<'i> InferenceCtx<'i> {
             goal.bound.ty = self.unwrap(goal.bound.ty);
             goal.bound.tr.1 = self.ty_pool.get_ty_list(self.unwrap_list(goal.bound.tr.1));
             eprintln!("trying: {:?}", goal);
-            if !goal.givens.iter().any(|given| {
-                let mut given = *given;
-                given.ty = self.unwrap(given.ty);
-                given.tr.1 = self.ty_pool.get_ty_list(self.unwrap_list(given.tr.1));
-                goal.bound == given
-            }) && impls.find(goal.bound.ty, goal.bound.tr).is_none()
-            {
-                self.messages
-                    .add(err!(&goal.span, "unsatisfied trait bound"))
+            if !impls.is_satisfied(goal.bound.ty, goal.bound.tr, &goal.givens) {
+                self.messages.add(err!(
+                    &goal.span,
+                    "{} does not implement {}",
+                    goal.bound.ty,
+                    goal.bound.tr
+                ))
             }
         }
     }
 
     pub fn clear(&mut self, impls: &ImplForest<'i>) {
-        eprintln!("CLEAR!");
-
         self.check_bounds(impls);
         self.vars.clear();
     }
@@ -197,7 +199,7 @@ impl<'i> InferenceCtx<'i> {
             Type::Ref(ty) => self.ty_pool.get_ref(self.resolve(*ty)),
             Type::Ptr(ty) => self.ty_pool.get_ptr(self.resolve(*ty)),
             Type::InferenceVar(idx) => {
-                if let Some(ty) = self.vars[*idx] {
+                if let InferenceVar::Known(ty) = self.vars[*idx] {
                     self.resolve(ty)
                 } else {
                     ty
@@ -242,7 +244,7 @@ impl<'i> InferenceCtx<'i> {
             Type::Ref(ty) => self.ty_pool.get_ref(self.unwrap(*ty)),
             Type::Ptr(ty) => self.ty_pool.get_ptr(self.unwrap(*ty)),
             Type::InferenceVar(idx) => {
-                if let Some(ty) = self.vars[*idx] {
+                if let InferenceVar::Known(ty) = self.vars[*idx] {
                     self.unwrap(ty)
                 } else {
                     panic!("Could not infer :c");
@@ -266,9 +268,9 @@ impl<'i> InferenceCtx<'i> {
 }
 
 impl<'c, 'i> EqAttempt<'c, 'i> {
-    pub fn new_var(&mut self) -> TypeRef<'i> {
+    pub fn new_var(&mut self, span: Span) -> TypeRef<'i> {
         let var = self.ctx.ty_pool.get_ty_inference_var(self.vars.len());
-        self.vars.push(None);
+        self.vars.push(InferenceVar::UnknownAt(span));
         var
     }
 

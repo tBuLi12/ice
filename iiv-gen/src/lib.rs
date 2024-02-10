@@ -235,6 +235,7 @@ impl<'i> Generator<'i> {
     }
     
     fn define_global(&mut self, name: Str<'i>, obj: Object<'i>) {
+        eprintln!("defining {}", name);
         self.scopes.inner[0].index.insert(name, obj);
     }
 
@@ -554,14 +555,13 @@ impl<'i> Generator<'i> {
                     let fun = self.fun_pool.insert(fun);
                     self.index
                         .register_token_obj(fun_node.signature.name.span, &Object::FunDecl(fun));
-                    self.scopes.end();
                     Method {
                         fun,
                         receiver,
                     }
                 })
                 .collect();
-
+            
             if let Some(tr) = tr {
                 for tr_sig in &tr.0.borrow().signatures {
                     if impl_node
@@ -589,6 +589,7 @@ impl<'i> Generator<'i> {
                 self.impl_forest.add(&impl_node.span, impl_ref);
             }
             self.scopes.this_ty = None;
+            self.scopes.end();
         }
 
         let funcs = &modules[0].functions;
@@ -1104,7 +1105,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 self.msg(err!(span, "expected a value, found type {}", ty_decl.name));
                 self.invalid()
             }
-            Object::TraitDecl(tr_decl) => {
+            Object::TraitDecl(tr_decl) | Object::Trait(tr_decl, _) => {
                 self.msg(err!(
                     span,
                     "expected a value, found trait {}",
@@ -1164,7 +1165,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 self.msg(err!(span, "expected a type, found function"));
                 self.ty.get_ty_invalid()
             }
-            Object::TraitDecl(tr_decl) => {
+            Object::TraitDecl(tr_decl) | Object::Trait(tr_decl, _) => {
                 self.msg(err!(
                     span,
                     "expected a type, found trait {}",
@@ -1221,6 +1222,9 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                         .collect(),
                 ),
             )),
+            Object::Trait(decl, ty_args) => {
+                Some(TraitRef(decl, ty_args))
+            }
             Object::Invalid => None,
         }
     }
@@ -1623,6 +1627,14 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                             Object::Invalid
                         }
                     }
+                    Object::TraitDecl(decl) => {
+                        if args.len() == decl.borrow().ty_params.len() {
+                            Object::Trait(decl, self.ty.get_ty_list(args))
+                        } else {
+                            self.msg(err!(&apply.span, "invalid number of type arguments"));
+                            Object::Invalid
+                        }
+                    }                    
                     _ => {
                         self.msg(err!(&apply.lhs.span(), "expected a generic declaration"));
                         Object::Invalid
@@ -2073,6 +2085,7 @@ enum Object<'i> {
     Type(TypeRef<'i>),
     TypeDecl(TyDeclRef<'i>),
     TraitDecl(TraitDeclRef<'i>),
+    Trait(TraitDeclRef<'i>, pool::List<'i, TypeRef<'i>>),
     Fun(FuncRef<'i>, pool::List<'i, TypeRef<'i>>),
     TraitMethodDecl(Option<Value<'i>>, TypeRef<'i>, TraitRef<'i>, usize),
     TraitMethod(
