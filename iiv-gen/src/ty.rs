@@ -243,13 +243,13 @@ impl<'i> InferenceCtx<'i> {
             Type::Struct(props) => self.ty_pool.get_struct(self.unwrap_prop_list(*props)),
             Type::Ref(ty) => self.ty_pool.get_ref(self.unwrap(*ty)),
             Type::Ptr(ty) => self.ty_pool.get_ptr(self.unwrap(*ty)),
-            Type::InferenceVar(idx) => {
-                if let InferenceVar::Known(ty) = self.vars[*idx] {
-                    self.unwrap(ty)
-                } else {
-                    panic!("Could not infer :c");
+            Type::InferenceVar(idx) => match self.vars[*idx] {
+                InferenceVar::Known(ty) => self.unwrap(ty),
+                InferenceVar::UnknownAt(span) => {
+                    self.messages.add(err!(&span, "type could not be inferred"));
+                    self.ty_pool.get_ty_invalid()
                 }
-            }
+            },
             Type::Type(_) => {
                 unimplemented!()
             }
@@ -322,36 +322,33 @@ impl<'c, 'i> EqAttempt<'c, 'i> {
             (Type::InferenceVar(idx), Type::InferenceVar(idx2)) => {
                 idx == idx2
                     || match (&self.vars[*idx], &self.vars[*idx2]) {
-                        (Some(t1), Some(t2)) => self.eq(*t1, *t2),
-                        (None, Some(ty)) => {
+                        (InferenceVar::Known(t1), InferenceVar::Known(t2)) => self.eq(*t1, *t2),
+                        (InferenceVar::UnknownAt(_), InferenceVar::Known(ty)) => {
                             self.set(*idx, *ty);
                             true
                         }
-                        (Some(ty), None) => {
+                        (InferenceVar::Known(ty), InferenceVar::UnknownAt(_)) => {
                             self.set(*idx2, *ty);
                             true
                         }
-                        (None, None) => {
-                            let common = self.new_var();
-                            self.vars[*idx] = Some(common);
-                            self.vars[*idx2] = Some(common);
+                        (InferenceVar::UnknownAt(span), InferenceVar::UnknownAt(_)) => {
+                            let common = self.new_var(*span);
+                            self.vars[*idx] = InferenceVar::Known(common);
+                            self.vars[*idx2] = InferenceVar::Known(common);
                             true
                         }
                     }
             }
-            (Type::InferenceVar(idx), _) => {
-                eprintln!("resolving {} to {:?}", idx, self.vars[*idx]);
-                match self.vars[*idx] {
-                    Some(ty) => self.eq(ty, t2),
-                    None => {
-                        self.set(*idx, t2);
-                        true
-                    }
+            (Type::InferenceVar(idx), _) => match self.vars[*idx] {
+                InferenceVar::Known(ty) => self.eq(ty, t2),
+                InferenceVar::UnknownAt(_) => {
+                    self.set(*idx, t2);
+                    true
                 }
-            }
+            },
             (_, Type::InferenceVar(idx)) => match self.vars[*idx] {
-                Some(ty) => self.eq(ty, t1),
-                None => {
+                InferenceVar::Known(ty) => self.eq(ty, t1),
+                InferenceVar::UnknownAt(_) => {
                     self.set(*idx, t1);
                     true
                 }
@@ -374,10 +371,10 @@ impl<'c, 'i> EqAttempt<'c, 'i> {
 
     fn set(&mut self, idx: usize, ty: TypeRef<'i>) {
         if InferenceCtx::contains_var(ty, idx) {
-            self.vars[idx] = Some(self.ctx.ty_pool.get_ty_invalid());
+            self.vars[idx] = InferenceVar::Known(self.ctx.ty_pool.get_ty_invalid());
             self.error = true;
         } else {
-            self.vars[idx] = Some(ty);
+            self.vars[idx] = InferenceVar::Known(ty);
         }
     }
 

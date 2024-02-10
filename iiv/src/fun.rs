@@ -31,6 +31,7 @@ pub struct Signature<'i> {
     pub ty_params: Vec<()>,
     pub trait_bounds: Vec<Bound<'i>>,
     pub ret_ty: TypeRef<'i>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -69,7 +70,12 @@ pub enum Body<'i> {
 }
 
 impl<'i> Function<'i> {
-    pub fn empty(ty_pool: &'i crate::ty::Pool<'i>, name_base: Str<'i>, name: Str<'i>) -> Self {
+    pub fn empty(
+        ty_pool: &'i crate::ty::Pool<'i>,
+        span: Span,
+        name_base: Str<'i>,
+        name: Str<'i>,
+    ) -> Self {
         Function {
             sig: Signature {
                 name,
@@ -78,6 +84,7 @@ impl<'i> Function<'i> {
                 ty_params: vec![],
                 trait_bounds: vec![],
                 ret_ty: ty_pool.get_null(),
+                span,
             },
             body: crate::fun::Body::Unsealed(vec![]),
             ty_cache: vec![],

@@ -13,7 +13,7 @@ use lsp_types::{
     SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentIdentifier,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
-    WorkDoneProgressOptions,
+    WorkDoneProgressOptions, HoverParams, request::HoverRequest, Hover, HoverContents, MarkedString, LanguageString
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -374,6 +374,17 @@ fn do_request(
                 });
             write_response(response, id, writer)?;
         }
+        "textDocument/hover" => {
+            let request: Params<HoverParams> =
+                serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
+            
+if let Some(text) = files.get(&request.params.text_document_position_params.text_document.uri) {
+                let source = source_from_text_document(request.params.text_document_position_params.text_document);
+                diagnostics(&source)
+            }           
+             let response = Hover { range: Some(()), contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString { language: "ice", value })) }       
+        }
+        
         "exit" => std::process::exit(0),
         _ => return Err(err("invalid request")),
     }
@@ -392,6 +403,26 @@ fn source_from_text_document(document: TextDocumentIdentifier, text: &str) -> St
             .to_string(),
         text,
     }
+}
+
+fn hover(source: &impl Source, position: Position) -> Option<String> {
+    
+    let ctx = iiv::Ctx::new();
+    ctx.init();
+
+    let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
+    let mut generator = Generator::new(&ctx, true);
+
+    let module = parser.parse_program();
+
+    let _ = generator.emit_iiv(&[module]);
+
+    generator.index.0.unwrap().into_iter().find_map(|(span, token)| {
+        if !span.contains(position.line, position.column) {
+       return None; 
+    }
+    
+    })
 }
 
 fn completion(source: &impl Source, position: Position) -> Vec<CompletionItem> {

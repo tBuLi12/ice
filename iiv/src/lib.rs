@@ -24,7 +24,7 @@ pub struct CursorPosition {
     pub column: u32,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub first_line: u32,
     pub last_line: u32,
@@ -90,6 +90,13 @@ impl Span {
             last_line: self.last_line,
             end_highlight_offset: self.end_highlight_offset,
         }
+    }
+
+    pub fn contains(self, line: u32, column: u32) -> bool {
+        return (self.first_line < line
+            || self.first_line == line && self.begin_highlight_offset <= column)
+            && (self.last_line > line
+                || self.last_line == line && self.end_highlight_offset >= column);
     }
 }
 
@@ -350,6 +357,7 @@ impl<'i> Ctx<'i> {
                     ret_ty: self.type_pool.get_ptr(this_ty),
                     trait_bounds: vec![],
                     ty_params: vec![()],
+                    span: Span::null(),
                 },
             });
 
@@ -365,6 +373,7 @@ impl<'i> Ctx<'i> {
                     ret_ty: self.type_pool.get_null(),
                     trait_bounds: vec![],
                     ty_params: vec![()],
+                    span: Span::null(),
                 },
             });
 
@@ -380,6 +389,7 @@ impl<'i> Ctx<'i> {
                     ret_ty: self.type_pool.get_null(),
                     trait_bounds: vec![],
                     ty_params: vec![()],
+                    span: Span::null(),
                 },
             });
 
@@ -396,6 +406,7 @@ impl<'i> Ctx<'i> {
                     ret_ty: self.type_pool.get_ptr(this_ty),
                     trait_bounds: vec![],
                     ty_params: vec![()],
+                    span: Span::null(),
                 },
             });
 
@@ -417,6 +428,7 @@ impl<'i> Ctx<'i> {
                 ret_ty: self.type_pool.get_null(),
                 trait_bounds: vec![],
                 ty_params: vec![()],
+                span: Span::null(),
             },
         });
 
@@ -442,6 +454,7 @@ impl<'i> Ctx<'i> {
                 ret_ty: this_ty,
                 trait_bounds: vec![],
                 ty_params: vec![()],
+                span: Span::null(),
             },
         });
 
@@ -480,6 +493,7 @@ impl<'i> Ctx<'i> {
                 ret_ty: this_ty,
                 trait_bounds: vec![],
                 ty_params: vec![()],
+                span: Span::null(),
             },
         });
 
@@ -506,6 +520,7 @@ impl<'i> Ctx<'i> {
                 ret_ty: this_ty,
                 trait_bounds: vec![],
                 ty_params: vec![()],
+                span: Span::null(),
             },
         });
 

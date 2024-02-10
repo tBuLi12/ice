@@ -132,11 +132,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             .unwrap_or(Token::Eof(self.current_span()));
         if let Some(CursorPosition { line, column }) = self.cursor_position {
             let span = token.span();
-            if (span.first_line < line
-                || span.first_line == line && span.begin_highlight_offset <= column)
-                && (span.last_line > line
-                    || span.last_line == line && span.end_highlight_offset >= column)
-            {
+            if span.contains(line, column) {
                 self.completion_token = Some(token);
             }
         }

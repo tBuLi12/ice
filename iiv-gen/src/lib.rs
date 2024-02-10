@@ -6,7 +6,7 @@ use ast::{
 };
 use iiv::{
     builder::BlockRef,
-    diagnostics::{self},
+    diagnostics,
     err,
     fun::{Bound, Function, Method, Receiver, Body, SourceMap},
     impl_tree::ImplForest,
@@ -20,13 +20,13 @@ use ty::InferenceCtx;
 mod ty;
 
 #[derive(Debug)]
-pub enum TokenType {
-    Type,
-    Variable,
+pub enum TokenType<'i> {
+    Type {decl: TyDeclRef<'i> },
+    Variable { ty: TypeRef<'i>, def_span: Span },
     Keyword,
     Variant,
-    Property,
-    Function,
+    Property { name: Str<'i>, ty: TypeRef<'i> },
+    Function { decl: FuncRef<'i> },
 }
 
 #[derive(Debug)]
@@ -43,19 +43,20 @@ pub struct CompletionItem<'i> {
     pub ty: CompletionType,
 }
 
-pub struct LspIndex(pub Option<Vec<(Span, TokenType)>>);
+pub struct LspIndex<'i>(pub Option<Vec<(Span, TokenType<'i>)>>);
 
-impl LspIndex {
-    fn register_token_obj<'i>(&mut self, span: Span, obj: &Object<'i>) {
+impl<'i> LspIndex<'i> {
+    fn register_token_obj(&mut self, span: Span, obj: &Object<'i>) {
         if let Some(idx) = &mut self.0 {
             let tt = match obj {
-                Object::TypeDecl(_) => Some(TokenType::Type),
-                Object::Type(ty) => Some(match &**ty {
-                    Type::Builtin(_) => TokenType::Keyword,
-                    _ => TokenType::Type,
-                }),
-                Object::Place(_, _) => Some(TokenType::Variable),
-                Object::Fun(_, _) | Object::FunDecl(_) => Some(TokenType::Function),
+                Object::TypeDecl(decl) => Some(TokenType::Type { decl: *decl }),
+                Object::Type(ty) => match &**ty {
+                    Type::Builtin(_) => Some(TokenType::Keyword),
+                    Type::Named(decl, _, _) => Some(TokenType::Type { decl: *decl }),
+                    _ => None,
+                },
+                Object::Place(val, _, span) => Some(TokenType::Variable { ty: val.ty, def_span: *span }),
+                Object::Fun(decl, _) | Object::FunDecl(decl) => Some(TokenType::Function { decl: *decl }),
                 _ => None,
             };
             if let Some(tt) = tt {
@@ -64,7 +65,7 @@ impl LspIndex {
         }
     }
 
-    fn register_token<'i>(&mut self, span: Span, tt: TokenType) {
+    fn register_token(&mut self, span: Span, tt: TokenType<'i>) {
         if let Some(idx) = &mut self.0 {
             idx.push((span, tt));
         }
@@ -72,7 +73,7 @@ impl LspIndex {
 }
 
 pub struct Generator<'i> {
-    pub index: LspIndex,
+    pub index: LspIndex<'i>,
     pub completion_token: Option<CursorPosition>,
     pub completion_items: Vec<CompletionItem<'i>>,
     scopes: Scopes<'i>,
@@ -98,7 +99,7 @@ struct Scope<'i> {
 impl<'i> Scopes<'i> {
     pub fn define(&mut self, name: &Ident<'i>, object: Object<'i>) {
         let scope = self.inner.last_mut().unwrap();
-        if let Object::Place(val, _) = &object {
+        if let Object::Place(val, _, _) = &object {
             scope.values.push(*val);
         }
         if scope.index.insert(name.value, object).is_some() {
@@ -185,7 +186,7 @@ enum Callable<'i> {
 
 pub struct FunctionGenerator<'f, 'i, 'g> {
     trait_method_scope: &'g HashMap<Str<'i>, Vec<(TraitDeclRef<'i>, usize)>>,
-    index: &'g mut LspIndex,
+    index: &'g mut LspIndex<'i>,
     scopes: &'g mut Scopes<'i>,
     impl_forest: &'g mut ImplForest<'i>,
     ty: &'i iiv::ty::Pool<'i>,
@@ -249,7 +250,7 @@ impl<'i> Generator<'i> {
                 .iter()
                 .map(|param| {
                     let ty = self.scopes.new_ty_param(&param.name);
-                    let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
+                    let mut fun = Function::empty(self.ty, Span::null(), self.ty.str_pool.get(""), self.ty.str_pool.get(""));
                     let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
                     for tr_expr in &param.trait_bounds {
                         if let Some(mut tr) = fun_gen.check_trait(tr_expr) {
@@ -297,7 +298,7 @@ impl<'i> Generator<'i> {
         let mut package_types = vec![];
 
         for ty_node in types {
-            let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
+            let mut fun = Function::empty(self.ty, Span::null(), self.ty.str_pool.get(""), self.ty.str_pool.get(""));
             let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
 
             fun_gen.begin_scope();
@@ -311,6 +312,7 @@ impl<'i> Generator<'i> {
                 proto: fun_gen.inf_ctx.unwrap(proto),
                 ty_params: ty_node.type_params.iter().map(|_| ()).collect(),
                 name: ty_node.name.value,
+                span: ty_node.span,
             };
             fun_gen.end_scope();
 
@@ -355,7 +357,7 @@ impl<'i> Generator<'i> {
             );
 
             for sig in &trait_node.signatures {
-                let mut fun = Function::empty(self.ty, tr.name, sig.name.value);
+                let mut fun = Function::empty(self.ty, sig.span, tr.name, sig.name.value);
                 let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
                 fun_gen.begin_scope();
                 fun_gen.set_signature(&sig, bounds.clone(), tr.ty_params.len() + 1, Some(fun_gen.ty.get_ref(this_ty)));
@@ -391,7 +393,7 @@ impl<'i> Generator<'i> {
             let (own_bounds, impl_ty_params) = self.resolve_ty_param_list(&impl_node.type_params);
 
             let (ty, tr) = {
-                let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), self.ty.str_pool.get(""));
+                let mut fun = Function::empty(self.ty, Span::null(), self.ty.str_pool.get(""), self.ty.str_pool.get(""));
                 let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
                 let ty = fun_gen.check_type(&impl_node.ty);
                 fun_gen.scopes.this_ty = Some(ty);
@@ -438,7 +440,7 @@ impl<'i> Generator<'i> {
                 .functions
                 .iter()
                 .map(|fun_node| {
-                    let mut fun = Function::empty(self.ty, self.ty.str_pool.get(&format!("{}.{}", tr.map(|tr| tr.0.borrow().name).unwrap_or(self.ty.str_pool.get("?")), ty)), fun_node.signature.name.value);
+                    let mut fun = Function::empty(self.ty, fun_node.span(), self.ty.str_pool.get(&format!("{}.{}", tr.map(|tr| tr.0.borrow().name).unwrap_or(self.ty.str_pool.get("?")), ty)), fun_node.signature.name.value);
                     let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
 
                     fun_gen.begin_scope();
@@ -595,7 +597,7 @@ impl<'i> Generator<'i> {
         let funcs = &modules[0].functions;
         let mut package_funs = vec![];
         for fun_node in funcs {
-            let mut fun = Function::empty(self.ty, self.ty.str_pool.get(""), fun_node.signature.name.value);
+            let mut fun = Function::empty(self.ty, fun_node.span(), fun_node.signature.name.value, fun_node.signature.name.value);
 
             let mut fun_gen = FunctionGenerator::new(self, &mut fun, None);
 
@@ -741,7 +743,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
 
         for (param, ast_param) in params.zip(&fun_node.signature.params) {
             self.scopes
-                .define(&ast_param.name, Object::Place(param, vec![]));
+                .define(&ast_param.name, Object::Place(param, vec![], ast_param.name.span));
         }
 
         self.ret_type = Some(ret_ty);
@@ -790,7 +792,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         *self.completion_items = self.scopes.inner.iter().flat_map(|scope| scope.index.iter().map(|(name, obj)| {
             let ty = match obj {
                 Object::Value(_) 
-                | Object::Place(_, _) 
+                | Object::Place(_, _, _) 
                 | Object::UnsafePlace(_, _) => CompletionType::Variable,
                 Object::Type(_) 
                 | Object::TypeDecl(_) 
@@ -964,10 +966,10 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     ) {
         match &pattern.body {
             PatternBody::Bind(BindPattern { binding_type, name }) => {
-                self.register_token_obj(name.span, &Object::Place(value, vec![]));
+                self.register_token_obj(name.span, &Object::Place(value, vec![], name.span));
                 match binding_type {
-                    BindingType::Var => self.scopes.define(name, Object::Place(value, vec![])),
-                    BindingType::Let => self.scopes.define(name, Object::Place(value, vec![])),
+                    BindingType::Var => self.scopes.define(name, Object::Place(value, vec![], name.span)),
+                    BindingType::Let => self.scopes.define(name, Object::Place(value, vec![], name.span)),
                     _ => unimplemented!(),
                 }
             }
@@ -1048,7 +1050,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
     fn check_statement(&mut self, item: &BlockItem<'i>) -> Value<'i> {
         match item {
             BlockItem::Expr(expr) => match self.check(expr, None) {
-                Object::Place(val, offsets) | Object::UnsafePlace(val, offsets) => {
+                Object::Place(val, offsets, _) | Object::UnsafePlace(val, offsets) => {
                     self.copy_prop(&expr.span(), val, offsets, val.ty)
                 }
                 Object::Value(val) => val,
@@ -1098,7 +1100,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     self.invalid()
             // }
             Object::Value(val) => val,
-            Object::Place(val, offsets) | Object::UnsafePlace(val, offsets) => {
+            Object::Place(val, offsets, _) | Object::UnsafePlace(val, offsets) => {
                 self.copy_prop(span, val, offsets, val.ty)
             }
             Object::TypeDecl(ty_decl) => {
@@ -1136,7 +1138,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     err!(span, "expected a type, found module");
             //     self.ty.get_ty_invalid()
             // }
-            Object::Value(val) | Object::Place(val, _) | Object::UnsafePlace(val, _) => {
+            Object::Value(val) | Object::Place(val, _, _) | Object::UnsafePlace(val, _) => {
                 // if val.ty == self.ty.get_ty_type() {
                 //     self.ty.get_ty_constant(val.raw)
                 // } else {
@@ -1153,7 +1155,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 ty_decl
                     .ty_params
                     .iter()
-                    .map(|_| self.inf_ctx.new_var())
+                    .map(|_| self.inf_ctx.new_var(*span))
                     .collect(),
             ),
             Object::Type(ty) => ty,
@@ -1187,7 +1189,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             //     err!(span, "expected a type, found module");
             //     self.ty.get_ty_invalid()
             // }
-            Object::Value(val) | Object::Place(val, _) | Object::UnsafePlace(val, _) => {
+            Object::Value(val) | Object::Place(val, _, _) | Object::UnsafePlace(val, _) => {
                 self.msg(err!(
                     span,
                     "expected a trait, found value of type {}",
@@ -1218,7 +1220,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                         .borrow()
                         .ty_params
                         .iter()
-                        .map(|_| self.inf_ctx.new_var())
+                        .map(|_| self.inf_ctx.new_var(*span))
                         .collect(),
                 ),
             )),
@@ -1229,17 +1231,17 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         }
     }
 
-    fn create_ty_arg_list(&mut self, len: usize) -> pool::List<'i, TypeRef<'i>> {
-        self.ty.get_ty_list((0..len).into_iter().map(|_| self.inf_ctx.new_var()).collect())
+    fn create_ty_arg_list(&mut self, len: usize, span: Span) -> pool::List<'i, TypeRef<'i>> {
+        self.ty.get_ty_list((0..len).into_iter().map(|_| self.inf_ctx.new_var(span)).collect())
     }
 
-    fn get_callable(&mut self, obj: Object<'i>) -> Callable<'i> {
+    fn get_callable(&mut self, obj: Object<'i>, span: Span) -> Callable<'i> {
         match obj {
             Object::Condition(_) => panic!("unexpedted condition"),
             Object::Fun(func, ty_args) => Callable::Fun { fun: func, ty_args },
             Object::FunDecl(func) => Callable::Fun {
                 fun: func,
-                ty_args: self.create_ty_arg_list(func.borrow().sig.ty_params.len()),
+                ty_args: self.create_ty_arg_list(func.borrow().sig.ty_params.len(), span),
             },
             Object::Type(ty) => match &*ty {
                 Type::Named(decl, args, _) => Callable::Type {
@@ -1250,7 +1252,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             },
             Object::TypeDecl(ty_decl) => Callable::Type {
                 ty: ty_decl,
-                ty_args: self.create_ty_arg_list(ty_decl.ty_params.len()),
+                ty_args: self.create_ty_arg_list(ty_decl.ty_params.len(), span),
             },
             Object::TraitMethod(this, tr, idx, ty_args) => Callable::TraitMethod {
                 this,
@@ -1270,7 +1272,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                                 .ty_params
                                 .iter()
                                 .skip(tr.1.len() + 1)
-                                .map(|_| self.inf_ctx.new_var()),
+                                .map(|_| self.inf_ctx.new_var(span)),
                         )
                         .collect(),
                 );
@@ -1278,7 +1280,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                     this,
                     tr: tr.0,
                     idx,
-                    ty_args: ty_args,
+                    ty_args,
                 }
             }
             Object::Invalid => Callable::Invalid,
@@ -1381,12 +1383,12 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                     Item::Invalid => Object::Invalid,
                 }
             }
-            Object::Place(mut place, mut offsets) => {
+            Object::Place(mut place, mut offsets, span) => {
                 match self.lookup_item_on_type(place.ty, prop) {
                     Item::Field(extra_offsets, ty) => {
                         offsets.extend(extra_offsets);
                         place.ty = ty;
-                        Object::Place(place, offsets)
+                        Object::Place(place, offsets, span)
                     }
                     Item::TraitMethod(tr_decl, idx) => Object::TraitMethodDecl(
                         match tr_decl.borrow().signatures[idx].receiver {
@@ -1400,7 +1402,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                         place.ty,
                         TraitRef(
                             tr_decl,
-                            self.create_ty_arg_list(tr_decl.borrow().ty_params.len()),
+                            self.create_ty_arg_list(tr_decl.borrow().ty_params.len(), prop.span),
                         ),
                         idx,
                     ),
@@ -1430,7 +1432,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                     value.ty,
                     TraitRef(
                         tr_decl,
-                        self.create_ty_arg_list(tr_decl.borrow().ty_params.len()),
+                        self.create_ty_arg_list(tr_decl.borrow().ty_params.len(), prop.span),
                     ),
                     idx,
                 ),
@@ -1495,10 +1497,6 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 self.iiv.make_tuple(&items).obj()
             }
             Expr::Struct(structure) => {
-                for prop in &structure.props {
-                    self.index
-                        .register_token(prop.name.span, TokenType::Property);
-                }
                 let (props, vals): (Vec<_>, Vec<_>) = structure
                     .props
                     .iter()
@@ -1517,6 +1515,11 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                         )
                     })
                     .unzip();
+            
+                for (ast_prop, prop) in structure.props.iter().zip(&props) {
+                    self.index
+                        .register_token(ast_prop.name.span, TokenType::Property { name: ast_prop.name.value, ty: prop.1 });
+                }                
                 let ty = self.ty.get_struct(props);
                 let iiv::ty::Type::Struct(prop_list) = *ty else {
                     unreachable!()
@@ -1643,7 +1646,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Expr::Call(call) => {
                 let obj = self.check(&call.lhs, None);
-                match self.get_callable(obj) {
+                match self.get_callable(obj, call.span) {
                     Callable::Fun {
                         fun: fun_ref,
                         ty_args,
@@ -1752,7 +1755,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Expr::Prop(prop) => {
                 let lhs = self.check(&prop.lhs, false_block);
-                if let Object::Value(val) | Object::Place(val, _) | Object::UnsafePlace(val, _) = lhs {
+                if let Object::Value(val) | Object::Place(val, _, _) | Object::UnsafePlace(val, _) = lhs {
                     self.complete_property(&prop.prop, val.ty);
                 }
                 self.get_prop(lhs, &prop.prop)
@@ -1762,7 +1765,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             Expr::RefTo(ref_to) => {
                 let checked = self.check(&ref_to.rhs, false_block);
                 match checked {
-                    Object::Place(place, offsets) => {
+                    Object::Place(place, offsets, _) => {
                         let r = self.iiv.get_prop_ref(place, offsets, place.ty);
                         r.obj()
                     }
@@ -1778,7 +1781,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             }
             Expr::Deref(deref) => {
                 let checked = self.check(&deref.lhs, None);
-                if let Object::Place(val, mut offsets) | Object::UnsafePlace(val, mut offsets) = checked {
+                if let Object::Place(val, mut offsets, _) | Object::UnsafePlace(val, mut offsets) = checked {
                     match &*val.ty {
                         Type::Ref(inner) => {
                             offsets.push(0);
@@ -1788,6 +1791,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                                     raw: val.raw,
                                 },
                                 offsets,
+                                Span::null(),
                             )
                         }
                         Type::Ptr(inner) => {
@@ -1875,7 +1879,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 let rhs = self.check_val(&assign.rhs);
                 let lhs = self.check(&assign.lhs, None);
                 match lhs {
-                    Object::Place(place, offsets) |  Object::UnsafePlace(place, offsets) => {
+                    Object::Place(place, offsets, _) |  Object::UnsafePlace(place, offsets) => {
                         let rhs = self.ensure_ty(&assign.rhs.span(), place.ty, rhs);
                         let elems = offsets
                             .into_iter()
@@ -1958,13 +1962,14 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 let props = self.resolve_props(props);
                 self.ty.get_variant(props).obj()
             }
-            Expr::StructTy(props) => {
-                for prop in &props.props {
+            Expr::StructTy(ast_props) => {
+                let props = self.resolve_props(ast_props);
+                for (ast_prop, prop) in ast_props.props.iter().zip(&props) {
                     self.index
-                        .register_token(prop.name.span, TokenType::Property);
-                }
-                let props = self.resolve_props(props);
+                        .register_token(ast_prop.name.span, TokenType::Property { name: ast_prop.name.value, ty: prop.1 });
+                }                
                 self.ty.get_struct(props).obj()
+                
             }
             Expr::RefTy(inner) => {
                 let inner = self.check_type(&inner.rhs);
@@ -2017,7 +2022,7 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         match &*name.value {
             "this" => {
                 if let Some(this) = self.scopes.this {
-                    return Object::Place(this, vec![]);
+                    return Object::Place(this, vec![], Span::null());
                 }
                 self.msg(err!(&name.span, "this is not avaliable in this context"));
                 return self.invalid().obj();
@@ -2080,7 +2085,7 @@ enum Object<'i> {
     // Module,
     Invalid,
     Value(Value<'i>),
-    Place(Value<'i>, Vec<u8>),
+    Place(Value<'i>, Vec<u8>, Span),
     UnsafePlace(Value<'i>, Vec<u8>),
     Type(TypeRef<'i>),
     TypeDecl(TyDeclRef<'i>),
