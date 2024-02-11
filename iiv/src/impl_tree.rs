@@ -74,6 +74,7 @@ impl<'i> ImplForest<'i> {
             .find(|bound| **bound == Bound { ty, tr })
             .is_some()
         {
+            eprintln!("cyclic bound");
             return false;
         }
         checking.push(Bound { ty, tr });
@@ -81,6 +82,9 @@ impl<'i> ImplForest<'i> {
             .find_with_givens(ty, tr, local_bounds, checking)
             .is_some();
         checking.pop();
+        if !was_found {
+            eprintln!("{}: {} not found", ty, tr);
+        }
         was_found
     }
 
@@ -239,6 +243,14 @@ impl<'i> ImplTreeNode<'i> {
         forest: &ImplForest<'i>,
         checking: &mut Vec<Bound<'i>>,
     ) -> Option<(TraitImplRef<'i>, Vec<TypeRef<'i>>)> {
+        eprintln!(
+            "looking in {} as {} - {}: {}",
+            self.impl_ref.borrow().ty,
+            self.impl_ref.borrow().tr,
+            ty,
+            tr
+        );
+
         if let Some(args) =
             self.impl_ref
                 .borrow()
@@ -249,6 +261,14 @@ impl<'i> ImplTreeNode<'i> {
                     return Some(args);
                 }
             }
+
+            eprintln!(
+                "found in {} as {} - {}: {}",
+                self.impl_ref.borrow().ty,
+                self.impl_ref.borrow().tr,
+                ty,
+                tr
+            );
             return Some((self.impl_ref, args));
         } else {
             None
@@ -509,15 +529,6 @@ impl<'i> ImplTreeNode<'i> {
 }
 
 impl<'i> TraitImpl<'i> {
-    pub fn satisfies(
-        &self,
-        ty: TypeRef<'i>,
-        tr: TraitRef<'i>,
-        givens: &[Bound<'i>],
-        forest: &ImplForest<'i>,
-    ) {
-    }
-
     pub fn try_match(
         &self,
         ty: TypeRef<'i>,
@@ -528,6 +539,7 @@ impl<'i> TraitImpl<'i> {
         checking: &mut Vec<Bound<'i>>,
     ) -> Option<Vec<TypeRef<'i>>> {
         if tr.0 != self.tr.0 {
+            eprintln!("no trait match");
             return None;
         }
 
@@ -541,6 +553,7 @@ impl<'i> TraitImpl<'i> {
                 .zip(tr.1.iter())
                 .all(|(&matched, &ty)| Self::match_ty(&mut args, matched, ty))
         {
+            eprintln!("no arg match");
             return None;
         }
 
@@ -549,8 +562,9 @@ impl<'i> TraitImpl<'i> {
             .trait_bounds
             .iter()
             .map(|bound| ctx.type_pool.resolve_bound(*bound, &args))
-            .all(|bound| forest.is_satisfied_given(bound.ty, bound.tr, local_bounds, checking))
+            .any(|bound| !forest.is_satisfied_given(bound.ty, bound.tr, local_bounds, checking))
         {
+            eprintln!("bounds not satisfied");
             return None;
         }
 

@@ -294,13 +294,13 @@ impl<'i> TypeRef<'i> {
     pub fn visit(self, mut fun: impl FnMut(TypeRef<'i>)) {
         fun(self);
         match &*self {
-            Type::Tuple(elems) | Type::Union(elems) => {
+            Type::Tuple(elems) | Type::Union(elems) | Type::Named(_, elems, _) => {
                 elems.iter().for_each(|ty| fun(*ty));
             }
             Type::Struct(elems) | Type::Variant(elems) => {
                 elems.iter().for_each(|prop| fun(prop.1));
             }
-            Type::Ref(ty) | Type::Ptr(ty) | Type::Named(_, _, ty) => {
+            Type::Ref(ty) | Type::Ptr(ty) => {
                 fun(*ty);
             }
             _ => {}

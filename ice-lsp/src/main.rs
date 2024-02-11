@@ -3,23 +3,24 @@ use ice_parser::Parser;
 use iiv::{CursorPosition, Source};
 use iiv_gen::{Generator, TokenType};
 use lsp_types::{
-    Command, CompletionItem, CompletionItemKind, CompletionList, CompletionOptions,
-    CompletionParams, CompletionResponse, Diagnostic, DiagnosticOptions,
+    request::HoverRequest, Command, CompletionItem, CompletionItemKind, CompletionList,
+    CompletionOptions, CompletionParams, CompletionResponse, Diagnostic, DiagnosticOptions,
     DiagnosticServerCapabilities, DiagnosticSeverity, DidChangeTextDocumentParams,
     DidCloseTextDocumentParams, DidOpenTextDocumentParams, DocumentDiagnosticParams,
-    DocumentDiagnosticReport, DocumentFormattingParams, FullDocumentDiagnosticReport,
-    InitializeParams, InitializeResult, OneOf, Position, Range, SemanticToken,
-    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
-    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
+    DocumentDiagnosticReport, DocumentFormattingParams, FullDocumentDiagnosticReport, Hover,
+    HoverContents, HoverParams, HoverProviderCapability, InitializeParams, InitializeResult,
+    LanguageString, MarkedString, OneOf, Position, Range, SemanticToken, SemanticTokenModifier,
+    SemanticTokenType, SemanticTokens, SemanticTokensFullOptions, SemanticTokensLegend,
+    SemanticTokensOptions, SemanticTokensParams, SemanticTokensResult,
     SemanticTokensServerCapabilities, ServerCapabilities, ServerInfo, TextDocumentIdentifier,
     TextDocumentPositionParams, TextDocumentSyncCapability, TextDocumentSyncKind, TextEdit, Url,
-    WorkDoneProgressOptions, HoverParams, request::HoverRequest, Hover, HoverContents, MarkedString, LanguageString
+    WorkDoneProgressOptions,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     error::Error,
-    io::{self, BufRead, BufReader, Cursor, Read, Write},
+    io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write},
 };
 
 mod fmt;
@@ -194,7 +195,6 @@ fn handle_initial_request(body: String, writer: &mut impl Write) -> Result<(), B
         return Ok(());
     };
 
-    // SemanticTokenType::;
     match request.method {
         "initialize" => {
             let _: Params<InitializeParams> =
@@ -240,12 +240,7 @@ fn handle_initial_request(body: String, writer: &mut impl Write) -> Result<(), B
                     completion_provider: Some(CompletionOptions {
                         ..Default::default()
                     }),
-                    // hover_provider: Some(HoverProviderCapability::Simple(true)),
-                    // {
-
-                    //     dynamic_registration: None,
-                    //     content_format: Some(vec![MarkupKind::PlainText]),
-                    // }),
+                    hover_provider: Some(HoverProviderCapability::Simple(true)),
                     ..Default::default()
                 },
 
@@ -377,14 +372,40 @@ fn do_request(
         "textDocument/hover" => {
             let request: Params<HoverParams> =
                 serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
-            
-if let Some(text) = files.get(&request.params.text_document_position_params.text_document.uri) {
-                let source = source_from_text_document(request.params.text_document_position_params.text_document);
-                diagnostics(&source)
-            }           
-             let response = Hover { range: Some(()), contents: HoverContents::Scalar(MarkedString::LanguageString(LanguageString { language: "ice", value })) }       
+
+            if let Some(text) = files.get(
+                &request
+                    .params
+                    .text_document_position_params
+                    .text_document
+                    .uri,
+            ) {
+                let source = source_from_text_document(
+                    request.params.text_document_position_params.text_document,
+                    text,
+                );
+                if let Some(hover) = hover(
+                    &source,
+                    request.params.text_document_position_params.position,
+                ) {
+                    let response = Hover {
+                        range: None,
+                        contents: HoverContents::Scalar(MarkedString::LanguageString(
+                            LanguageString {
+                                language: "ice".to_string(),
+                                value: hover,
+                            },
+                        )),
+                    };
+                    write_response(response, id, writer)?;
+                } else {
+                    write_response(serde_json::json!(null), id, writer)?;
+                }
+            } else {
+                write_response(serde_json::json!(null), id, writer)?;
+            }
         }
-        
+
         "exit" => std::process::exit(0),
         _ => return Err(err("invalid request")),
     }
@@ -406,7 +427,6 @@ fn source_from_text_document(document: TextDocumentIdentifier, text: &str) -> St
 }
 
 fn hover(source: &impl Source, position: Position) -> Option<String> {
-    
     let ctx = iiv::Ctx::new();
     ctx.init();
 
@@ -417,12 +437,43 @@ fn hover(source: &impl Source, position: Position) -> Option<String> {
 
     let _ = generator.emit_iiv(&[module]);
 
-    generator.index.0.unwrap().into_iter().find_map(|(span, token)| {
-        if !span.contains(position.line, position.column) {
-       return None; 
-    }
-    
-    })
+    generator
+        .index
+        .0
+        .unwrap()
+        .into_iter()
+        .find_map(|(span, token)| {
+            if !span.contains(position.line, position.character) {
+                return None;
+            }
+            match token {
+                TokenType::Type { decl } => Some(format!("type {}", decl.name)),
+                TokenType::Variable { ty, def_span, .. } => {
+                    let mut reader = source.reader();
+                    Seek::seek(
+                        &mut reader,
+                        SeekFrom::Start(
+                            (def_span.begin_offset + def_span.begin_highlight_offset) as u64,
+                        ),
+                    )
+                    .unwrap();
+                    let mut buf = vec![
+                        0u8;
+                        (def_span.end_highlight_offset - def_span.begin_highlight_offset)
+                            as usize
+                    ];
+                    reader.read_exact(&mut buf).unwrap();
+                    Some(format!(
+                        "let {}: {}",
+                        String::from_utf8(buf.to_vec()).unwrap(),
+                        ty
+                    ))
+                }
+                TokenType::Property { name, ty } => Some(format!("{}: {}", name, ty)),
+                TokenType::Function { decl } => Some(format!("fun {}", decl.borrow().sig.name)),
+                _ => None,
+            }
+        })
 }
 
 fn completion(source: &impl Source, position: Position) -> Vec<CompletionItem> {
@@ -522,12 +573,12 @@ fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {
             let token = SemanticToken {
                 token_modifiers_bitset: 0,
                 token_type: match token_type {
-                    TokenType::Type => 0,
-                    TokenType::Variable => 1,
-                    TokenType::Property => 2,
-                    TokenType::Function => 3,
-                    TokenType::Keyword => 4,
-                    TokenType::Variant => 5,
+                    TokenType::Type { .. } => 0,
+                    TokenType::Variable { .. } => 1,
+                    TokenType::Property { .. } => 2,
+                    TokenType::Function { .. } => 3,
+                    TokenType::Keyword { .. } => 4,
+                    TokenType::Variant { .. } => 5,
                 },
                 length: span.end_highlight_offset - span.begin_highlight_offset,
                 delta_start: span.begin_highlight_offset - prev_start,

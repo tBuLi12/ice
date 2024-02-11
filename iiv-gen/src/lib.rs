@@ -196,6 +196,11 @@ pub struct FunctionGenerator<'f, 'i, 'g> {
     iiv: iiv::builder::Cursor<'f, 'i>,
     inf_ctx: InferenceCtx<'i>,
     copy_trait: TraitRef<'i>,
+    list_ty: TyDeclRef<'i>,
+    string_ty: TyDeclRef<'i>,
+    mem_alloc: FuncRef<'i>,
+    ptr_add: FuncRef<'i>,
+    ptr_write: FuncRef<'i>,
     pub completion_token: &'g mut Option<CursorPosition>,
     pub completion_items: &'g mut Vec<CompletionItem<'i>>,
 }
@@ -292,7 +297,14 @@ impl<'i> Generator<'i> {
             self.ty.str_pool.get("ptrWrite"),
             Object::FunDecl(self.ctx.builtins.get_ptr_write()),
         );
-
+        self.define_global(
+            self.ty.str_pool.get("List"),
+            Object::TypeDecl(self.ctx.builtins.get_list()),
+        );
+        self.define_global(
+            self.ty.str_pool.get("String"),
+            Object::TypeDecl(self.ctx.builtins.get_string()),
+        );
         // types
         let types = &modules[0].types;
         let mut package_types = vec![];
@@ -415,8 +427,8 @@ impl<'i> Generator<'i> {
                         }
                     })
                 });
-                if present.into_iter().any(|used| !used) {
-                    self.messages.add(err!(&impl_node.span, "unused type parameters"));
+                if present.iter().any(|&used| !used) {
+                    self.messages.add(err!(&impl_node.span, "unused type parameters {}",  ty));
                 }
             }
 
@@ -630,18 +642,22 @@ impl<'i> Generator<'i> {
 
         for (&trait_impl, impl_node) in package_trait_impls.iter().zip(trait_impls) {
             let trait_impl = trait_impl.borrow();
-
+            self.scopes.begin();
+            for param in &impl_node.type_params {
+                self.scopes.new_ty_param(&param.name);
+            }
             for (method, fun_node) in trait_impl.functions.iter().zip(&impl_node.functions) {
-            let mut src = SourceMap(vec![]);
-            let mut fun = method.fun.borrow_mut();
+                let mut src = SourceMap(vec![]);
+                let mut fun = method.fun.borrow_mut();
                 if fun_node.body.is_some() {
                     let gen = FunctionGenerator::new(self, &mut *fun, Some(&mut src));
                     gen.emit_function_body(fun_node, method.receiver);
                     self.ctx.fun_pool.set_source_map(method.fun, src);
-            } else {
+                } else {
                     self.messages.add(err!(&fun_node.span(), "implementation functions must have a body"));
                 }
             }
+            self.scopes.end();
         }
 
         let main = if let Some(Object::FunDecl(main)) =
@@ -677,6 +693,11 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             iiv: iiv::builder::Cursor::new(parent.ty, func, src),
             inf_ctx: InferenceCtx::new(parent.ty, parent.messages),
             copy_trait: parent.copy_trait,
+            list_ty: parent.ctx.builtins.get_list(),
+            string_ty: parent.ctx.builtins.get_string(),
+            mem_alloc: parent.ctx.builtins.get_mem_alloc(),
+            ptr_add: parent.ctx.builtins.get_ptr_add(),
+            ptr_write: parent.ctx.builtins.get_ptr_write(),
             completion_token: &mut parent.completion_token,
             completion_items: &mut parent.completion_items,
         }
@@ -1490,7 +1511,39 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
             Expr::Int(int) => self.iiv.int_lit(int.value).obj(),
             Expr::Bool(boolean) => self.iiv.bool_lit(boolean.value).obj(),
             Expr::Float(_float) => unimplemented!(),
-            Expr::String(_string_lit) => unimplemented!(),
+            Expr::String(string_lit) => {
+                let int_list = self.ty.get_ty_named(self.list_ty, vec![self.ty.get_int()]);
+                let mut idx = self.iiv.int_lit(0);
+                let one = self.iiv.int_lit(1);
+                let len = self.iiv.int_lit(string_lit.value.len() as u32);
+                let only_int_list = self.ty.get_ty_list(vec![self.ty.get_int()]);                
+                let len_cp2 = self.copy(len);
+                let buf = self.iiv.call(self.mem_alloc, &[len_cp2], only_int_list);
+                for character in string_lit.value.chars() {
+                    let buf = self.copy(buf);
+                    let idx_cp = self.copy(idx);
+                    let ptr = self.iiv.call(self.ptr_add, &[buf, idx_cp], only_int_list);
+                    let val = self.iiv.int_lit(character as u32);
+                    let null = self.iiv.call(self.ptr_write, &[ptr, val], only_int_list);
+                    self.drop(null);
+                    let one = self.copy(one);
+                    idx = self.iiv.add(idx, one);
+                }
+                self.drop(one);
+                self.drop(idx);
+                let len_cp = self.copy(len);
+                
+                let Type::Named(_, _, proto) = &*int_list else { unreachable!() };
+                let Type::Struct(ty) = &**proto else { unreachable!() };
+                
+                let mut props = vec![len_cp; 3];
+                props[ty.iter().position(|prop| &*prop.0 == "buf").unwrap()] = buf;
+                props[ty.iter().position(|prop| &*prop.0 == "cap").unwrap()] = len_cp;
+                props[ty.iter().position(|prop| &*prop.0 == "len").unwrap()] = len;
+                let inner = self.iiv.make_struct(&props, *proto);
+                let inner = self.iiv.named(int_list, inner);
+                self.iiv.named(self.ty.get_ty_named(self.string_ty, vec![]), inner).obj()
+            },
             Expr::Char(_char) => unimplemented!(),
             Expr::Tuple(tuple) => {
                 let items: Vec<_> = tuple.fields.iter().map(|e| self.check_val(e)).collect();
@@ -1766,11 +1819,11 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
                 let checked = self.check(&ref_to.rhs, false_block);
                 match checked {
                     Object::Place(place, offsets, _) => {
-                        let r = self.iiv.get_prop_ref(place, offsets, place.ty);
+                        let r = self.iiv.at(ref_to.rhs.span()).get_prop_ref(place, offsets, place.ty);
                         r.obj()
                     }
                     Object::UnsafePlace(place, offsets) => {
-                        let r = self.iiv.get_prop_ptr(place, offsets, place.ty);
+                        let r = self.iiv.at(ref_to.rhs.span()).get_prop_ptr(place, offsets, place.ty);
                         r.obj()
                     }
                     _ => {
@@ -1987,8 +2040,16 @@ impl<'f, 'i: 'f, 'g> FunctionGenerator<'f, 'i, 'g> {
         self.iiv.drop(val);
     }
 
-    fn copy_prop(&mut self, span: &Span, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
+    fn copy(&mut self, value: Value<'i>) -> Value<'i> {
         self.iiv.copy_prop_deep(
+            value,
+            vec![],
+            value.ty,
+        )    
+    }
+
+    fn copy_prop(&mut self, span: &Span, value: Value<'i>, props: Vec<u8>, ty: TypeRef<'i>) -> Value<'i> {
+        self.iiv.at(*span).copy_prop_deep(
             value,
             props.iter().map(|prop| Elem::Prop(Prop(*prop))).collect(),
             ty,

@@ -126,10 +126,11 @@ impl<'i, R: io::Read> Lexer<'i, R> {
 
         let token = self
             .read_ident_or_keyword()
+            .or_else(|| self.read_string_literal())
             .or_else(|| self.read_punctuation())
             .or_else(|| self.read_numeric_literal())
-            .or_else(|| self.read_string_literal())
             .unwrap_or(Token::Eof(self.current_span()));
+
         if let Some(CursorPosition { line, column }) = self.cursor_position {
             let span = token.span();
             if span.contains(line, column) {

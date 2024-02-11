@@ -172,6 +172,9 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 func.body = Body::Unsealed(vec![]);
                 iiv::move_check::inject_auto_copy_impl(self.ctx, func);
                 self.write_body(func, llvm_func, impls);
+                if llvm_func.verify() {
+                    panic!("invalid function");
+                }
                 return;
             }
             Body::MemAlloc(ty) => {
@@ -185,6 +188,9 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 let size = self.ir.mul(self.llvm_ctx.int(size as u32).val(), count);
                 let ptr = self.ir.call(self.builtins.rt_malloc, &[size]);
                 self.ir.ret(ptr);
+                if llvm_func.verify() {
+                    panic!("invalid function");
+                }
                 return;
             }
             Body::MemFree => {
@@ -194,7 +200,10 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 let ptr = llvm_func.args().next().unwrap();
                 self.ir.set_insert_point(block);
                 self.ir.call(self.builtins.rt_free, &[ptr]);
-                self.ir.ret_void();
+                self.ir.ret(self.llvm_null());
+                if llvm_func.verify() {
+                    panic!("invalid function");
+                }
                 return;
             }
             Body::PtrAdd => {
@@ -211,6 +220,9 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 eprintln!("gep 1");
                 let offset_ptr = self.ir.gep(self.llvm_ty(*inner), ptr, &[offset]);
                 self.ir.ret(offset_ptr);
+                if llvm_func.verify() {
+                    panic!("invalid function");
+                }
                 return;
             }
             Body::PtrWrite => {
@@ -222,7 +234,10 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 let ptr = args.next().unwrap();
                 let value = args.next().unwrap();
                 self.ir.store(ptr, value);
-                self.ir.ret_void();
+                self.ir.ret(self.llvm_null());
+                if llvm_func.verify() {
+                    panic!("invalid function");
+                }
                 return;
             }
             Body::BitwiseCopy => {
@@ -265,7 +280,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         }
 
         if llvm_func.verify() {
-            // panic!("invalid function");
+            panic!("invalid function");
         }
 
         // self.fun_opt_manager.optimize(llvm_func);
@@ -641,8 +656,12 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
     }
 
     fn null_val(&mut self) {
-        let null = self.llvm_ctx.struct_ty(&[]).null().val();
+        let null = self.llvm_null();
         self.on_the_stack(null, self.ctx.type_pool.get_null());
+    }
+
+    fn llvm_null(&self) -> llvm::Value<'ll> {
+        self.llvm_ty(self.ctx.type_pool.get_null()).null().val()
     }
 
     fn apply_block_args(&mut self, block: &iiv::Label, args: &[llvm::Value<'ll>]) {

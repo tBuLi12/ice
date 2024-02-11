@@ -3,9 +3,9 @@ use std::{cell::Cell, fmt::Display, fs::File, io};
 use diagnostics::Diagnostics;
 use fun::{Bound, Function, Method, Signature};
 use impl_tree::ImplForest;
-use pool::{FuncRef, TraitDeclRef, TraitImplRef};
+use pool::{FuncRef, TraitDeclRef, TraitImplRef, TyDeclRef};
 use ty::{TraitRef, TypeRef};
-use ty_decl::{TraitDecl, TraitImpl};
+use ty_decl::{TraitDecl, TraitImpl, TypeDecl};
 
 use crate::diagnostics::fmt;
 
@@ -286,6 +286,8 @@ pub struct Builtints<'i> {
     pub ptr_add: Cell<Option<FuncRef<'i>>>,
     pub mem_alloc: Cell<Option<FuncRef<'i>>>,
     pub mem_free: Cell<Option<FuncRef<'i>>>,
+    pub list: Cell<Option<TyDeclRef<'i>>>,
+    pub string: Cell<Option<TyDeclRef<'i>>>,
 }
 
 impl<'i> Builtints<'i> {
@@ -320,6 +322,14 @@ impl<'i> Builtints<'i> {
     pub fn get_mem_free(&self) -> FuncRef<'i> {
         self.mem_free.get().unwrap()
     }
+
+    pub fn get_list(&self) -> TyDeclRef<'i> {
+        self.list.get().unwrap()
+    }
+
+    pub fn get_string(&self) -> TyDeclRef<'i> {
+        self.string.get().unwrap()
+    }
 }
 
 impl<'i> Ctx<'i> {
@@ -340,6 +350,8 @@ impl<'i> Ctx<'i> {
                 mem_free: Cell::new(None),
                 ptr_add: Cell::new(None),
                 ptr_write: Cell::new(None),
+                string: Cell::new(None),
+                list: Cell::new(None),
             },
         }
     }
@@ -539,6 +551,38 @@ impl<'i> Ctx<'i> {
         self.builtins.copy.set(Some(copy));
         self.builtins.bitwise_copy_impl.set(Some(bitwise_copy_impl));
         self.builtins.auto_copy_impl.set(Some(auto_copy_impl));
+
+        {
+            let list = self.ty_decl_pool.insert(TypeDecl {
+                name: self.type_pool.str_pool.get("List"),
+                is_copy: false,
+                ty_params: vec![()],
+                span: Span::null(),
+                proto: self.type_pool.get_struct(vec![
+                    self.type_pool.get_prop(
+                        self.type_pool.str_pool.get("buf"),
+                        self.type_pool.get_ptr(self.type_pool.get_ty_constant(0)),
+                    ),
+                    self.type_pool
+                        .get_prop(self.type_pool.str_pool.get("len"), self.type_pool.get_int()),
+                    self.type_pool
+                        .get_prop(self.type_pool.str_pool.get("cap"), self.type_pool.get_int()),
+                ]),
+            });
+
+            let string = self.ty_decl_pool.insert(TypeDecl {
+                name: self.type_pool.str_pool.get("String"),
+                is_copy: false,
+                ty_params: vec![],
+                proto: self
+                    .type_pool
+                    .get_ty_named(list, vec![self.type_pool.get_int()]),
+                span: Span::null(),
+            });
+
+            self.builtins.string.set(Some(string));
+            self.builtins.list.set(Some(list));
+        }
     }
 
     pub fn flush_diagnostics(&self, source: &impl Source) -> bool {

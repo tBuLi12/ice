@@ -83,7 +83,7 @@ extern "C" int32_t emitModule(llvm::Module* llvmModule, llvm::TargetMachine* tar
         llvm::ModulePassManager MPM = PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
 
         // Optimize the IR!
-        MPM.run(*llvmModule, MAM);
+        // MPM.run(*llvmModule, MAM);
     }
     
     llvmModule->print(llvm::errs(), nullptr);
@@ -423,5 +423,5 @@ extern "C" void functionOptManagerOptimize(
     FunctionOptManager* funOptManager,
     llvm::Function* func
 ) {
-    funOptManager->fpm.run(*func, funOptManager->fam);
+    // funOptManager->fpm.run(*func, funOptManager->fam);
 }

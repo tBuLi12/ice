@@ -30,8 +30,6 @@ fn main() {
         return;
     }
 
-    eprintln!("{:#?}", module);
-
     let package = generator.emit_iiv(&[module]);
     if ctx.flush_diagnostics(&source) {
         return;
