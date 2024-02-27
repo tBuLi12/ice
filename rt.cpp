@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <vector>
+#include <iostream>
 
 static int32_t* gen_table = nullptr;
 static std::vector<int32_t*>* frees = nullptr;
@@ -59,4 +60,15 @@ extern "C" void* rt_malloc(int32_t size) {
 extern "C" void rt_free(void* ptr) {
     printf("rt free\n");
     free(ptr);
+}
+
+extern "C" void printInt(int32_t val) {
+    std::cout << val << std::endl;
+}
+
+extern "C" void printStrBuf(int32_t* buf, int32_t len) {
+    for (int32_t i = 0; i < len; ++i) {
+        std::cout << (char)buf[i];
+    }
+    std::cout << std::endl;
 }

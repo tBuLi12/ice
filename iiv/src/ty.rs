@@ -291,17 +291,17 @@ impl<'i> Pool<'i> {
 }
 
 impl<'i> TypeRef<'i> {
-    pub fn visit(self, mut fun: impl FnMut(TypeRef<'i>)) {
+    pub fn visit(self, fun: &mut impl FnMut(TypeRef<'i>)) {
         fun(self);
         match &*self {
             Type::Tuple(elems) | Type::Union(elems) | Type::Named(_, elems, _) => {
-                elems.iter().for_each(|ty| fun(*ty));
+                elems.iter().for_each(|ty| ty.visit(fun));
             }
             Type::Struct(elems) | Type::Variant(elems) => {
-                elems.iter().for_each(|prop| fun(prop.1));
+                elems.iter().for_each(|prop| prop.1.visit(fun));
             }
             Type::Ref(ty) | Type::Ptr(ty) => {
-                fun(*ty);
+                ty.visit(fun);
             }
             _ => {}
         }

@@ -2,7 +2,7 @@ use ast::{
     BindingType, BlockItem, Expr, Ident, Parameter, Pattern, PatternBody, PropsTy, Signature,
     Spanned, StructProp, TyProp,
 };
-use iiv::{diagnostics::fmt::n_of_digits, LeftSpan, RightSpan, Span};
+use iiv::{diagnostics::fmt::n_of_digits, Span};
 use lsp_types::{Position, Range, TextEdit};
 
 enum Declaration<'i> {
@@ -12,46 +12,43 @@ enum Declaration<'i> {
 }
 
 pub trait TextRange: Sized + Copy {
-    type Left: TextPosition;
-    type Right: TextPosition;
+    type Position: TextPosition;
 
     fn range(self) -> Range {
         self.left().to_pos(self.right())
     }
 
-    fn left(self) -> Self::Left;
-    fn right(self) -> Self::Right;
+    fn left(self) -> Self::Position;
+    fn right(self) -> Self::Position;
 }
 
 impl TextRange for Span {
-    type Left = LeftSpan;
-    type Right = RightSpan;
-    fn left(self) -> Self::Left {
-        self.left_span()
+    type Position = iiv::Position;
+
+    fn left(self) -> Self::Position {
+        self.left
     }
-    fn right(self) -> Self::Right {
-        self.right_span()
+    fn right(self) -> Self::Position {
+        self.right
     }
 }
 
 impl TextRange for Range {
-    type Left = Position;
-    type Right = Position;
-    fn left(self) -> Self::Left {
+    type Position = Position;
+    fn left(self) -> Self::Position {
         self.start
     }
-    fn right(self) -> Self::Right {
+    fn right(self) -> Self::Position {
         self.end
     }
 }
 
-impl<L: TextPosition, R: TextPosition> TextRange for (L, R) {
-    type Left = L;
-    type Right = R;
-    fn left(self) -> Self::Left {
+impl<T: TextPosition> TextRange for (T, T) {
+    type Position = T;
+    fn left(self) -> Self::Position {
         self.0
     }
-    fn right(self) -> Self::Right {
+    fn right(self) -> Self::Position {
         self.1
     }
 }
@@ -73,27 +70,18 @@ trait TextPosition: Sized + Copy {
     }
 }
 
-impl TextPosition for LeftSpan {
-    fn pos(self) -> Position {
-        Position {
-            line: self.first_line,
-            character: self.begin_highlight_offset,
-        }
-    }
-}
-
-impl TextPosition for RightSpan {
-    fn pos(self) -> Position {
-        Position {
-            line: self.last_line,
-            character: self.end_highlight_offset,
-        }
-    }
-}
-
 impl TextPosition for Position {
     fn pos(self) -> Position {
         self
+    }
+}
+
+impl TextPosition for iiv::Position {
+    fn pos(self) -> Position {
+        Position {
+            line: self.line,
+            character: self.column,
+        }
     }
 }
 
@@ -103,19 +91,6 @@ fn span_range(span: Span) -> Range {
         end: span.right().pos(),
     }
 }
-
-// fn between(left: Span, right: Span) -> Range {
-//     Range {
-//         start: Position {
-//             line: left.last_line,
-//             character: left.end_highlight_offset,
-//         },
-//         end: Position {
-//             line: right.first_line,
-//             character: right.begin_highlight_offset,
-//         },
-//     }
-// }
 
 enum FmtResult {
     InlineFit(u32),
@@ -133,9 +108,9 @@ pub fn format_module(module: ast::Module) -> Vec<TextEdit> {
         .collect();
 
     decls.sort_by_key(|decl| match decl {
-        Declaration::Function(fun) => fun.span().begin_offset + fun.span().begin_highlight_offset,
-        Declaration::Trait(tr) => tr.span.begin_offset + tr.span.begin_highlight_offset,
-        Declaration::Type(ty) => ty.span().begin_offset + ty.span().begin_highlight_offset,
+        Declaration::Function(fun) => (fun.span().left.line, fun.span().left.column),
+        Declaration::Trait(tr) => (tr.span.left.line, tr.span.left.column),
+        Declaration::Type(ty) => (ty.span().left.line, ty.span().left.column),
     });
 
     let mut edits = Edits(vec![]);
@@ -203,7 +178,7 @@ impl<'e> Ctx<'e> {
             self = thing.format_in(self);
         }
         for pair in things.windows(2) {
-            self = self.replace((pair[0].right_span(), pair[1].left_span()), separator);
+            self = self.replace((pair[0].right(), pair[1].left()), separator);
         }
         self
     }
@@ -212,8 +187,8 @@ impl<'e> Ctx<'e> {
         match items.len() {
             0 => self.replace(span, "{}"),
             _ => {
-                let left = span.left().to_pos(items[0].left_span());
-                let right = items.last().unwrap().right_span().to_pos(span.right());
+                let left = span.left().to_pos(items[0].left());
+                let right = items.last().unwrap().right().to_pos(span.right());
                 match self.ty {
                     CtxType::Inline => self
                         .replace(left, "{ ")
@@ -235,7 +210,7 @@ impl<'e> Ctx<'e> {
             self = thing.format_in(self);
         }
         for pair in things.windows(2) {
-            self = self.replace((pair[0].right_span(), pair[1].left_span()), separator);
+            self = self.replace((pair[0].right(), pair[1].left()), separator);
         }
         self
     }
@@ -258,12 +233,12 @@ impl<'e> Ctx<'e> {
     ) -> Self {
         match args.len() {
             0 => {
-                let right = lhs.right_span().to_pos(span.right());
+                let right = lhs.right().to_pos(span.right());
                 self.replace(right, delimiters)
             }
             _ => {
-                let lhs_to_args = lhs.right_span().to_pos(args[0].left_span());
-                let right = args.last().unwrap().right_span().to_pos(span.right());
+                let lhs_to_args = lhs.right().to_pos(args[0].left());
+                let right = args.last().unwrap().right().to_pos(span.right());
                 self.replace(lhs_to_args, &delimiters[..1])
                     .format_list(&args, ", ")
                     .replace(right, &delimiters[1..])
@@ -273,7 +248,7 @@ impl<'e> Ctx<'e> {
 
     fn bin_op(self, lhs: &impl Fmt, rhs: &impl Fmt, op: &str) -> Self {
         self.then(lhs)
-            .replace((lhs.right_span(), rhs.left_span()), op)
+            .replace((lhs.right(), rhs.left()), op)
             .then(rhs)
     }
 
@@ -282,11 +257,11 @@ impl<'e> Ctx<'e> {
         self = self.replace(dot_to_name, ".");
 
         if let Some(inner) = inner {
-            let left = name.span.right().to_pos(inner.left_span());
-            let right = inner.right_span().to_pos(span.right());
+            let left = name.span.right().to_pos(inner.left());
+            let right = inner.right().to_pos(span.right());
             self.replace(left, "(").then(inner).replace(right, ")")
         } else {
-            let parens = name.span.right().to_pos(span.right_span());
+            let parens = name.span.right().to_pos(span.right());
             self.replace(parens, "()")
         }
     }
@@ -304,14 +279,14 @@ impl<'i> Fmt for Ident<'i> {
 
 impl<'i> Fmt for Parameter<'i> {
     fn format_in<'e>(&self, ctx: Ctx<'e>) -> Ctx<'e> {
-        let range = self.name.right_span().to_pos(self.ty.left_span());
+        let range = self.name.right().to_pos(self.ty.left());
         ctx.then(&self.name).replace(range, ": ").then(&self.ty)
     }
 }
 
 impl<'i> Fmt for (Ident<'i>, Pattern<'i>) {
     fn format_in<'e>(&self, ctx: Ctx<'e>) -> Ctx<'e> {
-        let range = self.0.right_span().to_pos(self.1.left_span());
+        let range = self.0.right().to_pos(self.1.left());
         ctx.then(&self.0).replace(range, ": ").then(&self.1)
     }
 }
@@ -319,7 +294,7 @@ impl<'i> Fmt for (Ident<'i>, Pattern<'i>) {
 impl<'i> Fmt for StructProp<'i> {
     fn format_in<'e>(&self, ctx: Ctx<'e>) -> Ctx<'e> {
         if let Some(value) = &self.value {
-            let range = self.name.right_span().to_pos(value.left_span());
+            let range = self.name.right().to_pos(value.left());
             ctx.then(&self.name).replace(range, ": ").then(value)
         } else {
             ctx.then(&self.name)
@@ -330,7 +305,7 @@ impl<'i> Fmt for StructProp<'i> {
 impl<'i> Fmt for TyProp<'i> {
     fn format_in<'e>(&self, ctx: Ctx<'e>) -> Ctx<'e> {
         if let Some(ty) = &self.ty {
-            let range = self.name.right_span().to_pos(ty.left_span());
+            let range = self.name.right().to_pos(ty.left());
             ctx.then(&self.name).replace(range, ": ").then(ty)
         } else {
             ctx.then(&self.name)
@@ -354,12 +329,12 @@ impl<'i> Fmt for Expr<'i> {
             Expr::Block(items) => match items.items.len() {
                 0 => ctx.replace(items.span, "{}"),
                 _ => {
-                    let left = items.span.left().to_pos(items.items[0].left_span());
+                    let left = items.span.left().to_pos(items.items[0].left());
                     let right = items
                         .items
                         .last()
                         .unwrap()
-                        .right_span()
+                        .right()
                         .to_pos(items.span.right());
                     match ctx.ty {
                         CtxType::Inline => {
@@ -399,11 +374,8 @@ impl<'i> Fmt for Expr<'i> {
             Expr::Tuple(_) => unimplemented!(),
             Expr::Struct(structure) => ctx.struct_like(structure.span, &structure.props),
             Expr::If(if_expr) => {
-                let cond_left = if_expr.span.left().to_pos(if_expr.condition.left_span());
-                let cond_to_yes = if_expr
-                    .condition
-                    .right_span()
-                    .to_pos(if_expr.yes.left_span());
+                let cond_left = if_expr.span.left().to_pos(if_expr.condition.left());
+                let cond_to_yes = if_expr.condition.right().to_pos(if_expr.yes.left());
                 match ctx.ty {
                     CtxType::Inline => {
                         let ctx = ctx
@@ -412,7 +384,7 @@ impl<'i> Fmt for Expr<'i> {
                             .replace(cond_to_yes, ") ")
                             .then(&if_expr.yes);
                         if let Some(no) = &if_expr.no {
-                            let yes_to_no = if_expr.yes.right_span().to_pos(no.left_span());
+                            let yes_to_no = if_expr.yes.right().to_pos(no.left());
                             ctx.replace(yes_to_no, " else ").then(no)
                         } else {
                             ctx
@@ -434,8 +406,8 @@ impl<'i> Fmt for Expr<'i> {
                         };
 
                         if let Some(no) = &if_expr.no {
-                            let yes_to_no = if_expr.yes.right_span().to_pos(no.left_span());
-                            let before_no = no.left_span().to_pos(no.left_span());
+                            let yes_to_no = if_expr.yes.right().to_pos(no.left());
+                            let before_no = no.left().to_pos(no.left());
                             if let Expr::Block(_) = &**no {
                                 ctx.replace(yes_to_no, " else ").then(no)
                             } else {
@@ -455,7 +427,7 @@ impl<'i> Fmt for Expr<'i> {
             Expr::Match(_) => unimplemented!(),
             Expr::Call(call) => ctx.call_like(call.span, &*call.lhs, &call.args, "()"),
             Expr::Prop(prop) => {
-                let dot = prop.lhs.right_span().to_pos(prop.prop.left_span());
+                let dot = prop.lhs.right().to_pos(prop.prop.left());
                 ctx.then(&prop.lhs).replace(dot, ".").then(&prop.prop)
             }
             Expr::Field(_) => unimplemented!(),
@@ -477,11 +449,11 @@ impl<'i> Fmt for Expr<'i> {
             Expr::Neg(_) => unimplemented!(),
             Expr::Not(_) => unimplemented!(),
             Expr::RefTo(ref_to) | Expr::RefTy(ref_to) | Expr::PtrTy(ref_to) => {
-                let left = ref_to.span.left().to_pos(ref_to.rhs.left_span());
+                let left = ref_to.span.left().to_pos(ref_to.rhs.left());
                 ctx.replace(left, "&").then(&ref_to.rhs)
             }
             Expr::Deref(deref) => {
-                let right = deref.lhs.right_span().to_pos(deref.span.right());
+                let right = deref.lhs.right().to_pos(deref.span.right());
                 ctx.then(&deref.lhs).replace(right, ".*")
             }
             Expr::Vec(_) => unimplemented!(),
@@ -493,12 +465,12 @@ impl<'i> Fmt for Expr<'i> {
             Expr::VariantTy(variant) => match variant.props.len() {
                 0 => ctx.replace(variant.span, "{|}"),
                 _ => {
-                    let left = variant.span.left().to_pos(variant.props[0].left_span());
+                    let left = variant.span.left().to_pos(variant.props[0].left());
                     let right = variant
                         .props
                         .last()
                         .unwrap()
-                        .right_span()
+                        .right()
                         .to_pos(variant.span.right());
                     match ctx.ty {
                         CtxType::Inline => ctx
@@ -531,20 +503,20 @@ impl<'i> Fmt for Pattern<'i> {
                 //     2
                 // }
                 // 1 => {
-                //     let left = tuple.span.left().to_pos(tuple.patterns[0].left_span());
-                //     let right = tuple.patterns[0].right_span().to_pos(tuple.span.right());
+                //     let left = tuple.span.left().to_pos(tuple.patterns[0].left());
+                //     let right = tuple.patterns[0].right().to_pos(tuple.span.right());
                 //     let pattern_len = tuple.patterns[0].format_into(edits);
                 //     edits.add(left, "(");
                 //     edits.add(right, ",)");
                 //     pattern_len + 3
                 // }
                 // _ => {
-                //     let left = tuple.span.left().to_pos(tuple.patterns[0].left_span());
+                //     let left = tuple.span.left().to_pos(tuple.patterns[0].left());
                 //     let right = tuple
                 //         .patterns
                 //         .last()
                 //         .unwrap()
-                //         .right_span()
+                //         .right()
                 //         .to_pos(tuple.span.right());
 
                 //     let patten_lens = edits.format_comma_list(&tuple.patterns);
@@ -584,12 +556,8 @@ impl<'i> Fmt for BlockItem<'i> {
                     .span
                     .left()
                     .move_char(kw)
-                    .to_pos(binding.binding.left_span());
-                let pattern_to_epxr = binding
-                    .binding
-                    .span()
-                    .right()
-                    .to_pos(binding.value.left_span());
+                    .to_pos(binding.binding.left());
+                let pattern_to_epxr = binding.binding.span().right().to_pos(binding.value.left());
                 ctx.move_right(kw as usize)
                     .replace(kw_to_pattern, " ")
                     .then(&binding.binding)
@@ -610,7 +578,7 @@ impl<'i> Fmt for Signature<'i> {
         let ctx = ctx.move_right(3).replace(fn_to_name, " ");
         if let Some(ret_ty) = &self.return_ty {
             ctx.call_like(
-                (self.name.right_span(), ret_ty.left_span()),
+                (self.name.right(), ret_ty.left()),
                 &self.name,
                 &self.params,
                 "(): ",
@@ -618,7 +586,7 @@ impl<'i> Fmt for Signature<'i> {
             .then(ret_ty)
         } else {
             ctx.call_like(
-                (self.name.right_span(), (self.right_span())),
+                (self.name.right(), (self.right())),
                 &self.name,
                 &self.params,
                 "()",
@@ -652,7 +620,7 @@ impl Edits {
     // fn format_inline_list(&mut self, things: &[impl Fmt], separator: &str) -> u32 {
     //     let lens: u32 = things.iter().map(|thing| thing.format_in(self)).sum();
     //     for pair in things.windows(2) {
-    //         self.add(pair[0].right_span().to_pos(pair[1].left_span()), separator);
+    //         self.add(pair[0].right().to_pos(pair[1].left()), separator);
     //     }
     //     lens + ((things.len() as u32) - 1) * (separator.len() as u32)
     // }
@@ -662,7 +630,7 @@ impl Edits {
     //         thing.try_format_inline_into(self, indent);
     //     }
     //     for pair in things.windows(2) {
-    //         self.add(pair[0].right_span().to_pos(pair[1].left_span()), separator);
+    //         self.add(pair[0].right().to_pos(pair[1].left()), separator);
     //     }
     // }
 
@@ -686,8 +654,8 @@ impl Edits {
     //             2
     //         }
     //         _ => {
-    //             let left = span.left().to_pos(items[0].left_span());
-    //             let right = items.last().unwrap().right_span().to_pos(span.right());
+    //             let left = span.left().to_pos(items[0].left());
+    //             let right = items.last().unwrap().right().to_pos(span.right());
     //             let pattern_lens = self.format_inline_list(&items, separator);
     //             self.add(left, "{ ");
     //             self.add(right, " }");
@@ -702,8 +670,8 @@ impl Edits {
     //             self.add(span_range(span), "{}");
     //         }
     //         _ => {
-    //             let left = span.left().to_pos(items[0].left_span());
-    //             let right = items.last().unwrap().right_span().to_pos(span.right());
+    //             let left = span.left().to_pos(items[0].left());
+    //             let right = items.last().unwrap().right().to_pos(span.right());
     //             self.format_list(&items, separator, indent);
     //             self.add(left, "{\n");
     //             self.add(right, "\n}");
@@ -714,7 +682,7 @@ impl Edits {
     // fn format_bin_op_inline(&mut self, lhs: &impl Fmt, rhs: &impl Fmt, op: &str) -> u32 {
     //     let lhs_len = lhs.format_in(self);
     //     let rhs_len = rhs.format_in(self);
-    //     let op_range = lhs.right_span().to_pos(rhs.left_span());
+    //     let op_range = lhs.right().to_pos(rhs.left());
     //     self.add(op_range, op);
     //     lhs_len + rhs_len + (op.len() as u32)
     // }
@@ -728,7 +696,7 @@ impl Edits {
         };
 
         if let Some(body) = &fun.body {
-            let sig_to_body = fun.signature.right_span().to_pos(body.left_span());
+            let sig_to_body = fun.signature.right().to_pos(body.left());
             let state = ctx.edits.save_state();
             let ctx = ctx
                 .then(&fun.signature)

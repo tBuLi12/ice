@@ -1,4 +1,4 @@
-use iiv::{str::Str, LeftSpan, RightSpan, Span};
+use iiv::{str::Str, Position, Span};
 
 macro_rules! spanned_enum {
     (
@@ -16,17 +16,17 @@ macro_rules! spanned_enum {
         }
 
         impl<$lf> Spanned for $name<$lf> {
-            fn left_span(&self) -> LeftSpan {
+            fn left(&self) -> Position {
                 match self {
                     $(
-                        Self::$vname(v) => v.left_span()
+                        Self::$vname(v) => v.left()
                     ),*
                 }
             }
-            fn right_span(&self) -> RightSpan {
+            fn right(&self) -> Position {
                 match self {
                     $(
-                        Self::$vname(v) => v.right_span()
+                        Self::$vname(v) => v.right()
                     ),*
                 }
             }
@@ -671,57 +671,57 @@ spanned_enum! {
 }
 
 trait OptSpanned {
-    fn opt_right_span(&self) -> Option<RightSpan>;
+    fn opt_right(&self) -> Option<Position>;
 }
 
 impl<T: Spanned> OptSpanned for Vec<T> {
-    fn opt_right_span(&self) -> Option<RightSpan> {
-        Some(self.last()?.right_span())
+    fn opt_right(&self) -> Option<Position> {
+        Some(self.last()?.right())
     }
 }
 
 impl<T: Spanned> OptSpanned for Option<T> {
-    fn opt_right_span(&self) -> Option<RightSpan> {
-        self.as_ref().map(Spanned::right_span)
+    fn opt_right(&self) -> Option<Position> {
+        self.as_ref().map(Spanned::right)
     }
 }
 
 impl<T: Spanned> Spanned for Box<T> {
-    fn left_span(&self) -> LeftSpan {
-        T::left_span(&self)
+    fn left(&self) -> Position {
+        T::left(&self)
     }
-    fn right_span(&self) -> RightSpan {
-        T::right_span(&self)
+    fn right(&self) -> Position {
+        T::right(&self)
     }
 }
 
 impl Spanned for Span {
-    fn left_span(&self) -> LeftSpan {
+    fn left(&self) -> Position {
         self.left()
     }
-    fn right_span(&self) -> RightSpan {
+    fn right(&self) -> Position {
         self.right()
     }
 }
 
 impl<L: Spanned, R: Spanned> Spanned for (L, R) {
-    fn left_span(&self) -> LeftSpan {
-        self.0.left_span()
+    fn left(&self) -> Position {
+        self.0.left()
     }
-    fn right_span(&self) -> RightSpan {
-        self.1.right_span()
+    fn right(&self) -> Position {
+        self.1.right()
     }
 }
 
 pub trait Spanned {
     fn span(&self) -> Span {
-        let left = self.left_span();
-        let right = self.right_span();
+        let left = self.left();
+        let right = self.right();
         left.to(right)
     }
 
-    fn left_span(&self) -> LeftSpan;
-    fn right_span(&self) -> RightSpan;
+    fn left(&self) -> Position;
+    fn right(&self) -> Position;
 }
 
 macro_rules! spanned_impls {
@@ -730,10 +730,10 @@ macro_rules! spanned_impls {
             fn span(&self) -> Span {
                 self.span
             }
-            fn left_span(&self) -> LeftSpan {
+            fn left(&self) -> Position {
                 self.span.left()
             }
-            fn right_span(&self) -> RightSpan {
+            fn right(&self) -> Position {
                 self.span.right()
             }
         }
@@ -741,13 +741,13 @@ macro_rules! spanned_impls {
 
     (@single $tyname:ident : $left:ident - $(?$opts:ident)* $last:ident) => {
         impl<'i> Spanned for $tyname<'i> {
-            fn left_span(&self) -> LeftSpan {
-                self.$left.left_span()
+            fn left(&self) -> Position {
+                self.$left.left()
             }
-            fn right_span(&self) -> RightSpan {
+            fn right(&self) -> Position {
                 None
-                    $(.or_else(|| self.$opts.opt_right_span()))*
-                    .unwrap_or_else(|| self.$last.right_span())
+                    $(.or_else(|| self.$opts.opt_right()))*
+                    .unwrap_or_else(|| self.$last.right())
             }
         }
     };
@@ -830,10 +830,10 @@ impl Spanned for Int {
     fn span(&self) -> Span {
         self.span
     }
-    fn left_span(&self) -> LeftSpan {
+    fn left(&self) -> Position {
         self.span.left()
     }
-    fn right_span(&self) -> RightSpan {
+    fn right(&self) -> Position {
         self.span.right()
     }
 }
@@ -842,10 +842,10 @@ impl Spanned for Float {
     fn span(&self) -> Span {
         self.span
     }
-    fn left_span(&self) -> LeftSpan {
+    fn left(&self) -> Position {
         self.span.left()
     }
-    fn right_span(&self) -> RightSpan {
+    fn right(&self) -> Position {
         self.span.right()
     }
 }
@@ -854,10 +854,10 @@ impl Spanned for Char {
     fn span(&self) -> Span {
         self.span
     }
-    fn left_span(&self) -> LeftSpan {
+    fn left(&self) -> Position {
         self.span.left()
     }
-    fn right_span(&self) -> RightSpan {
+    fn right(&self) -> Position {
         self.span.right()
     }
 }
@@ -866,10 +866,10 @@ impl Spanned for Bool {
     fn span(&self) -> Span {
         self.span
     }
-    fn left_span(&self) -> LeftSpan {
+    fn left(&self) -> Position {
         self.span.left()
     }
-    fn right_span(&self) -> RightSpan {
+    fn right(&self) -> Position {
         self.span.right()
     }
 }

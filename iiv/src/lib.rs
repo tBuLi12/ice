@@ -1,8 +1,14 @@
-use std::{cell::Cell, fmt::Display, fs::File, io};
+use std::{
+    cell::Cell,
+    error::Error,
+    fmt::Display,
+    fs::File,
+    io::{self, BufReader},
+};
 
 use diagnostics::Diagnostics;
-use fun::{Bound, Function, Method, Signature};
-use impl_tree::ImplForest;
+use fun::{Bound, Function, Method, Receiver, Signature};
+use impl_tree::{CellImplForest, ImplForest};
 use pool::{FuncRef, TraitDeclRef, TraitImplRef, TyDeclRef};
 use ty::{TraitRef, TypeRef};
 use ty_decl::{TraitDecl, TraitImpl, TypeDecl};
@@ -11,6 +17,8 @@ use crate::diagnostics::fmt;
 
 pub mod builder;
 pub mod diagnostics;
+pub mod errors;
+pub mod file_source;
 pub mod fun;
 pub mod impl_tree;
 pub mod move_check;
@@ -19,96 +27,57 @@ pub mod str;
 pub mod ty;
 pub mod ty_decl;
 
-pub struct CursorPosition {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Position {
     pub line: u32,
     pub column: u32,
 }
 
+impl Position {
+    pub fn to(self, other: Self) -> Span {
+        Span {
+            left: self,
+            right: other,
+        }
+    }
+
+    pub fn extend_back(mut self, offset: u32) -> Span {
+        let right = self;
+        self.column -= offset;
+        Span { left: self, right }
+    }
+
+    pub fn char(self) -> Span {
+        let mut next = self;
+        next.column += 1;
+        Span {
+            left: self,
+            right: next,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
-    pub first_line: u32,
-    pub last_line: u32,
-    pub begin_offset: u32,
-    pub begin_highlight_offset: u32,
-    pub end_highlight_offset: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct LeftSpan {
-    pub first_line: u32,
-    pub begin_offset: u32,
-    pub begin_highlight_offset: u32,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RightSpan {
-    pub last_line: u32,
-    pub end_highlight_offset: u32,
+    pub left: Position,
+    pub right: Position,
 }
 
 impl Span {
     pub fn null() -> Self {
         Self {
-            first_line: 0,
-            last_line: 0,
-            begin_offset: 0,
-            begin_highlight_offset: 0,
-            end_highlight_offset: 0,
+            left: Position { line: 0, column: 0 },
+            right: Position { line: 0, column: 0 },
         }
     }
 
     pub fn to(self, other: Span) -> Span {
-        Span {
-            first_line: self.first_line,
-            last_line: other.last_line,
-            begin_offset: self.begin_offset,
-            begin_highlight_offset: self.begin_highlight_offset,
-            end_highlight_offset: other.end_highlight_offset,
-        }
+        self.left.to(other.right)
     }
 
-    pub fn extend_back(mut self, offset: u32) -> Span {
-        self.begin_highlight_offset -= offset;
-        self
-    }
-
-    pub fn first(mut self) -> Span {
-        self.end_highlight_offset = self.begin_highlight_offset + 1;
-        self
-    }
-
-    pub fn left(self) -> LeftSpan {
-        LeftSpan {
-            first_line: self.first_line,
-            begin_offset: self.begin_offset,
-            begin_highlight_offset: self.begin_highlight_offset,
-        }
-    }
-
-    pub fn right(self) -> RightSpan {
-        RightSpan {
-            last_line: self.last_line,
-            end_highlight_offset: self.end_highlight_offset,
-        }
-    }
-
-    pub fn contains(self, line: u32, column: u32) -> bool {
-        return (self.first_line < line
-            || self.first_line == line && self.begin_highlight_offset <= column)
-            && (self.last_line > line
-                || self.last_line == line && self.end_highlight_offset >= column);
-    }
-}
-
-impl LeftSpan {
-    pub fn to(self, right: RightSpan) -> Span {
-        Span {
-            first_line: self.first_line,
-            last_line: right.last_line,
-            begin_offset: self.begin_offset,
-            begin_highlight_offset: self.begin_highlight_offset,
-            end_highlight_offset: right.end_highlight_offset,
-        }
+    pub fn contains(self, Position { line, column }: Position) -> bool {
+        return (self.left.line < line || self.left.line == line && self.left.column <= column)
+            && (self.right.line > line || self.right.line == line && self.right.column >= column);
     }
 }
 
@@ -244,26 +213,22 @@ impl<'i> PartialEq for Value<'i> {
 }
 
 pub trait Source {
-    type Reader<'this>: io::Read + io::Seek
-    where
-        Self: 'this;
-
     fn name(&self) -> &str;
-    fn reader(&self) -> Self::Reader<'_>;
+    fn next(&mut self) -> Result<Option<char>, Box<dyn Error>>;
+    fn seek(&mut self, position: Position) -> Result<(), Box<dyn Error>>;
 }
 
-pub struct FileSource {
-    pub file: File,
-    pub name: String,
-}
-
-impl Source for FileSource {
-    type Reader<'a> = &'a File;
+impl<S: Source> Source for &mut S {
     fn name(&self) -> &str {
-        &self.name
+        S::name(self)
     }
-    fn reader(&self) -> Self::Reader<'_> {
-        &self.file
+
+    fn next(&mut self) -> Result<Option<char>, Box<dyn Error>> {
+        S::next(self)
+    }
+
+    fn seek(&mut self, position: Position) -> Result<(), Box<dyn Error>> {
+        S::seek(self, position)
     }
 }
 
@@ -273,6 +238,7 @@ pub struct Ctx<'i> {
     pub ty_decl_pool: pool::TyDeclPool<'i>,
     pub trait_decl_pool: pool::TraitDeclPool<'i>,
     pub trait_impl_pool: pool::TraitImplPool<'i>,
+    pub impl_forest: CellImplForest<'i>,
     pub diagnostcs: Diagnostics,
     pub builtins: Builtints<'i>,
 }
@@ -341,6 +307,7 @@ impl<'i> Ctx<'i> {
             trait_decl_pool: pool::TraitDeclPool::new(),
             trait_impl_pool: pool::TraitImplPool::new(),
             diagnostcs: Diagnostics::new(),
+            impl_forest: CellImplForest::new(),
             builtins: Builtints {
                 drop: Cell::new(None),
                 copy: Cell::new(None),
@@ -357,6 +324,8 @@ impl<'i> Ctx<'i> {
     }
 
     pub fn init(&'i self) {
+        self.impl_forest.set_ctx(self);
+
         let this_ty = self.type_pool.get_ty_constant(0);
         {
             let mem_alloc = self.fun_pool.insert(Function {
@@ -448,7 +417,7 @@ impl<'i> Ctx<'i> {
             name: self.type_pool.str_pool.get("Drop"),
             signatures: vec![fun::Method {
                 fun: drop_signature,
-                receiver: fun::Receiver::Mut,
+                receiver: fun::Receiver::ByReference,
             }],
             trait_bounds: vec![],
             ty_params: vec![],
@@ -474,7 +443,7 @@ impl<'i> Ctx<'i> {
             name: self.type_pool.str_pool.get("Copy"),
             signatures: vec![fun::Method {
                 fun: copy_signature,
-                receiver: fun::Receiver::Immutable,
+                receiver: fun::Receiver::ByReference,
             }],
             trait_bounds: vec![],
             ty_params: vec![],
@@ -511,7 +480,7 @@ impl<'i> Ctx<'i> {
 
         let bitwise_copy_impl = self.trait_impl_pool.insert(TraitImpl {
             functions: vec![Method {
-                receiver: crate::fun::Receiver::Immutable,
+                receiver: crate::fun::Receiver::ByReference,
                 fun: bitwise_copy_impl_signature,
             }],
             tr: copy,
@@ -538,7 +507,7 @@ impl<'i> Ctx<'i> {
 
         let auto_copy_impl = self.trait_impl_pool.insert(TraitImpl {
             functions: vec![Method {
-                receiver: crate::fun::Receiver::Immutable,
+                receiver: crate::fun::Receiver::ByReference,
                 fun: auto_copy_impl_signature,
             }],
             tr: copy,
@@ -585,13 +554,44 @@ impl<'i> Ctx<'i> {
         }
     }
 
-    pub fn flush_diagnostics(&self, source: &impl Source) -> bool {
+    pub fn get_received_type(
+        &'i self,
+        base: TypeRef<'i>,
+        receiver: Receiver,
+    ) -> Option<TypeRef<'i>> {
+        match receiver {
+            Receiver::None => None,
+            Receiver::ByValue => Some(base),
+            Receiver::ByReference => Some(self.type_pool.get_ref(base)),
+        }
+    }
+
+    pub fn resolve_reciever(
+        &'i self,
+        ty: TypeRef<'i>,
+        bounds: &[Bound<'i>],
+        is_mut: bool,
+    ) -> Receiver {
+        if is_mut {
+            Receiver::ByReference
+        } else {
+            if self
+                .impl_forest
+                .is_satisfied(ty, self.builtins.get_copy(), bounds)
+            {
+                Receiver::ByValue
+            } else {
+                Receiver::ByReference
+            }
+        }
+    }
+
+    pub fn flush_diagnostics(&self, source: &mut impl Source) -> bool {
         self.diagnostcs.print_all(source)
     }
 }
 
 pub struct Package<'i> {
-    pub impl_forest: ImplForest<'i>,
     pub funcs: Vec<FuncRef<'i>>,
     pub main: Option<FuncRef<'i>>,
 }

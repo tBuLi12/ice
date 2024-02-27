@@ -1,14 +1,14 @@
-use std::io;
+use std::{error::Error, io};
 
 use ast::{Ident, Int, StringLit};
-use iiv::{err, str::StrPool, CursorPosition, LeftSpan, Span};
+use iiv::{err, str::StrPool, Position, Span};
 
-pub struct Lexer<'i, R> {
+pub struct Lexer<'i, S> {
     str_pool: &'i StrPool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
-    pub cursor_position: Option<CursorPosition>,
+    pub cursor_position: Option<Position>,
     pub completion_token: Option<Token<'i>>,
-    source: io::Bytes<R>,
+    source: S,
     current: Option<char>,
     offset: u32,
     column: u32,
@@ -85,14 +85,19 @@ impl<'i> Token<'i> {
     }
 }
 
-impl<'i, R: io::Read> Lexer<'i, R> {
-    pub fn new(ctx: &'i iiv::Ctx<'i>, source: R) -> Self {
-        let mut bytes = source.bytes();
-        let first = bytes.next().map(|o| o.unwrap().into());
+impl<'i, S: iiv::Source> Lexer<'i, S> {
+    pub fn new(ctx: &'i iiv::Ctx<'i>, mut source: S) -> Self {
+        let first = match source.next() {
+            Err(error) => {
+                ctx.diagnostcs.add_plain_err(&*error);
+                None
+            }
+            Ok(first) => first,
+        };
         Lexer {
             str_pool: &ctx.type_pool.str_pool,
             messages: &ctx.diagnostcs,
-            source: bytes,
+            source,
             current: first,
             offset: 0,
             column: 0,
@@ -106,15 +111,14 @@ impl<'i, R: io::Read> Lexer<'i, R> {
         loop {
             match self.current {
                 Some(c) if c.is_whitespace() => {
-                    let update = if let Some(CursorPosition { line, column }) = self.cursor_position
-                    {
+                    let update = if let Some(Position { line, column }) = self.cursor_position {
                         line == self.line && column == self.column
                     } else {
                         false
                     };
                     self.read_char();
                     if update {
-                        self.cursor_position = Some(CursorPosition {
+                        self.cursor_position = Some(Position {
                             line: self.line,
                             column: self.column,
                         });
@@ -124,29 +128,37 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             }
         }
 
+        if self.current.is_none() {
+            return Token::Eof(self.current_position().extend_back(1));
+        }
+
         let token = self
             .read_ident_or_keyword()
             .or_else(|| self.read_string_literal())
             .or_else(|| self.read_punctuation())
             .or_else(|| self.read_numeric_literal())
-            .unwrap_or(Token::Eof(self.current_span()));
+            .unwrap_or_else(|| {
+                self.messages.add(err!(
+                    &self.current_position().extend_back(1),
+                    "unexpected character"
+                ));
+                self.read_char();
+                self.next()
+            });
 
-        if let Some(CursorPosition { line, column }) = self.cursor_position {
+        if let Some(Position { line, column }) = self.cursor_position {
             let span = token.span();
-            if span.contains(line, column) {
+            if span.contains(Position { line, column }) {
                 self.completion_token = Some(token);
             }
         }
         token
     }
 
-    fn current_span(&self) -> Span {
-        Span {
-            first_line: self.line,
-            last_line: self.line,
-            begin_offset: self.offset - self.column,
-            begin_highlight_offset: self.column,
-            end_highlight_offset: self.column,
+    fn current_position(&self) -> Position {
+        Position {
+            line: self.line,
+            column: self.column,
         }
     }
 
@@ -165,7 +177,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             self.read_char();
         }
 
-        let span = self.current_span().extend_back(ident.len() as u32);
+        let span = self.current_position().extend_back(ident.len() as u32);
 
         Some(match &ident[..] {
             "data" => Token::Keyword(Keyword::Data, span),
@@ -199,7 +211,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
             ($name:ident, $len:expr) => {
                 Some(Token::Punctuation(
                     Punctuation::$name,
-                    self.current_span().extend_back($len),
+                    self.current_position().extend_back($len),
                 ))
             };
         }
@@ -220,7 +232,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
                         self.read_char();
                         punct_impl!([$($nested)*] [] Some(Token::Punctuation(
                             Punctuation::$name,
-                            self.current_span().extend_back($depth),
+                            self.current_position().extend_back($depth),
                         )), $depth + 1)
                     },
                 ] $none, $depth)
@@ -274,7 +286,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
         if punct.is_none() {
             self.read_char();
             self.messages.add(err!(
-                &self.current_span().extend_back(1),
+                &self.current_position().extend_back(1),
                 "unknown punctuation"
             ));
             return Some(self.next());
@@ -297,7 +309,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
         }
 
         Some(Token::Int(Int {
-            span: self.current_span().extend_back(len),
+            span: self.current_position().extend_back(len),
             value,
         }))
     }
@@ -315,7 +327,7 @@ impl<'i, R: io::Read> Lexer<'i, R> {
                 Some('"') | None => {
                     return Some(Token::String(StringLit {
                         value: self.str_pool.get(&value),
-                        span: self.current_span().extend_back(value.len() as u32),
+                        span: self.current_position().extend_back(value.len() as u32),
                     }));
                 }
                 Some(character) => value.push(character),
@@ -337,9 +349,11 @@ impl<'i, R: io::Read> Lexer<'i, R> {
         }
 
         self.current = match self.source.next() {
-            None => None,
-            Some(Err(e)) => panic!("{}", e),
-            Some(Ok(byte)) => Some(byte.into()),
+            Err(error) => {
+                self.messages.add_plain_err(&*error);
+                None
+            }
+            Ok(character) => character,
         };
 
         old

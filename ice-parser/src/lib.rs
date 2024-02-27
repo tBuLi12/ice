@@ -1,7 +1,7 @@
 use std::{io, mem};
 
 use ast::*;
-use iiv::{diagnostics, err, Ctx, CursorPosition, LeftSpan, Span};
+use iiv::{diagnostics, err, Ctx, Position, Span};
 use lexer::{Keyword, Lexer, Punctuation, Token};
 
 mod lexer;
@@ -54,18 +54,12 @@ macro_rules! get_token {
     };
 }
 
-impl<'i, R: io::Read> Parser<'i, R> {
-    pub fn new(ctx: &'i Ctx<'i>, source: R) -> Self {
+impl<'i, S: iiv::Source> Parser<'i, S> {
+    pub fn new(ctx: &'i Ctx<'i>, source: S) -> Self {
         let mut parser = Parser {
             lexer: Lexer::new(ctx, source),
             messages: &ctx.diagnostcs,
-            current: Token::Eof(Span {
-                first_line: 0,
-                last_line: 0,
-                begin_offset: 0,
-                begin_highlight_offset: 0,
-                end_highlight_offset: 0,
-            }),
+            current: Token::Eof(Span::null()),
             default_binding: None,
         };
         parser.next_token();
@@ -73,7 +67,7 @@ impl<'i, R: io::Read> Parser<'i, R> {
     }
 
     pub fn set_cursor(&mut self, line: u32, column: u32) {
-        self.lexer.cursor_position = Some(CursorPosition { line, column });
+        self.lexer.cursor_position = Some(Position { line, column });
     }
 
     pub fn get_completion_token(&self) -> Option<Token<'i>> {

@@ -1,6 +1,6 @@
 use fmt::TextRange;
 use ice_parser::Parser;
-use iiv::{CursorPosition, Source};
+use iiv::Source;
 use iiv_gen::{Generator, TokenType};
 use lsp_types::{
     request::HoverRequest, Command, CompletionItem, CompletionItemKind, CompletionList,
@@ -25,21 +25,55 @@ use std::{
 
 mod fmt;
 
-struct StrSource<'s> {
+struct StrSource {
     name: String,
-    text: &'s str,
+    text: Vec<String>,
+    line: u32,
+    column: u32,
 }
 
-impl<'s> Source for StrSource<'s> {
-    type Reader<'this> = Cursor<&'this [u8]>     where
-    Self: 'this;
+impl StrSource {
+    fn new(name: String, text: &str) -> Self {
+        StrSource {
+            name,
+            text: text.split_inclusive('\n').map(str::to_string).collect(),
+            line: 0,
+            column: 0,
+        }
+    }
+}
 
+impl Source for StrSource {
     fn name(&self) -> &str {
         &self.name
     }
 
-    fn reader(&self) -> Self::Reader<'_> {
-        Cursor::new(self.text.as_bytes())
+    fn next(&mut self) -> Result<Option<char>, Box<dyn Error>> {
+        let next = self.text[self.line as usize][self.column as usize..]
+            .chars()
+            .next();
+
+        match next {
+            Some(character) => {
+                self.column += character.len_utf8() as u32;
+                Ok(Some(character))
+            }
+            None => {
+                if self.line + 1 == self.text.len() as u32 {
+                    Ok(None)
+                } else {
+                    self.line += 1;
+                    self.column = 0;
+                    self.next()
+                }
+            }
+        }
+    }
+
+    fn seek(&mut self, position: iiv::Position) -> Result<(), Box<dyn Error>> {
+        self.line = position.line;
+        self.column = position.column;
+        Ok(())
     }
 }
 
@@ -228,8 +262,8 @@ fn handle_initial_request(body: String, writer: &mut impl Write) -> Result<(), B
                     text_document_sync: Some(TextDocumentSyncCapability::Kind(
                         TextDocumentSyncKind::FULL,
                     )),
-                    // document_formatting_provider: Some(OneOf::Left(true)),
-                    document_formatting_provider: None,
+                    document_formatting_provider: Some(OneOf::Left(true)),
+                    // document_formatting_provider: None,
                     diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
                         DiagnosticOptions {
                             inter_file_dependencies: false,
@@ -259,7 +293,7 @@ fn handle_initial_request(body: String, writer: &mut impl Write) -> Result<(), B
 }
 
 fn do_request(
-    files: &mut HashMap<Url, String>,
+    files: &mut HashMap<Url, StrSource>,
     body: String,
     writer: &mut impl Write,
 ) -> Result<(), Box<dyn Error>> {
@@ -273,14 +307,21 @@ fn do_request(
                 let request: Params<DidOpenTextDocumentParams> =
                     serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
                 let request = request.params;
-                files.insert(request.text_document.uri, request.text_document.text);
+                let source = source_from_text_document(
+                    &request.text_document.uri,
+                    &request.text_document.text,
+                );
+                files.insert(request.text_document.uri, source);
             }
             "textDocument/didChange" => {
                 let request: Params<DidChangeTextDocumentParams> =
                     serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
                 let request = request.params;
                 if let Some(text) = files.get_mut(&request.text_document.uri) {
-                    *text = request.content_changes.into_iter().next().unwrap().text;
+                    *text = source_from_text_document(
+                        &request.text_document.uri,
+                        &request.content_changes.into_iter().next().unwrap().text,
+                    )
                 }
             }
             "textDocument/didClose" => {
@@ -301,12 +342,10 @@ fn do_request(
                 serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
             let request = request.params;
 
-            if let Some(text) = files.get(&request.text_document.uri) {
-                let source = source_from_text_document(request.text_document, text);
-
+            if let Some(source) = files.get_mut(&request.text_document.uri) {
                 let result = SemanticTokensResult::Tokens(SemanticTokens {
                     result_id: None,
-                    data: semantic_highlight(&source),
+                    data: semantic_highlight(source),
                 });
 
                 write_response(result, id, writer)?;
@@ -315,10 +354,10 @@ fn do_request(
         "textDocument/formatting" => {
             let request: Params<DocumentFormattingParams> = serde_json::from_str(&body)?;
             let request = request.params;
-            let edits = if let Some(text) = files.get(&request.text_document.uri) {
+            let edits = if let Some(text) = files.get_mut(&request.text_document.uri) {
                 let ctx = iiv::Ctx::new();
                 ctx.init();
-                let mut parser = Parser::new(&ctx, text.as_bytes());
+                let mut parser = Parser::new(&ctx, text);
                 let module = parser.parse_program();
                 let edits = fmt::format_module(module);
                 eprintln!("{:#?}", edits);
@@ -332,14 +371,10 @@ fn do_request(
             let request: Params<CompletionParams> =
                 serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
             let position = request.params.text_document_position.position;
-            let items = if let Some(text) =
-                files.get(&request.params.text_document_position.text_document.uri)
+            let items = if let Some(source) =
+                files.get_mut(&request.params.text_document_position.text_document.uri)
             {
-                let source = source_from_text_document(
-                    request.params.text_document_position.text_document,
-                    text,
-                );
-                completion(&source, position)
+                completion(source, position)
             } else {
                 vec![]
             };
@@ -353,9 +388,9 @@ fn do_request(
             let request: Params<DocumentDiagnosticParams> =
                 serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
 
-            let diagnostics = if let Some(text) = files.get(&request.params.text_document.uri) {
-                let source = source_from_text_document(request.params.text_document, text);
-                diagnostics(&source)
+            let diagnostics = if let Some(source) = files.get_mut(&request.params.text_document.uri)
+            {
+                diagnostics(source)
             } else {
                 vec![]
             };
@@ -373,19 +408,15 @@ fn do_request(
             let request: Params<HoverParams> =
                 serde_json::from_str(&body).map_err(add_ctx("in request params"))?;
 
-            if let Some(text) = files.get(
+            if let Some(source) = files.get_mut(
                 &request
                     .params
                     .text_document_position_params
                     .text_document
                     .uri,
             ) {
-                let source = source_from_text_document(
-                    request.params.text_document_position_params.text_document,
-                    text,
-                );
                 if let Some(hover) = hover(
-                    &source,
+                    source,
                     request.params.text_document_position_params.position,
                 ) {
                     let response = Hover {
@@ -413,24 +444,22 @@ fn do_request(
     Ok(())
 }
 
-fn source_from_text_document(document: TextDocumentIdentifier, text: &str) -> StrSource<'_> {
-    StrSource {
-        name: document
-            .uri
-            .path_segments()
+fn source_from_text_document(url: &Url, text: &str) -> StrSource {
+    StrSource::new(
+        url.path_segments()
             .map(|segments| segments.last())
             .flatten()
             .unwrap_or("<unknown file>")
             .to_string(),
         text,
-    }
+    )
 }
 
-fn hover(source: &impl Source, position: Position) -> Option<String> {
+fn hover(source: &mut impl Source, position: Position) -> Option<String> {
     let ctx = iiv::Ctx::new();
     ctx.init();
 
-    let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
+    let mut parser = Parser::new(&ctx, source);
     let mut generator = Generator::new(&ctx, true);
 
     let module = parser.parse_program();
@@ -443,32 +472,15 @@ fn hover(source: &impl Source, position: Position) -> Option<String> {
         .unwrap()
         .into_iter()
         .find_map(|(span, token)| {
-            if !span.contains(position.line, position.character) {
+            if !span.contains(iiv::Position {
+                line: position.line,
+                column: position.character,
+            }) {
                 return None;
             }
             match token {
                 TokenType::Type { decl } => Some(format!("type {}", decl.name)),
-                TokenType::Variable { ty, def_span, .. } => {
-                    let mut reader = source.reader();
-                    Seek::seek(
-                        &mut reader,
-                        SeekFrom::Start(
-                            (def_span.begin_offset + def_span.begin_highlight_offset) as u64,
-                        ),
-                    )
-                    .unwrap();
-                    let mut buf = vec![
-                        0u8;
-                        (def_span.end_highlight_offset - def_span.begin_highlight_offset)
-                            as usize
-                    ];
-                    reader.read_exact(&mut buf).unwrap();
-                    Some(format!(
-                        "let {}: {}",
-                        String::from_utf8(buf.to_vec()).unwrap(),
-                        ty
-                    ))
-                }
+                TokenType::Variable { ty, def_span, .. } => None,
                 TokenType::Property { name, ty } => Some(format!("{}: {}", name, ty)),
                 TokenType::Function { decl } => Some(format!("fun {}", decl.borrow().sig.name)),
                 _ => None,
@@ -476,20 +488,17 @@ fn hover(source: &impl Source, position: Position) -> Option<String> {
         })
 }
 
-fn completion(source: &impl Source, position: Position) -> Vec<CompletionItem> {
+fn completion(source: &mut impl Source, position: Position) -> Vec<CompletionItem> {
     let ctx = iiv::Ctx::new();
     ctx.init();
-    let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
+    let mut parser = Parser::new(&ctx, source);
     let mut generator = Generator::new(&ctx, true);
     parser.set_cursor(position.line, position.character);
 
     let module = parser.parse_program();
     generator.completion_token = parser.get_completion_token().map(|token| {
         let span = token.span();
-        CursorPosition {
-            line: span.first_line,
-            column: span.begin_highlight_offset,
-        }
+        span.left
     });
 
     let _ = generator.emit_iiv(&[module]);
@@ -512,10 +521,10 @@ fn completion(source: &impl Source, position: Position) -> Vec<CompletionItem> {
         .collect()
 }
 
-fn diagnostics(source: &impl Source) -> Vec<Diagnostic> {
+fn diagnostics(source: impl Source) -> Vec<Diagnostic> {
     let ctx = iiv::Ctx::new();
     ctx.init();
-    let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
+    let mut parser = Parser::new(&ctx, source);
     let mut generator = Generator::new(&ctx, true);
 
     let module = parser.parse_program();
@@ -535,11 +544,11 @@ fn diagnostics(source: &impl Source) -> Vec<Diagnostic> {
         .collect()
 }
 
-fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {
+fn semantic_highlight(mut source: impl Source) -> Vec<SemanticToken> {
     let ctx = iiv::Ctx::new();
     ctx.init();
 
-    let mut parser = Parser::new(&ctx, BufReader::new(source.reader()));
+    let mut parser = Parser::new(&ctx, &mut source);
     let mut generator = Generator::new(&ctx, true);
 
     let module = parser.parse_program();
@@ -547,7 +556,7 @@ fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {
     let _ = generator.emit_iiv(&[module]);
 
     if !ctx.diagnostcs.ok() {
-        ctx.flush_diagnostics(source);
+        ctx.flush_diagnostics(&mut source);
     }
 
     let mut prev_line = 0;
@@ -558,7 +567,7 @@ fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {
         .0
         .as_mut()
         .unwrap()
-        .sort_by_key(|a| a.0.begin_offset + a.0.begin_highlight_offset);
+        .sort_by_key(|a| (a.0.left.line, a.0.left.column));
 
     generator
         .index
@@ -566,7 +575,7 @@ fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {
         .unwrap()
         .into_iter()
         .map(|(span, token_type)| {
-            if span.first_line != prev_line {
+            if span.left.line != prev_line {
                 prev_start = 0;
             }
 
@@ -580,12 +589,12 @@ fn semantic_highlight(source: &impl Source) -> Vec<SemanticToken> {
                     TokenType::Keyword { .. } => 4,
                     TokenType::Variant { .. } => 5,
                 },
-                length: span.end_highlight_offset - span.begin_highlight_offset,
-                delta_start: span.begin_highlight_offset - prev_start,
-                delta_line: span.first_line - prev_line,
+                length: span.right.column - span.left.column,
+                delta_start: span.left.column - prev_start,
+                delta_line: span.left.line - prev_line,
             };
-            prev_line = span.first_line;
-            prev_start = span.begin_highlight_offset;
+            prev_line = span.left.line;
+            prev_start = span.left.column;
             token
         })
         .collect()

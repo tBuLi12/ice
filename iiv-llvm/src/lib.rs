@@ -44,11 +44,10 @@ impl<'i> Backend<'i> {
         iiv::move_check::resolve_drops(
             &self.ctx,
             &mut *main.borrow_mut(),
-            &package.impl_forest,
             self.ctx.builtins.get_drop(),
         );
         main.borrow_mut().seal();
-        ir_gen.emit_main(&mut *main.borrow_mut(), &package.impl_forest);
+        ir_gen.emit_main(&mut *main.borrow_mut());
 
         eprintln!("dump mod");
         ctx.emit(ir_gen.module, out);
@@ -132,9 +131,9 @@ pub struct IRGen<'ll, 'i> {
 }
 
 impl<'ll, 'i> IRGen<'ll, 'i> {
-    pub fn emit_main(&mut self, func: &mut iiv::fun::Function<'i>, impls: &ImplForest<'i>) {
+    pub fn emit_main(&mut self, func: &mut iiv::fun::Function<'i>) {
         let main = self.create_signature(func, self.ctx.type_pool.get_ty_list(vec![]));
-        self.write_body(func, main, impls);
+        self.write_body(func, main);
 
         while let Some((func, ty_args)) = self.work_stack.pop() {
             eprintln!("writing body for {}", func.borrow().sig.name);
@@ -144,17 +143,12 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             let mut fun = func.borrow().clone();
             fun.apply_ty_args(&self.ctx.type_pool, ty_args);
             eprintln!("resolved {}", func.borrow().sig.name);
-            iiv::move_check::resolve_drops(
-                &self.ctx,
-                &mut fun,
-                impls,
-                self.ctx.builtins.get_drop(),
-            );
+            iiv::move_check::resolve_drops(&self.ctx, &mut fun, self.ctx.builtins.get_drop());
             eprintln!("drops done {}", func.borrow().sig.name);
             fun.seal();
             eprintln!("sealed {}", func.borrow().sig.name);
 
-            self.write_body(&mut fun, *llvm_func, impls);
+            self.write_body(&mut fun, *llvm_func);
         }
     }
 
@@ -162,7 +156,6 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         &mut self,
         func: &mut iiv::fun::Function<'i>,
         llvm_func: llvm::Function<'ll>,
-        impls: &ImplForest<'i>,
     ) {
         let body = match &func.body {
             Body::Sealed(body) => body,
@@ -171,7 +164,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
             Body::AutoCopy => {
                 func.body = Body::Unsealed(vec![]);
                 iiv::move_check::inject_auto_copy_impl(self.ctx, func);
-                self.write_body(func, llvm_func, impls);
+                self.write_body(func, llvm_func);
                 if llvm_func.verify() {
                     panic!("invalid function");
                 }
@@ -276,7 +269,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         for (i, block) in body.iter().enumerate() {
             let llvm_block = self.blocks[i];
             self.ir.set_insert_point(llvm_block);
-            self.emit_block(block, i, impls);
+            self.emit_block(block, i);
         }
 
         if llvm_func.verify() {
@@ -286,12 +279,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         // self.fun_opt_manager.optimize(llvm_func);
     }
 
-    pub fn emit_block(
-        &mut self,
-        block: &iiv::builder::Block<'i>,
-        i: usize,
-        impls: &ImplForest<'i>,
-    ) {
+    pub fn emit_block(&mut self, block: &iiv::builder::Block<'i>, i: usize) {
         // init phis
         {
             let p = &mut self.phis[i];
@@ -386,7 +374,9 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     let (tr_ty_args, method_ty_args) =
                         rest.split_at(tr_decl.borrow().ty_params.len());
 
-                    let (impl_ref, ty_args) = impls
+                    let (impl_ref, ty_args) = self
+                        .ctx
+                        .impl_forest
                         .find(
                             *this_ty,
                             TraitRef(
@@ -456,7 +446,7 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                     }
 
                     let copy_tr = self.ctx.builtins.get_copy();
-                    let copy_impl = impls.find(value.ty, copy_tr).unwrap();
+                    let copy_impl = self.ctx.impl_forest.find(value.ty, copy_tr).unwrap();
                     if copy_impl.0 == self.ctx.builtins.get_bitwise_copy() {
                         self.read(value);
                     } else {

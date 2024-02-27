@@ -16,20 +16,39 @@ pub struct ImplTreeNode<'i> {
     children: Vec<ImplTreeNode<'i>>,
 }
 
-pub struct CellImplForest<'i>(UnsafeCell<ImplForest<'i>>);
+pub struct CellImplForest<'i>(UnsafeCell<Option<ImplForest<'i>>>);
 
 impl<'i> CellImplForest<'i> {
+    pub fn new() -> Self {
+        Self(UnsafeCell::new(None))
+    }
+
+    pub fn set_ctx(&self, ctx: &'i Ctx<'i>) {
+        let this = unsafe { &mut *self.0.get() };
+        *this = Some(ImplForest::new(ctx));
+    }
+
+    pub fn is_satisfied(
+        &self,
+        ty: TypeRef<'i>,
+        tr: TraitRef<'i>,
+        local_bounds: &[Bound<'i>],
+    ) -> bool {
+        let this = unsafe { &*self.0.get() }.as_ref().unwrap();
+        this.is_satisfied(ty, tr, local_bounds)
+    }
+
     pub fn find(
         &self,
         ty: TypeRef<'i>,
         tr: TraitRef<'i>,
     ) -> Option<(TraitImplRef<'i>, pool::List<'i, TypeRef<'i>>)> {
-        let this = unsafe { &mut *self.0.get() };
+        let this = unsafe { &*self.0.get() }.as_ref().unwrap();
         this.find(ty, tr)
     }
 
-    pub fn add(&mut self, span: &Span, impl_ref: TraitImplRef<'i>) {
-        let this = unsafe { &mut *self.0.get() };
+    pub fn add(&self, span: &Span, impl_ref: TraitImplRef<'i>) {
+        let this = unsafe { &mut *self.0.get() }.as_mut().unwrap();
         this.add(span, impl_ref)
     }
 }
@@ -74,7 +93,6 @@ impl<'i> ImplForest<'i> {
             .find(|bound| **bound == Bound { ty, tr })
             .is_some()
         {
-            eprintln!("cyclic bound");
             return false;
         }
         checking.push(Bound { ty, tr });
@@ -82,9 +100,6 @@ impl<'i> ImplForest<'i> {
             .find_with_givens(ty, tr, local_bounds, checking)
             .is_some();
         checking.pop();
-        if !was_found {
-            eprintln!("{}: {} not found", ty, tr);
-        }
         was_found
     }
 
@@ -190,16 +205,16 @@ impl<'i> ImplForest<'i> {
         }
     }
 
-    pub fn new(ctx: &'i Ctx<'i>, messages: &'i Diagnostics) -> Self {
+    pub fn new(ctx: &'i Ctx<'i>) -> Self {
         ImplForest {
             roots: vec![],
             ctx,
-            messages,
+            messages: &ctx.diagnostcs,
         }
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Overlap {
     Equal,
     LeftMoreSpecific,
@@ -243,14 +258,6 @@ impl<'i> ImplTreeNode<'i> {
         forest: &ImplForest<'i>,
         checking: &mut Vec<Bound<'i>>,
     ) -> Option<(TraitImplRef<'i>, Vec<TypeRef<'i>>)> {
-        eprintln!(
-            "looking in {} as {} - {}: {}",
-            self.impl_ref.borrow().ty,
-            self.impl_ref.borrow().tr,
-            ty,
-            tr
-        );
-
         if let Some(args) =
             self.impl_ref
                 .borrow()
@@ -262,13 +269,6 @@ impl<'i> ImplTreeNode<'i> {
                 }
             }
 
-            eprintln!(
-                "found in {} as {} - {}: {}",
-                self.impl_ref.borrow().ty,
-                self.impl_ref.borrow().tr,
-                ty,
-                tr
-            );
             return Some((self.impl_ref, args));
         } else {
             None
@@ -350,7 +350,7 @@ impl<'i> ImplTreeNode<'i> {
             return Overlap::Disjoint;
         }
 
-        let (left_ty_param_map, overlap) = {
+        {
             let mut left_ty_param_map = vec![None; left.ty_params.len()];
             let mut right_ty_param_map = vec![None; right.ty_params.len()];
             let mut overlap = Self::compare_types(
@@ -368,22 +368,43 @@ impl<'i> ImplTreeNode<'i> {
                 )
                 .and(overlap);
             }
-            (
-                left_ty_param_map
-                    .into_iter()
-                    .map(Option::unwrap)
-                    .collect::<Vec<_>>(),
-                overlap,
-            )
+
+            match overlap {
+                Overlap::Ambiguous | Overlap::Disjoint => {
+                    return overlap;
+                }
+                Overlap::Equal | Overlap::RightMoreSpecific => {
+                    let map = left_ty_param_map
+                        .into_iter()
+                        .map(Option::unwrap)
+                        .collect::<Vec<_>>();
+                    let left_mapped: Vec<_> = left
+                        .trait_bounds
+                        .iter()
+                        .map(|&bound| ty_pool.resolve_bound(bound, &map))
+                        .collect();
+                    return Self::compare_bounds(&left_mapped, &right.trait_bounds).and(overlap);
+                }
+                Overlap::LeftMoreSpecific => {
+                    eprintln!("left");
+                    let map = right_ty_param_map
+                        .into_iter()
+                        .map(Option::unwrap)
+                        .collect::<Vec<_>>();
+                    let right_mapped: Vec<_> = right
+                        .trait_bounds
+                        .iter()
+                        .map(|&bound| ty_pool.resolve_bound(bound, &map))
+                        .collect();
+                    eprintln!(
+                        "{:?}",
+                        Self::compare_bounds(&left.trait_bounds, &right_mapped)
+                    );
+                    eprintln!("{:?} {:?}", &left.trait_bounds, &right_mapped);
+                    return Self::compare_bounds(&left.trait_bounds, &right_mapped).and(overlap);
+                }
+            }
         };
-
-        let left_mapped: Vec<_> = left
-            .trait_bounds
-            .iter()
-            .map(|&bound| ty_pool.resolve_bound(bound, &left_ty_param_map))
-            .collect();
-
-        Self::compare_bounds(&left_mapped, &right.trait_bounds).and(overlap)
     }
 
     fn compare_bounds(left: &[Bound<'i>], right: &[Bound<'i>]) -> Overlap {
@@ -464,27 +485,32 @@ impl<'i> ImplTreeNode<'i> {
                 unimplemented!()
             }
             (Type::Constant(val), Type::Constant(other)) => {
-                let right = if let Some(ty) = left_ty_param_map[*val] {
-                    match ty.get_intersection(right) {
-                        TypeOverlap::Complete => Overlap::Equal,
-                        TypeOverlap::Partial => Overlap::Ambiguous,
-                        TypeOverlap::None => Overlap::Disjoint,
+                match (left_ty_param_map[*val], right_ty_param_map[*other]) {
+                    (Some(left), Some(right)) => {
+                        Self::compare_types(left_ty_param_map, right_ty_param_map, right, left)
                     }
-                } else {
-                    left_ty_param_map[*val] = Some(right);
-                    Overlap::Equal
-                };
-                let left = if let Some(ty) = right_ty_param_map[*other] {
-                    match ty.get_intersection(left) {
-                        TypeOverlap::Complete => Overlap::Equal,
-                        TypeOverlap::Partial => Overlap::Ambiguous,
-                        TypeOverlap::None => Overlap::Disjoint,
+                    (Some(left_mapped), None) => {
+                        right_ty_param_map[*other] = Some(left);
+                        match left_mapped.get_intersection(right) {
+                            TypeOverlap::Complete => Overlap::Equal,
+                            TypeOverlap::Partial => Overlap::Ambiguous,
+                            TypeOverlap::None => Overlap::Disjoint,
+                        }
                     }
-                } else {
-                    right_ty_param_map[*other] = Some(left);
-                    Overlap::Equal
-                };
-                left.and(right)
+                    (None, Some(righ_mappedt)) => {
+                        left_ty_param_map[*val] = Some(right);
+                        match left.get_intersection(righ_mappedt) {
+                            TypeOverlap::Complete => Overlap::Equal,
+                            TypeOverlap::Partial => Overlap::Ambiguous,
+                            TypeOverlap::None => Overlap::Disjoint,
+                        }
+                    }
+                    (None, None) => {
+                        left_ty_param_map[*val] = Some(right);
+                        right_ty_param_map[*other] = Some(left);
+                        Overlap::Equal
+                    }
+                }
             }
             (Type::Constant(val), _) => {
                 if let Some(ty) = left_ty_param_map[*val] {
@@ -495,7 +521,7 @@ impl<'i> ImplTreeNode<'i> {
                     }
                 } else {
                     left_ty_param_map[*val] = Some(right);
-                    Overlap::Equal
+                    Overlap::RightMoreSpecific
                 }
             }
             (_, Type::Constant(val)) => {
@@ -507,7 +533,7 @@ impl<'i> ImplTreeNode<'i> {
                     }
                 } else {
                     right_ty_param_map[*val] = Some(left);
-                    Overlap::Equal
+                    Overlap::LeftMoreSpecific
                 }
             }
             (_, Type::InferenceVar(_)) | (Type::InferenceVar(_), _) => {

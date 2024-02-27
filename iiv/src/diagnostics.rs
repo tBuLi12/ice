@@ -1,9 +1,6 @@
-use std::{
-    cell::UnsafeCell,
-    io::{BufReader, Read, Seek, SeekFrom},
-};
+use std::{cell::UnsafeCell, error::Error};
 
-use crate::{FileSource, Source, Span};
+use crate::{Source, Span};
 
 #[derive(Debug)]
 pub enum Level {
@@ -136,12 +133,9 @@ pub mod fmt {
             write!(
                 f,
                 "{}{}{}{}",
-                Repeat(self.0.begin_highlight_offset, ' '),
+                Repeat(self.0.left.column, ' '),
                 color::RED,
-                Repeat(
-                    self.0.end_highlight_offset - self.0.begin_highlight_offset,
-                    '^'
-                ),
+                Repeat(self.0.right.column - self.0.left.column, '^'),
                 color::RESET
             )
         }
@@ -151,6 +145,10 @@ pub mod fmt {
 impl Diagnostics {
     pub fn new() -> Self {
         Diagnostics(UnsafeCell::new(vec![]))
+    }
+
+    pub fn add_plain_err(&self, error: &dyn Error) {
+        self.add(err!(&Span::null(), "{}", error));
     }
 
     pub fn add(&self, message: Diagnostic) {
@@ -168,39 +166,42 @@ impl Diagnostics {
         std::mem::replace(messages, vec![])
     }
 
-    pub fn print_all(&self, source: &impl Source) -> bool {
+    pub fn print_all(&self, source: &mut impl Source) -> bool {
+        match self.try_print_all(source) {
+            Ok(errors) => errors,
+            Err(error) => {
+                self.add(err!(&Span::null(), "{}", error));
+                true
+            }
+        }
+    }
+
+    pub fn try_print_all(&self, source: &mut impl Source) -> Result<bool, Box<dyn Error>> {
         let messages = unsafe { &mut *self.0.get() };
         let has_errors = messages.len() != 0;
         for Diagnostic { message, span, .. } in messages {
-            let margin = fmt::Margin(fmt::n_of_digits(span.last_line + 1));
+            let margin = fmt::Margin(fmt::n_of_digits(span.right.line + 1));
             eprintln!("{}", message);
             eprintln!("{}", margin);
 
-            Seek::seek(
-                &mut source.reader(),
-                SeekFrom::Start(span.begin_offset as u64),
-            )
-            .unwrap();
-            let mut bytes = BufReader::new(source.reader()).bytes();
-            let mut current_line = span.first_line;
-            while current_line <= span.last_line {
+            source.seek(span.left);
+            let mut current_line = span.left.line;
+            while current_line <= span.right.line {
                 eprint!("{}", fmt::color::RESET);
                 eprint!("{}", margin.with_number(current_line + 1));
-                if current_line > span.first_line {
+                if current_line > span.left.line {
                     eprint!("{}", fmt::color::RED);
                 }
 
                 let mut column = 0;
-                while let Some(byte) = bytes.next() {
-                    let byte = char::from(byte.unwrap());
+                while let Some(byte) = source.next()? {
                     if byte == '\n' {
                         break;
                     }
 
-                    if current_line == span.first_line && column == span.begin_highlight_offset {
+                    if current_line == span.left.line && column == span.left.column {
                         eprint!("{}", fmt::color::RED);
-                    } else if current_line == span.last_line && column == span.end_highlight_offset
-                    {
+                    } else if current_line == span.right.line && column == span.right.column {
                         eprint!("{}", fmt::color::RESET);
                     }
 
@@ -214,7 +215,7 @@ impl Diagnostics {
 
             eprint!("{}{}", fmt::color::RESET, margin);
 
-            if span.first_line == span.last_line {
+            if span.left.line == span.right.line {
                 eprint!("{}", fmt::Squiggles(*span));
             }
 
@@ -223,11 +224,11 @@ impl Diagnostics {
                 "{}@ {}:{}:{}",
                 fmt::Repeat(margin.0, ' '),
                 source.name(),
-                span.first_line + 1,
-                span.begin_highlight_offset + 1
+                span.left.line + 1,
+                span.left.column + 1
             );
             eprintln!("");
         }
-        has_errors
+        Ok(has_errors)
     }
 }

@@ -3,7 +3,7 @@ use crate::{
     diagnostics::{error, Diagnostics},
     err,
     fun::{self, Function},
-    impl_tree::ImplForest,
+    impl_tree::{CellImplForest, ImplForest},
     pool::FuncRef,
     ty::{TraitRef, Type, TypeRef},
     Ctx, Elem, Instruction, RawValue, Span,
@@ -346,12 +346,7 @@ pub fn check<'i>(ctx: &'i Ctx<'i>, func_ref: FuncRef<'i>) {
     }
 }
 
-pub fn resolve_drops<'i>(
-    ctx: &'i Ctx<'i>,
-    func: &mut Function<'i>,
-    impl_forest: &ImplForest<'i>,
-    drop_tr: TraitRef<'i>,
-) {
+pub fn resolve_drops<'i>(ctx: &'i Ctx<'i>, func: &mut Function<'i>, drop_tr: TraitRef<'i>) {
     let body = match &mut func.body {
         fun::Body::Sealed(_) => panic!("resolve drops on sealed body"),
         fun::Body::Unsealed(unsealed) => unsealed,
@@ -392,7 +387,7 @@ pub fn resolve_drops<'i>(
         DropResolver {
             state: state.as_ref().unwrap().clone(),
             cursor,
-            impl_forest,
+            impl_forest: &ctx.impl_forest,
             drop_tr,
         }
         .resolve();
@@ -551,14 +546,14 @@ fn verify(
     state
 }
 
-struct DropResolver<'f, 'i: 'f, 'forest> {
+struct DropResolver<'f, 'i: 'f> {
     state: VarState,
     cursor: builder::Cursor<'f, 'i>,
-    impl_forest: &'forest ImplForest<'i>,
+    impl_forest: &'i CellImplForest<'i>,
     drop_tr: TraitRef<'i>,
 }
 
-impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
+impl<'f, 'i: 'f> DropResolver<'f, 'i> {
     fn invalidate(&mut self, val: RawValue, path: Option<Vec<u8>>, base_ty: TypeRef<'i>) {
         let state = self.state.flags[val.0 as usize].clone();
         let path = if let Some(path) = path {
@@ -823,7 +818,7 @@ impl<'f, 'i: 'f, 'forest> DropResolver<'f, 'i, 'forest> {
 pub fn copies_to_moves<'i>(
     func: &mut Function<'i>,
     copy_tr: TraitRef<'i>,
-    impl_forest: &ImplForest<'i>,
+    impl_forest: &CellImplForest<'i>,
 ) {
     let body = match &mut func.body {
         fun::Body::Sealed(_) => panic!("copies to moves on sealed body"),

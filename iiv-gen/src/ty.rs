@@ -23,8 +23,7 @@ enum InferenceVar<'i> {
 pub struct InferenceCtx<'i> {
     vars: Vec<InferenceVar<'i>>,
     goals: Vec<Goal<'i>>,
-    ty_pool: &'i iiv::ty::Pool<'i>,
-    messages: &'i iiv::diagnostics::Diagnostics,
+    ctx: &'i iiv::Ctx<'i>,
 }
 
 pub struct EqAttempt<'c, 'i> {
@@ -34,20 +33,16 @@ pub struct EqAttempt<'c, 'i> {
 }
 
 impl<'i> InferenceCtx<'i> {
-    pub fn new(
-        ty_pool: &'i iiv::ty::Pool<'i>,
-        messages: &'i iiv::diagnostics::Diagnostics,
-    ) -> Self {
+    pub fn new(ctx: &'i iiv::Ctx<'i>) -> Self {
         InferenceCtx {
             vars: vec![],
             goals: vec![],
-            ty_pool,
-            messages,
+            ctx,
         }
     }
 
     pub fn new_var(&mut self, span: Span) -> TypeRef<'i> {
-        let var = self.ty_pool.get_ty_inference_var(self.vars.len());
+        let var = self.ctx.type_pool.get_ty_inference_var(self.vars.len());
         self.vars.push(InferenceVar::UnknownAt(span));
         var
     }
@@ -60,13 +55,20 @@ impl<'i> InferenceCtx<'i> {
         });
     }
 
-    pub fn check_bounds(&mut self, impls: &ImplForest<'i>) {
+    pub fn check_bounds(&mut self) {
         for mut goal in std::mem::replace(&mut self.goals, vec![]) {
             goal.bound.ty = self.unwrap(goal.bound.ty);
-            goal.bound.tr.1 = self.ty_pool.get_ty_list(self.unwrap_list(goal.bound.tr.1));
+            goal.bound.tr.1 = self
+                .ctx
+                .type_pool
+                .get_ty_list(self.unwrap_list(goal.bound.tr.1));
             eprintln!("trying: {:?}", goal);
-            if !impls.is_satisfied(goal.bound.ty, goal.bound.tr, &goal.givens) {
-                self.messages.add(err!(
+            if !self
+                .ctx
+                .impl_forest
+                .is_satisfied(goal.bound.ty, goal.bound.tr, &goal.givens)
+            {
+                self.ctx.diagnostcs.add(err!(
                     &goal.span,
                     "{} does not implement {}",
                     goal.bound.ty,
@@ -76,8 +78,8 @@ impl<'i> InferenceCtx<'i> {
         }
     }
 
-    pub fn clear(&mut self, impls: &ImplForest<'i>) {
-        self.check_bounds(impls);
+    pub fn clear(&mut self) {
+        self.check_bounds();
         self.vars.clear();
     }
 
@@ -175,29 +177,31 @@ impl<'i> InferenceCtx<'i> {
             Type::Builtin(_) | Type::Constant(_) | Type::Invalid => ty,
             Type::Vector(_) => unimplemented!(),
             Type::Tuple(types) => self
-                .ty_pool
+                .ctx
+                .type_pool
                 .get_tuple(types.iter().map(|&ty| self.resolve(ty)).collect()),
             Type::Union(types) => self
-                .ty_pool
+                .ctx
+                .type_pool
                 .get_union(types.iter().map(|&ty| self.resolve(ty)).collect()),
-            Type::Struct(props) => self.ty_pool.get_struct(
+            Type::Struct(props) => self.ctx.type_pool.get_struct(
                 props
                     .iter()
-                    .map(|&prop| self.ty_pool.get_prop(prop.0, prop.1))
+                    .map(|&prop| self.ctx.type_pool.get_prop(prop.0, prop.1))
                     .collect(),
             ),
-            Type::Variant(props) => self.ty_pool.get_variant(
+            Type::Variant(props) => self.ctx.type_pool.get_variant(
                 props
                     .iter()
-                    .map(|&prop| self.ty_pool.get_prop(prop.0, prop.1))
+                    .map(|&prop| self.ctx.type_pool.get_prop(prop.0, prop.1))
                     .collect(),
             ),
             Type::Named(decl, args, _) => {
                 let args = args.iter().map(|&ty| self.resolve(ty)).collect();
-                self.ty_pool.get_ty_named(*decl, args)
+                self.ctx.type_pool.get_ty_named(*decl, args)
             }
-            Type::Ref(ty) => self.ty_pool.get_ref(self.resolve(*ty)),
-            Type::Ptr(ty) => self.ty_pool.get_ptr(self.resolve(*ty)),
+            Type::Ref(ty) => self.ctx.type_pool.get_ref(self.resolve(*ty)),
+            Type::Ptr(ty) => self.ctx.type_pool.get_ptr(self.resolve(*ty)),
             Type::InferenceVar(idx) => {
                 if let InferenceVar::Known(ty) = self.vars[*idx] {
                     self.resolve(ty)
@@ -225,7 +229,7 @@ impl<'i> InferenceCtx<'i> {
     pub fn unwrap_prop_list(&self, prop_list: List<'i, PropRef<'i>>) -> Vec<PropRef<'i>> {
         prop_list
             .iter()
-            .map(|prop| self.ty_pool.get_prop(prop.0, self.unwrap(prop.1)))
+            .map(|prop| self.ctx.type_pool.get_prop(prop.0, self.unwrap(prop.1)))
             .collect()
     }
 
@@ -233,21 +237,27 @@ impl<'i> InferenceCtx<'i> {
         match &*ty {
             Type::Builtin(_) | Type::Constant(_) | Type::Invalid => ty,
             Type::Vector(_) => unimplemented!(),
-            Type::Union(types) => self.ty_pool.get_union(self.unwrap_list(*types)),
-            Type::Tuple(types) => self.ty_pool.get_tuple(self.unwrap_list(*types)),
-            Type::Named(decl, types, _) => {
-                self.ty_pool.get_ty_named(*decl, self.unwrap_list(*types))
-            }
+            Type::Union(types) => self.ctx.type_pool.get_union(self.unwrap_list(*types)),
+            Type::Tuple(types) => self.ctx.type_pool.get_tuple(self.unwrap_list(*types)),
+            Type::Named(decl, types, _) => self
+                .ctx
+                .type_pool
+                .get_ty_named(*decl, self.unwrap_list(*types)),
 
-            Type::Variant(props) => self.ty_pool.get_variant(self.unwrap_prop_list(*props)),
-            Type::Struct(props) => self.ty_pool.get_struct(self.unwrap_prop_list(*props)),
-            Type::Ref(ty) => self.ty_pool.get_ref(self.unwrap(*ty)),
-            Type::Ptr(ty) => self.ty_pool.get_ptr(self.unwrap(*ty)),
+            Type::Variant(props) => self
+                .ctx
+                .type_pool
+                .get_variant(self.unwrap_prop_list(*props)),
+            Type::Struct(props) => self.ctx.type_pool.get_struct(self.unwrap_prop_list(*props)),
+            Type::Ref(ty) => self.ctx.type_pool.get_ref(self.unwrap(*ty)),
+            Type::Ptr(ty) => self.ctx.type_pool.get_ptr(self.unwrap(*ty)),
             Type::InferenceVar(idx) => match self.vars[*idx] {
                 InferenceVar::Known(ty) => self.unwrap(ty),
                 InferenceVar::UnknownAt(span) => {
-                    self.messages.add(err!(&span, "type could not be inferred"));
-                    self.ty_pool.get_ty_invalid()
+                    self.ctx
+                        .diagnostcs
+                        .add(err!(&span, "type could not be inferred"));
+                    self.ctx.type_pool.get_ty_invalid()
                 }
             },
             Type::Type(_) => {
@@ -269,7 +279,7 @@ impl<'i> InferenceCtx<'i> {
 
 impl<'c, 'i> EqAttempt<'c, 'i> {
     pub fn new_var(&mut self, span: Span) -> TypeRef<'i> {
-        let var = self.ctx.ty_pool.get_ty_inference_var(self.vars.len());
+        let var = self.ctx.ctx.type_pool.get_ty_inference_var(self.vars.len());
         self.vars.push(InferenceVar::UnknownAt(span));
         var
     }
@@ -371,7 +381,7 @@ impl<'c, 'i> EqAttempt<'c, 'i> {
 
     fn set(&mut self, idx: usize, ty: TypeRef<'i>) {
         if InferenceCtx::contains_var(ty, idx) {
-            self.vars[idx] = InferenceVar::Known(self.ctx.ty_pool.get_ty_invalid());
+            self.vars[idx] = InferenceVar::Known(self.ctx.ctx.type_pool.get_ty_invalid());
             self.error = true;
         } else {
             self.vars[idx] = InferenceVar::Known(ty);
@@ -380,7 +390,7 @@ impl<'c, 'i> EqAttempt<'c, 'i> {
 
     pub fn commit(self, at: &iiv::Span) {
         if self.error {
-            self.ctx.messages.add(err!(at, "implied cyclic type"))
+            self.ctx.ctx.diagnostcs.add(err!(at, "implied cyclic type"))
         }
         self.ctx.vars = self.vars;
     }

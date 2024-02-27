@@ -44,8 +44,8 @@ pub struct Function<'i> {
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
 pub enum Receiver {
     None,
-    Immutable,
-    Mut,
+    ByValue,
+    ByReference,
 }
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug, Clone, Copy)]
@@ -131,7 +131,7 @@ impl<'i> Function<'i> {
         block: &'a UnsealedBlock<'i>,
         add: &mut impl FnMut(usize) -> bool,
     ) {
-        eprintln!("add successors! {:p}", block);
+        // eprintln!("add successors! {:p}", block);
         match block.instructions.last() {
             Some((Instruction::Jump(label, _args), _)) => {
                 let new_block = &blocks[label.0 as usize];

@@ -1,7 +1,7 @@
 use std::{env, fs::File, io::BufReader};
 
 use ice_parser::Parser;
-use iiv::FileSource;
+use iiv::file_source::FileSource;
 use iiv_gen::Generator;
 use iiv_llvm::Backend;
 
@@ -13,25 +13,22 @@ fn main() {
         return;
     };
 
-    let source = FileSource {
-        file: File::open(&name).unwrap(),
-        name,
-    };
+    let mut source = FileSource::new(File::open(&name).unwrap(), name).unwrap();
 
     let ctx = iiv::Ctx::new();
     ctx.init();
 
-    let mut parser = Parser::new(&ctx, BufReader::new(&source.file));
+    let mut parser = Parser::new(&ctx, &mut source);
     let mut generator = Generator::new(&ctx, false);
     let mut backend = Backend::new(&ctx);
 
     let module = parser.parse_program();
-    if ctx.flush_diagnostics(&source) {
+    if ctx.flush_diagnostics(&mut source) {
         return;
     }
 
     let package = generator.emit_iiv(&[module]);
-    if ctx.flush_diagnostics(&source) {
+    if ctx.flush_diagnostics(&mut source) {
         return;
     }
 
@@ -40,13 +37,13 @@ fn main() {
         iiv::move_check::copies_to_moves(
             &mut *fun.borrow_mut(),
             ctx.builtins.get_copy(),
-            &package.impl_forest,
+            &ctx.impl_forest,
         );
         iiv::move_check::check(&ctx, *fun);
         // eprintln!("{}", fun.borrow());
     }
 
-    if ctx.flush_diagnostics(&source) {
+    if ctx.flush_diagnostics(&mut source) {
         return;
     }
 
