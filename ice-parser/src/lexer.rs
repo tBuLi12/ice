@@ -1,13 +1,9 @@
-use std::{error::Error, io};
-
 use ast::{Ident, Int, StringLit};
 use iiv::{err, str::StrPool, Position, Span};
 
 pub struct Lexer<'i, S> {
     str_pool: &'i StrPool<'i>,
     messages: &'i iiv::diagnostics::Diagnostics,
-    pub cursor_position: Option<Position>,
-    pub completion_token: Option<Token<'i>>,
     source: S,
     current: Option<char>,
     offset: u32,
@@ -102,8 +98,6 @@ impl<'i, S: iiv::Source> Lexer<'i, S> {
             offset: 0,
             column: 0,
             line: 0,
-            cursor_position: None,
-            completion_token: None,
         }
     }
 
@@ -111,18 +105,7 @@ impl<'i, S: iiv::Source> Lexer<'i, S> {
         loop {
             match self.current {
                 Some(c) if c.is_whitespace() => {
-                    let update = if let Some(Position { line, column }) = self.cursor_position {
-                        line == self.line && column == self.column
-                    } else {
-                        false
-                    };
                     self.read_char();
-                    if update {
-                        self.cursor_position = Some(Position {
-                            line: self.line,
-                            column: self.column,
-                        });
-                    }
                 }
                 _ => break,
             }
@@ -146,12 +129,6 @@ impl<'i, S: iiv::Source> Lexer<'i, S> {
                 self.next()
             });
 
-        if let Some(Position { line, column }) = self.cursor_position {
-            let span = token.span();
-            if span.contains(Position { line, column }) {
-                self.completion_token = Some(token);
-            }
-        }
         token
     }
 
@@ -197,7 +174,7 @@ impl<'i, S: iiv::Source> Lexer<'i, S> {
             "false" => Token::Keyword(Keyword::False, span),
             _ => Token::Ident(Ident {
                 span,
-                value: self.str_pool.get(&ident),
+                value: Some(self.str_pool.get(&ident)),
             }),
         })
     }

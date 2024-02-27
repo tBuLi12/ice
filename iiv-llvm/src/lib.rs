@@ -136,17 +136,12 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
         self.write_body(func, main);
 
         while let Some((func, ty_args)) = self.work_stack.pop() {
-            eprintln!("writing body for {}", func.borrow().sig.name);
-
             let llvm_func = self.funcs.get(&(func, ty_args)).unwrap();
 
             let mut fun = func.borrow().clone();
             fun.apply_ty_args(&self.ctx.type_pool, ty_args);
-            eprintln!("resolved {}", func.borrow().sig.name);
             iiv::move_check::resolve_drops(&self.ctx, &mut fun, self.ctx.builtins.get_drop());
-            eprintln!("drops done {}", func.borrow().sig.name);
             fun.seal();
-            eprintln!("sealed {}", func.borrow().sig.name);
 
             self.write_body(&mut fun, *llvm_func);
         }
@@ -379,10 +374,10 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                         .impl_forest
                         .find(
                             *this_ty,
-                            TraitRef(
-                                *tr_decl,
-                                self.ctx.type_pool.get_ty_list(tr_ty_args.to_vec()),
-                            ),
+                            TraitRef {
+                                decl: *tr_decl,
+                                ty_args: self.ctx.type_pool.get_ty_list(tr_ty_args.to_vec()),
+                            },
                         )
                         .unwrap();
                     let raw_args: Vec<_> = args.iter().map(|arg| self.get(*arg)).collect();
@@ -873,8 +868,8 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
 
         let name = format!(
             "{}{}",
-            func.sig.name,
-            iiv::diagnostics::fmt::List(ty_args.iter())
+            iiv::diagnostics::fmt::List(func.sig.name.iter(), "."),
+            iiv::diagnostics::fmt::List(ty_args.iter(), ",")
         );
 
         let llvm_func = self.module.create_func(&name, &params, ret_ty);
@@ -958,7 +953,11 @@ impl<'ll, 'i> IRGen<'ll, 'i> {
                 self.llvm_ctx.struct_ty(&field_types)
             }
             Type::Named(decl, args, proto) => {
-                let name = format!("{}{}", decl.name, iiv::diagnostics::fmt::List(args.iter()));
+                let name = format!(
+                    "{}{}",
+                    decl.name,
+                    iiv::diagnostics::fmt::List(args.iter(), ", ")
+                );
                 self.llvm_ctx.create_named_ty(&name, &[self.llvm_ty(proto)])
             }
             Type::Vector(_) => {

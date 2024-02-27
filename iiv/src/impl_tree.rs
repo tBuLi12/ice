@@ -346,7 +346,7 @@ impl<'i> ImplTreeNode<'i> {
         let left = &*left.borrow();
         let right = &*right.borrow();
 
-        if left.tr.0 != right.tr.0 {
+        if left.tr.decl != right.tr.decl {
             return Overlap::Disjoint;
         }
 
@@ -359,7 +359,7 @@ impl<'i> ImplTreeNode<'i> {
                 left.ty,
                 right.ty,
             );
-            for (&left_ty, &right_ty) in left.tr.1.iter().zip(right.tr.1.iter()) {
+            for (&left_ty, &right_ty) in left.tr.ty_args.iter().zip(right.tr.ty_args.iter()) {
                 overlap = Self::compare_types(
                     &mut left_ty_param_map,
                     &mut right_ty_param_map,
@@ -564,7 +564,7 @@ impl<'i> TraitImpl<'i> {
         forest: &ImplForest<'i>,
         checking: &mut Vec<Bound<'i>>,
     ) -> Option<Vec<TypeRef<'i>>> {
-        if tr.0 != self.tr.0 {
+        if tr.decl != self.tr.decl {
             eprintln!("no trait match");
             return None;
         }
@@ -574,9 +574,9 @@ impl<'i> TraitImpl<'i> {
         if !Self::match_ty(&mut args, self.ty, ty)
             && self
                 .tr
-                .1
+                .ty_args
                 .iter()
-                .zip(tr.1.iter())
+                .zip(tr.ty_args.iter())
                 .all(|(&matched, &ty)| Self::match_ty(&mut args, matched, ty))
         {
             eprintln!("no arg match");

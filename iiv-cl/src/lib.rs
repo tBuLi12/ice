@@ -148,8 +148,11 @@ impl<'i, 'b> PackageTransformer<'i, 'b> {
                 for &param in fun.sig.params.iter() {
                     signature.params.push(AbiParam::new(as_ty(param)));
                 }
-                self.module
-                    .declare_function(&fun.sig.name, Linkage::Export, &signature)
+                self.module.declare_function(
+                    &fun.sig.name.last().unwrap(),
+                    Linkage::Export,
+                    &signature,
+                )
             }
             .unwrap();
             self.funs.insert(*fun_ref, id);

@@ -25,13 +25,11 @@ impl<'i> Debug for Bound<'i> {
 
 #[derive(Debug, Clone)]
 pub struct Signature<'i> {
-    pub name: Str<'i>,
-    pub name_base: Str<'i>,
+    pub name: Vec<Str<'i>>,
     pub params: pool::List<'i, TypeRef<'i>>,
     pub ty_params: Vec<()>,
     pub trait_bounds: Vec<Bound<'i>>,
     pub ret_ty: TypeRef<'i>,
-    pub span: Span,
 }
 
 #[derive(Debug, Clone)]
@@ -70,21 +68,14 @@ pub enum Body<'i> {
 }
 
 impl<'i> Function<'i> {
-    pub fn empty(
-        ty_pool: &'i crate::ty::Pool<'i>,
-        span: Span,
-        name_base: Str<'i>,
-        name: Str<'i>,
-    ) -> Self {
+    pub fn empty(ty_pool: &'i crate::ty::Pool<'i>, name: &[Str<'i>]) -> Self {
         Function {
             sig: Signature {
-                name,
-                name_base,
+                name: name.to_vec(),
                 params: ty_pool.get_ty_list(vec![]),
                 ty_params: vec![],
                 trait_bounds: vec![],
                 ret_ty: ty_pool.get_null(),
-                span,
             },
             body: crate::fun::Body::Unsealed(vec![]),
             ty_cache: vec![],
@@ -310,7 +301,7 @@ impl<'i> Display for Function<'i> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         use crate::diagnostics::fmt;
 
-        write!(f, "fun {}(", self.sig.name)?;
+        write!(f, "fun [{}](", fmt::List(self.sig.name.iter(), "."))?;
         let mut i = 0;
         for param in self.sig.params.iter() {
             write!(f, "%{}: {}, ", i, param)?;
@@ -342,7 +333,12 @@ impl<'i> Display for Function<'i> {
             }
             Body::Sealed(blocks) => {
                 for (block_index, block) in blocks.iter().enumerate() {
-                    writeln!(f, "b{} {}:", block_index, fmt::List(block.params.iter()))?;
+                    writeln!(
+                        f,
+                        "b{} {}:",
+                        block_index,
+                        fmt::List(block.params.iter(), ", ")
+                    )?;
                     i += block.params.len();
                     for inst in &block.instructions {
                         print_inst(f, &mut i, inst)?;
@@ -355,7 +351,7 @@ impl<'i> Display for Function<'i> {
                         f,
                         "b{} {}:",
                         block_index,
-                        fmt::List(block.params.iter().map(|(ty, _)| ty))
+                        fmt::List(block.params.iter().map(|(ty, _)| ty), ", ")
                     )?;
                     i += block.params.len();
                     for (inst, idx) in &block.instructions {
@@ -426,8 +422,8 @@ fn print_inst(
                 f,
                 "    %{} = call {}{}(",
                 i,
-                fun.borrow().sig.name,
-                fmt::List(ty_args.iter()),
+                fmt::List(fun.borrow().sig.name.iter(), "."),
+                fmt::List(ty_args.iter(), ", "),
             )?;
             for arg in args {
                 write!(f, "%{}, ", arg.0)?;
@@ -442,9 +438,17 @@ fn print_inst(
                 i,
                 ty_args[0],
                 tr.borrow().name,
-                fmt::List(ty_args[1..tr.borrow().ty_params.len()].iter()),
-                tr.borrow().signatures[*idx as usize].fun.borrow().sig.name,
-                fmt::List(ty_args[tr.borrow().ty_params.len()..].iter()),
+                fmt::List(ty_args[1..tr.borrow().ty_params.len()].iter(), ", "),
+                fmt::List(
+                    tr.borrow().signatures[*idx as usize]
+                        .fun
+                        .borrow()
+                        .sig
+                        .name
+                        .iter(),
+                    "."
+                ),
+                fmt::List(ty_args[tr.borrow().ty_params.len()..].iter(), ", "),
             )?;
             for arg in args {
                 write!(f, "%{}, ", arg.0)?;
@@ -533,7 +537,7 @@ fn print_inst(
                 lhs.0,
                 yes.0,
                 no.0,
-                fmt::List(args.iter()),
+                fmt::List(args.iter(), ", "),
             )?;
         }
         Instruction::Switch(lhs, labels, args) => {
@@ -541,13 +545,13 @@ fn print_inst(
                 f,
                 "    switch %{} [{}] with {}",
                 lhs.0,
-                fmt::List(labels.iter().map(|l| format!("b{}", l.0))),
-                fmt::List(args.iter())
+                fmt::List(labels.iter().map(|l| format!("b{}", l.0)), ", "),
+                fmt::List(args.iter(), ", ")
             )?;
             writeln!(f, "]")?;
         }
         Instruction::Jump(label, args) => {
-            writeln!(f, "    jmp b{} {}", label.0, fmt::List(args.iter()))?;
+            writeln!(f, "    jmp b{} {}", label.0, fmt::List(args.iter(), ", "))?;
         }
         Instruction::Return(val) => {
             writeln!(f, "    return %{}", val.0)?;

@@ -68,8 +68,9 @@ pub mod fmt {
         }
     }
 
-    pub struct List<I>(pub I);
-    impl<I: Clone + Iterator> Display for List<I>
+    pub struct List<I, S: Display>(pub I, pub S);
+
+    impl<I: Clone + Iterator, S: Display> Display for List<I, S>
     where
         I::Item: Display,
     {
@@ -78,11 +79,11 @@ pub mod fmt {
             let Some(first) = this.next() else {
                 return Ok(());
             };
-            write!(f, "[{}", first)?;
+            write!(f, "{}", first)?;
             for item in this {
                 write!(f, ",{}", item)?;
             }
-            write!(f, "]")
+            Ok(())
         }
     }
 

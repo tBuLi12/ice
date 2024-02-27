@@ -24,6 +24,7 @@ pub mod impl_tree;
 pub mod move_check;
 pub mod pool;
 pub mod str;
+pub mod str_source;
 pub mod ty;
 pub mod ty_decl;
 
@@ -57,10 +58,20 @@ impl Position {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Span {
     pub left: Position,
     pub right: Position,
+}
+
+impl std::fmt::Debug for Span {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "Span({}:{}-{}:{})",
+            self.left.line, self.left.column, self.right.line, self.right.column
+        )
+    }
 }
 
 impl Span {
@@ -332,13 +343,11 @@ impl<'i> Ctx<'i> {
                 body: fun::Body::MemAlloc(this_ty),
                 ty_cache: vec![],
                 sig: Signature {
-                    name: self.type_pool.str_pool.get("memAlloc"),
-                    name_base: self.type_pool.str_pool.get(""),
+                    name: [self.type_pool.str_pool.get("memAlloc")].to_vec(),
                     params: self.type_pool.get_ty_list(vec![self.type_pool.get_int()]),
                     ret_ty: self.type_pool.get_ptr(this_ty),
                     trait_bounds: vec![],
                     ty_params: vec![()],
-                    span: Span::null(),
                 },
             });
 
@@ -346,15 +355,13 @@ impl<'i> Ctx<'i> {
                 body: fun::Body::MemFree,
                 ty_cache: vec![],
                 sig: Signature {
-                    name: self.type_pool.str_pool.get("memFree"),
-                    name_base: self.type_pool.str_pool.get(""),
+                    name: [self.type_pool.str_pool.get("memFree")].to_vec(),
                     params: self
                         .type_pool
                         .get_ty_list(vec![self.type_pool.get_ptr(this_ty)]),
                     ret_ty: self.type_pool.get_null(),
                     trait_bounds: vec![],
                     ty_params: vec![()],
-                    span: Span::null(),
                 },
             });
 
@@ -362,15 +369,13 @@ impl<'i> Ctx<'i> {
                 body: fun::Body::PtrWrite,
                 ty_cache: vec![],
                 sig: Signature {
-                    name: self.type_pool.str_pool.get("ptrWrite"),
-                    name_base: self.type_pool.str_pool.get(""),
+                    name: [self.type_pool.str_pool.get("ptrWrite")].to_vec(),
                     params: self
                         .type_pool
                         .get_ty_list(vec![self.type_pool.get_ptr(this_ty), this_ty]),
                     ret_ty: self.type_pool.get_null(),
                     trait_bounds: vec![],
                     ty_params: vec![()],
-                    span: Span::null(),
                 },
             });
 
@@ -378,8 +383,7 @@ impl<'i> Ctx<'i> {
                 body: fun::Body::PtrAdd,
                 ty_cache: vec![],
                 sig: Signature {
-                    name: self.type_pool.str_pool.get("ptrAdd"),
-                    name_base: self.type_pool.str_pool.get(""),
+                    name: [self.type_pool.str_pool.get("ptrAdd")].to_vec(),
                     params: self.type_pool.get_ty_list(vec![
                         self.type_pool.get_ptr(this_ty),
                         self.type_pool.get_int(),
@@ -387,7 +391,6 @@ impl<'i> Ctx<'i> {
                     ret_ty: self.type_pool.get_ptr(this_ty),
                     trait_bounds: vec![],
                     ty_params: vec![()],
-                    span: Span::null(),
                 },
             });
 
@@ -401,15 +404,17 @@ impl<'i> Ctx<'i> {
             body: fun::Body::Unsealed(vec![]),
             ty_cache: vec![],
             sig: Signature {
-                name: self.type_pool.str_pool.get("drop"),
-                name_base: self.type_pool.str_pool.get("Drop."),
+                name: [
+                    self.type_pool.str_pool.get("Drop"),
+                    self.type_pool.str_pool.get("drop"),
+                ]
+                .to_vec(),
                 params: self
                     .type_pool
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
                 ret_ty: self.type_pool.get_null(),
                 trait_bounds: vec![],
                 ty_params: vec![()],
-                span: Span::null(),
             },
         });
 
@@ -427,15 +432,17 @@ impl<'i> Ctx<'i> {
             body: fun::Body::Unsealed(vec![]),
             ty_cache: vec![],
             sig: Signature {
-                name: self.type_pool.str_pool.get("copy"),
-                name_base: self.type_pool.str_pool.get("Copy."),
+                name: [
+                    self.type_pool.str_pool.get("Copy"),
+                    self.type_pool.str_pool.get("copy"),
+                ]
+                .to_vec(),
                 params: self
                     .type_pool
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
                 ret_ty: this_ty,
                 trait_bounds: vec![],
                 ty_params: vec![()],
-                span: Span::null(),
             },
         });
 
@@ -449,8 +456,14 @@ impl<'i> Ctx<'i> {
             ty_params: vec![],
         });
 
-        let copy = TraitRef(copy_decl, self.type_pool.get_ty_list(vec![]));
-        let drop = TraitRef(drop_decl, self.type_pool.get_ty_list(vec![]));
+        let copy = TraitRef {
+            decl: copy_decl,
+            ty_args: self.type_pool.get_ty_list(vec![]),
+        };
+        let drop = TraitRef {
+            decl: drop_decl,
+            ty_args: self.type_pool.get_ty_list(vec![]),
+        };
 
         drop_signature.borrow_mut().sig.trait_bounds.push(Bound {
             ty: this_ty,
@@ -466,15 +479,17 @@ impl<'i> Ctx<'i> {
             body: fun::Body::BitwiseCopy,
             ty_cache: vec![],
             sig: Signature {
-                name: self.type_pool.str_pool.get("copy"),
-                name_base: self.type_pool.str_pool.get("Copy."),
+                name: [
+                    self.type_pool.str_pool.get("Copy"),
+                    self.type_pool.str_pool.get("copy"),
+                ]
+                .to_vec(),
                 params: self
                     .type_pool
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
                 ret_ty: this_ty,
                 trait_bounds: vec![],
                 ty_params: vec![()],
-                span: Span::null(),
             },
         });
 
@@ -493,15 +508,17 @@ impl<'i> Ctx<'i> {
             body: fun::Body::AutoCopy,
             ty_cache: vec![],
             sig: Signature {
-                name: self.type_pool.str_pool.get("copy"),
-                name_base: self.type_pool.str_pool.get("Copy."),
+                name: [
+                    self.type_pool.str_pool.get("Copy"),
+                    self.type_pool.str_pool.get("copy"),
+                ]
+                .to_vec(),
                 params: self
                     .type_pool
                     .get_ty_list(vec![self.type_pool.get_ref(this_ty)]),
                 ret_ty: this_ty,
                 trait_bounds: vec![],
                 ty_params: vec![()],
-                span: Span::null(),
             },
         });
 
@@ -526,7 +543,6 @@ impl<'i> Ctx<'i> {
                 name: self.type_pool.str_pool.get("List"),
                 is_copy: false,
                 ty_params: vec![()],
-                span: Span::null(),
                 proto: self.type_pool.get_struct(vec![
                     self.type_pool.get_prop(
                         self.type_pool.str_pool.get("buf"),
@@ -546,7 +562,6 @@ impl<'i> Ctx<'i> {
                 proto: self
                     .type_pool
                     .get_ty_named(list, vec![self.type_pool.get_int()]),
-                span: Span::null(),
             });
 
             self.builtins.string.set(Some(string));

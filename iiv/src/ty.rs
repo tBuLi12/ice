@@ -7,7 +7,16 @@ use crate::{
 };
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
-pub struct TraitRef<'i>(pub TraitDeclRef<'i>, pub List<'i, TypeRef<'i>>);
+pub struct TraitRef<'i> {
+    pub decl: TraitDeclRef<'i>,
+    pub ty_args: List<'i, TypeRef<'i>>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
+pub struct TraitMethodRef<'i> {
+    pub tr: TraitDeclRef<'i>,
+    pub idx: usize,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
 pub struct TypeRef<'i>(pool::Ref<'i, Type<'i>>);
@@ -238,7 +247,7 @@ impl<'i> Pool<'i> {
 
     pub fn resolve_bound(&'i self, mut bound: Bound<'i>, args: &[TypeRef<'i>]) -> Bound<'i> {
         bound.ty = self.resolve_ty_args(bound.ty, &args);
-        bound.tr.1 = self.resolve_ty_list_args(bound.tr.1, &args);
+        bound.tr.ty_args = self.resolve_ty_list_args(bound.tr.ty_args, &args);
         bound
     }
 
@@ -346,8 +355,8 @@ impl<'i> fmt::Display for TraitRef<'i> {
         write!(
             f,
             "{}{}",
-            self.0.borrow().name,
-            crate::diagnostics::fmt::List(self.1.iter())
+            self.decl.borrow().name,
+            crate::diagnostics::fmt::List(self.ty_args.iter(), ", ")
         )
     }
 }
@@ -391,7 +400,7 @@ impl<'i> fmt::Display for TypeRef<'i> {
                     f,
                     "{}{}",
                     decl.name,
-                    crate::diagnostics::fmt::List(args.iter())
+                    crate::diagnostics::fmt::List(args.iter(), ", ")
                 )
             }
             Type::Type(_ty) => write!(f, "type"),

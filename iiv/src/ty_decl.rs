@@ -2,7 +2,6 @@ use crate::{
     fun::{Bound, Method},
     str::Str,
     ty::{TraitRef, TypeRef},
-    Span,
 };
 
 #[derive(Hash, Debug)]
@@ -11,7 +10,6 @@ pub struct TypeDecl<'i> {
     pub is_copy: bool,
     pub ty_params: Vec<()>,
     pub proto: TypeRef<'i>,
-    pub span: Span,
 }
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Debug)]
